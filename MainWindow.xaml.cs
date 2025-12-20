@@ -2,14 +2,15 @@
 using PdfiumViewer;
 using System;
 using System.IO;
+using System.Collections.Generic;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
-using System.Drawing; // System.Drawing.Common 패키지 필요
+using System.Drawing; // System.Drawing.Common 패키지
 using System.Drawing.Imaging;
-using Point = System.Windows.Point; // WPF Point와 충돌 방지
+using Point = System.Windows.Point; // WPF Point 명시
 
 namespace MinsPDFViewer
 {
@@ -19,7 +20,6 @@ namespace MinsPDFViewer
         private int _currentPage = 0;
         private double _dpi = 96.0; // WPF 표준 DPI
 
-        // 드래그 관련 변수
         private bool _isDragging = false;
         private Point _startPoint;
         private System.Windows.Shapes.Rectangle? _dragRect;
@@ -42,7 +42,6 @@ namespace MinsPDFViewer
         {
             try
             {
-                // PDFium으로 로드 (좌표의 기준이 됨)
                 _pdfDoc = PdfDocument.Load(path);
                 _currentPage = 0;
                 RenderPage(_currentPage);
@@ -58,12 +57,13 @@ namespace MinsPDFViewer
         {
             if (_pdfDoc == null) return;
 
-            // [핵심] 96 DPI로 렌더링 -> 1픽셀 = 1WPF단위 (좌표 변환 불필요!)
-            using (var bitmap = _pdfDoc.Render(pageIndex, (int)_dpi, (int)_dpi, true))
+            // 96 DPI로 렌더링 -> WPF 좌표계(96 DPI)와 1:1 매칭
+            using (var image = _pdfDoc.Render(pageIndex, (int)_dpi, (int)_dpi, true))
             {
+                // [중요] Image -> Bitmap 명시적 형변환
+                var bitmap = (Bitmap)image;
                 PdfImage.Source = ConvertBitmapToImageSource(bitmap);
                 
-                // 캔버스 크기를 이미지와 동일하게 맞춤
                 PdfCanvas.Width = bitmap.Width;
                 PdfCanvas.Height = bitmap.Height;
                 PdfCanvas.Children.Clear();
@@ -71,12 +71,12 @@ namespace MinsPDFViewer
         }
 
         private void BtnSearch_Click(object sender, RoutedEventArgs e) => PerformSearch(TxtSearch.Text);
+        
         private void TxtSearch_KeyDown(object sender, KeyEventArgs e)
         {
             if (e.Key == Key.Enter) PerformSearch(TxtSearch.Text);
         }
 
-        // [핵심] 검색 및 하이라이트 (WYSIWYG 좌표)
         private void PerformSearch(string query)
         {
             if (_pdfDoc == null || string.IsNullOrWhiteSpace(query)) return;
@@ -84,33 +84,39 @@ namespace MinsPDFViewer
             PdfCanvas.Children.Clear();
             int matchCount = 0;
 
-            // PDFium 엔진이 찾아준 좌표를 그대로 사용
+            // 검색 수행 (대소문자 구분 X, 전체 단어 X)
             var textMatches = _pdfDoc.Search(query, false, false); 
 
             foreach (var match in textMatches.Items)
             {
                 if (match.Page != _currentPage) continue; 
 
-                // PDFium 결과값은 Point 단위일 수 있으므로 DPI 비율만 맞춰줌 (96/72)
-                double scaleFactor = _dpi / 72.0;
+                // [중요] GetTextSegments로 정확한 좌표(Bounds) 가져오기
+                var segments = _pdfDoc.GetTextSegments(match.Page, match.Index, match.Length);
 
-                var rect = new System.Windows.Shapes.Rectangle
+                foreach (var segment in segments)
                 {
-                    Fill = new SolidColorBrush(System.Windows.Media.Color.FromArgb(100, 255, 255, 0)), // 반투명 노랑
-                    Width = match.Bounds.Width * scaleFactor,
-                    Height = match.Bounds.Height * scaleFactor
-                };
+                    // PDFium(Point단위 가능성) -> WPF(96DPI Pixel) 변환
+                    // 96 DPI로 렌더링했으므로 (96/72) 스케일링 필요
+                    double scaleFactor = _dpi / 72.0;
 
-                Canvas.SetLeft(rect, match.Bounds.Left * scaleFactor);
-                Canvas.SetTop(rect, match.Bounds.Top * scaleFactor);
+                    var rect = new System.Windows.Shapes.Rectangle
+                    {
+                        Fill = new SolidColorBrush(System.Windows.Media.Color.FromArgb(100, 255, 255, 0)),
+                        Width = segment.Bounds.Width * scaleFactor,
+                        Height = segment.Bounds.Height * scaleFactor
+                    };
 
-                PdfCanvas.Children.Add(rect);
+                    Canvas.SetLeft(rect, segment.Bounds.Left * scaleFactor);
+                    Canvas.SetTop(rect, segment.Bounds.Top * scaleFactor);
+
+                    PdfCanvas.Children.Add(rect);
+                }
                 matchCount++;
             }
             TxtStatus.Text = $"{_currentPage + 1}페이지: {matchCount}개 발견";
         }
 
-        // Bitmap -> BitmapImage 변환 헬퍼
         private BitmapImage ConvertBitmapToImageSource(Bitmap src)
         {
             var ms = new MemoryStream();
@@ -124,7 +130,6 @@ namespace MinsPDFViewer
             return image;
         }
 
-        // --- 드래그 기능 (좌표 확인용) ---
         private void PdfCanvas_MouseDown(object sender, MouseButtonEventArgs e)
         {
             _isDragging = true;
