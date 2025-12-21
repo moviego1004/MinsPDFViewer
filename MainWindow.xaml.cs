@@ -44,6 +44,12 @@ namespace MinsPDFViewer
         public bool HasText => !string.IsNullOrEmpty(TextContent);
         public int SearchResultId { get; set; } = -1;
 
+        // [검색 기능 확장 변수]
+        private List<PdfAnnotation> _searchResults = new List<PdfAnnotation>(); // 검색된 모든 주석 리스트
+        private int _currentSearchIndex = -1; // 현재 포커스된 검색 결과 인덱스
+        private string _lastSearchQuery = ""; // 마지막 검색어
+
+
         public event PropertyChangedEventHandler? PropertyChanged;
         protected void OnPropertyChanged(string name) => PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));
     }
@@ -322,26 +328,52 @@ namespace MinsPDFViewer
         }
 
         // =========================================================
-        // [검색 및 줌 기능]
+        // [검색 및 줌 기능] 수정됨
         // =========================================================
-        private void BtnSearch_Click(object sender, RoutedEventArgs e) => PerformSearch(TxtSearch.Text);
-        private void TxtSearch_KeyDown(object sender, KeyEventArgs e) { if (e.Key == Key.Enter) PerformSearch(TxtSearch.Text); }
+        
+        // 버튼 클릭 이벤트 연결
+        private void BtnSearch_Click(object sender, RoutedEventArgs e) => PerformSearch(TxtSearch.Text, true);
+        private void BtnPrevSearch_Click(object sender, RoutedEventArgs e) => NavigateSearchResult(false);
+        private void BtnNextSearch_Click(object sender, RoutedEventArgs e) => NavigateSearchResult(true);
 
-        private void PerformSearch(string query)
+        // 엔터키 처리 로직 개선
+        private void TxtSearch_KeyDown(object sender, KeyEventArgs e) 
+        { 
+            if (e.Key == Key.Enter) 
+            {
+                // Shift 키가 눌려있으면 이전 찾기, 아니면 다음 찾기
+                bool isShift = (Keyboard.Modifiers & ModifierKeys.Shift) == ModifierKeys.Shift;
+                
+                // 검색어가 바뀌었거나 아직 검색 결과가 없다면 새로 검색
+                if (TxtSearch.Text != _lastSearchQuery || _searchResults.Count == 0)
+                {
+                    PerformSearch(TxtSearch.Text, true); 
+                }
+                else
+                {
+                    // 이미 검색된 상태라면 이동만 수행
+                    NavigateSearchResult(!isShift);
+                }
+            }
+        }
+
+        private void PerformSearch(string query, bool resetIndex)
         {
             if (_docReader == null || string.IsNullOrWhiteSpace(query)) return;
-            
-            // 기존 검색 결과 제거 (선택 사항)
+
+            // 같은 검색어라도 명시적 검색 버튼 클릭 시 초기화
+            _lastSearchQuery = query;
+            _searchResults.Clear();
+
+            // 기존 검색 결과 UI 제거
             foreach (var p in Pages) 
             {
                 var toRemove = p.Annotations.Where(a => a.SearchResultId != -1).ToList();
                 foreach(var item in toRemove) p.Annotations.Remove(item);
             }
 
-            int matchCount = 0;
-            int firstPage = -1;
-            int pageCount = _docReader.GetPageCount();
             int globalSearchId = 0;
+            int pageCount = _docReader.GetPageCount();
 
             for (int i = 0; i < pageCount; i++)
             {
@@ -350,39 +382,92 @@ namespace MinsPDFViewer
                     string text = r.GetText();
                     var chars = r.GetCharacters().ToList();
                     int idx = 0;
+
                     while ((idx = text.IndexOf(query, idx, StringComparison.OrdinalIgnoreCase)) != -1)
                     {
-                        if(firstPage == -1) firstPage = i;
-                        
                         double minX = double.MaxValue, minY = double.MaxValue;
                         double maxX = double.MinValue, maxY = double.MinValue;
                         
-                        for(int c=0; c<query.Length; c++)
+                        for(int c = 0; c < query.Length; c++)
                         {
-                            if(idx+c < chars.Count)
+                            if(idx + c < chars.Count)
                             {
-                                var b = chars[idx+c].Box;
+                                var b = chars[idx + c].Box;
                                 minX = Math.Min(minX, b.Left); minY = Math.Min(minY, b.Top);
                                 maxX = Math.Max(maxX, b.Right); maxY = Math.Max(maxY, b.Bottom);
                             }
                         }
                         
-                        Pages[i].Annotations.Add(new PdfAnnotation 
+                        // 주석 객체 생성
+                        var annotation = new PdfAnnotation 
                         { 
-                            X=minX, Y=minY, Width=maxX-minX, Height=maxY-minY,
-                            Background = new SolidColorBrush(Color.FromArgb(60, 0, 255, 255)), // Cyan 검색 하이라이트
+                            X = minX, Y = minY, Width = maxX - minX, Height = maxY - minY,
+                            Background = new SolidColorBrush(Color.FromArgb(60, 0, 255, 255)), // 기본 Cyan
                             SearchResultId = globalSearchId
-                        });
+                        };
+
+                        // 페이지에 추가
+                        Pages[i].Annotations.Add(annotation);
                         
-                        matchCount++;
+                        // 네비게이션용 리스트에 보관
+                        _searchResults.Add(annotation);
+
                         globalSearchId++;
                         idx += query.Length;
                     }
                 }
             }
-            if(firstPage != -1) PdfListView.ScrollIntoView(Pages[firstPage]);
-            TxtStatus.Text = $"검색: {matchCount}건";
+
+            if (_searchResults.Count > 0)
+            {
+                _currentSearchIndex = -1; // 초기화
+                NavigateSearchResult(true); // 첫 번째 결과로 이동
+            }
+            else
+            {
+                TxtStatus.Text = "검색 결과 없음";
+            }
         }
+
+        // 다음/이전 결과로 이동하는 메서드
+        private void NavigateSearchResult(bool isNext)
+        {
+            if (_searchResults.Count == 0) return;
+
+            // 1. 이전 하이라이트 색상 복구 (선택 해제 느낌)
+            if (_currentSearchIndex >= 0 && _currentSearchIndex < _searchResults.Count)
+            {
+                _searchResults[_currentSearchIndex].Background = new SolidColorBrush(Color.FromArgb(60, 0, 255, 255)); // Cyan
+            }
+
+            // 2. 인덱스 계산
+            if (isNext)
+            {
+                _currentSearchIndex++;
+                if (_currentSearchIndex >= _searchResults.Count) _currentSearchIndex = 0; // 루프
+            }
+            else
+            {
+                _currentSearchIndex--;
+                if (_currentSearchIndex < 0) _currentSearchIndex = _searchResults.Count - 1; // 루프
+            }
+
+            // 3. 현재 하이라이트 색상 변경 (강조)
+            var currentAnnotation = _searchResults[_currentSearchIndex];
+            currentAnnotation.Background = new SolidColorBrush(Color.FromArgb(120, 255, 0, 255)); // Magenta (진하게)
+
+            // 4. 해당 페이지로 스크롤 이동
+            // 현재 Annotation이 속한 페이지 찾기
+            var targetPage = Pages.FirstOrDefault(p => p.Annotations.Contains(currentAnnotation));
+            if (targetPage != null)
+            {
+                PdfListView.ScrollIntoView(targetPage);
+            }
+
+            // 5. 상태 표시
+            TxtStatus.Text = $"검색: {_currentSearchIndex + 1} / {_searchResults.Count}";
+        }
+    
 
         // --- 뷰어 줌/맞춤 ---
         private void PdfListView_PreviewMouseWheel(object sender, MouseWheelEventArgs e)

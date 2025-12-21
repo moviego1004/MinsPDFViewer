@@ -63,7 +63,9 @@
                 <RadioButton Name="RbText" Content="텍스트" GroupName="Tools" Click="Tool_Click" Margin="5,0"/>
 
                 <Separator Style="{StaticResource {x:Static ToolBar.SeparatorStyleKey}}" Margin="10,0"/>
-                <TextBox Name="TxtSearch" Width="150" VerticalContentAlignment="Center" Margin="0,0,5,0" KeyDown="TxtSearch_KeyDown"/>
+                <TextBox Name="TxtSearch" Width="150" VerticalContentAlignment="Center" Margin="0,0,2,0" KeyDown="TxtSearch_KeyDown"/>
+                <Button Content="<" Width="20" Click="BtnPrevSearch_Click" ToolTip="이전 찾기 (Shift+Enter)" Margin="0,0,1,0"/>
+                <Button Content=">" Width="20" Click="BtnNextSearch_Click" ToolTip="다음 찾기 (Enter)" Margin="0,0,5,0"/>
                 <Button Name="BtnSearch" Content="🔍 검색" Width="50" Click="BtnSearch_Click"/>
                 <TextBlock Name="TxtStatus" VerticalAlignment="Center" Margin="10,0,0,0" Foreground="Gray"/>
             </StackPanel>
