@@ -20,23 +20,23 @@
                     <DropShadowEffect BlurRadius="10" ShadowDepth="2" Opacity="0.3"/>
                 </Border.Effect>
                 <StackPanel Orientation="Horizontal">
-                    <Button Click="BtnPopupCopy_Click" Background="Transparent" BorderThickness="0" ToolTip="복사" Margin="2">
+                    <Button Click="BtnPopupCopy_Click" Background="Transparent" BorderThickness="0" ToolTip="텍스트 복사" Margin="2">
                         <StackPanel Orientation="Horizontal">
-                            <TextBlock Text="📄 복사" FontSize="12" VerticalAlignment="Center"/>
+                            <TextBlock Text="📄 텍스트" FontSize="12" VerticalAlignment="Center"/>
                         </StackPanel>
                     </Button>
-                    
+                    <Button Click="BtnPopupCopyImage_Click" Background="Transparent" BorderThickness="0" ToolTip="선택 영역 이미지 복사" Margin="2">
+                        <StackPanel Orientation="Horizontal">
+                            <TextBlock Text="📷 이미지" FontSize="12" VerticalAlignment="Center"/>
+                        </StackPanel>
+                    </Button>
                     <Separator Style="{StaticResource {x:Static ToolBar.SeparatorStyleKey}}"/>
-                    
                     <Button Click="BtnPopupHighlightGreen_Click" Background="Transparent" BorderThickness="0" ToolTip="초록 형광펜" Margin="2">
                         <Border Width="16" Height="16" Background="#00FF00" CornerRadius="2" BorderBrush="Gray" BorderThickness="1"/>
                     </Button>
                     <Button Click="BtnPopupHighlightOrange_Click" Background="Transparent" BorderThickness="0" ToolTip="주황 형광펜" Margin="2">
                         <Border Width="16" Height="16" Background="#FFA500" CornerRadius="2" BorderBrush="Gray" BorderThickness="1"/>
                     </Button>
-                    
-                    <Separator Style="{StaticResource {x:Static ToolBar.SeparatorStyleKey}}"/>
-                    
                     <Button Click="BtnPopupUnderline_Click" Background="Transparent" BorderThickness="0" ToolTip="밑줄" Margin="2">
                         <TextBlock Text="U" FontWeight="Bold" TextDecorations="Underline" HorizontalAlignment="Center"/>
                     </Button>
@@ -67,11 +67,17 @@
 
                 <Separator Style="{StaticResource {x:Static ToolBar.SeparatorStyleKey}}" Margin="10,0"/>
                 
-                <TextBox Name="TxtSearch" Width="150" VerticalContentAlignment="Center" Margin="0,0,2,0" KeyDown="TxtSearch_KeyDown"/>
+                <Button Name="BtnOCR" Content="✨ OCR 실행" Click="BtnOCR_Click" Width="80" Background="#E0FFE0" Margin="0,0,10,0"/>
+
+                <TextBox Name="TxtSearch" Width="120" VerticalContentAlignment="Center" Margin="0,0,2,0" KeyDown="TxtSearch_KeyDown"/>
                 <Button Content="&lt;" Width="20" Click="BtnPrevSearch_Click" ToolTip="이전 찾기 (Shift+Enter)" Margin="0,0,1,0"/>
                 <Button Content="&gt;" Width="20" Click="BtnNextSearch_Click" ToolTip="다음 찾기 (Enter)" Margin="0,0,5,0"/>
-                <Button Name="BtnSearch" Content="🔍 검색" Width="50" Click="BtnSearch_Click"/>
-                <TextBlock Name="TxtStatus" VerticalAlignment="Center" Margin="10,0,0,0" Foreground="Gray"/>
+                <Button Name="BtnSearch" Content="🔍" Width="30" Click="BtnSearch_Click"/>
+                
+                <Grid Margin="10,0,0,0" Width="200" VerticalAlignment="Center">
+                    <ProgressBar Name="PbStatus" Height="15" Visibility="Collapsed" Minimum="0" Maximum="100"/>
+                    <TextBlock Name="TxtStatus" Text="준비" VerticalAlignment="Center" HorizontalAlignment="Left" Foreground="Gray"/>
+                </Grid>
             </StackPanel>
         </Border>
 
