@@ -4,6 +4,7 @@ using Docnet.Core.Models;
 using Docnet.Core.Readers;
 using PdfSharp.Pdf;
 using PdfSharp.Pdf.IO;
+using PdfSharp.Pdf.Annotations;
 using PdfSharp.Drawing;
 using System;
 using System.IO;
@@ -21,6 +22,15 @@ using System.Text;
 
 namespace MinsPDFViewer
 {
+    // [ViewModel] 주석 타입 열거형
+    public enum AnnotationType
+    {
+        Highlight,
+        Underline,
+        SearchHighlight, 
+        Other
+    }
+
     // [ViewModel] 주석
     public class PdfAnnotation : INotifyPropertyChanged
     {
@@ -29,7 +39,6 @@ namespace MinsPDFViewer
         public double Width { get; set; }
         public double Height { get; set; }
         
-        // 스타일
         private Brush _background = Brushes.Transparent;
         public Brush Background { get => _background; set { _background = value; OnPropertyChanged(nameof(Background)); } }
         
@@ -39,16 +48,11 @@ namespace MinsPDFViewer
         private Thickness _borderThickness = new Thickness(0);
         public Thickness BorderThickness { get => _borderThickness; set { _borderThickness = value; OnPropertyChanged(nameof(BorderThickness)); } }
 
-        // 데이터
         public string TextContent { get; set; } = "";
         public bool HasText => !string.IsNullOrEmpty(TextContent);
-        public int SearchResultId { get; set; } = -1;
-
-        // [검색 기능 확장 변수]
-        private List<PdfAnnotation> _searchResults = new List<PdfAnnotation>(); // 검색된 모든 주석 리스트
-        private int _currentSearchIndex = -1; // 현재 포커스된 검색 결과 인덱스
-        private string _lastSearchQuery = ""; // 마지막 검색어
-
+        
+        public AnnotationType Type { get; set; } = AnnotationType.Other;
+        public Color AnnotationColor { get; set; } = Colors.Transparent;
 
         public event PropertyChangedEventHandler? PropertyChanged;
         protected void OnPropertyChanged(string name) => PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));
@@ -66,15 +70,29 @@ namespace MinsPDFViewer
 
         public ObservableCollection<PdfAnnotation> Annotations { get; set; } = new ObservableCollection<PdfAnnotation>();
 
-        // 드래그 선택 박스
         private bool _isSelecting;
         public bool IsSelecting { get => _isSelecting; set { _isSelecting = value; OnPropertyChanged(nameof(IsSelecting)); } }
 
-        private Rect _selectionRect;
-        public Rect SelectionRect { get => _selectionRect; set { _selectionRect = value; OnPropertyChanged(nameof(SelectionRect)); } }
+        private double _selX;
+        public double SelectionX { get => _selX; set { _selX = value; OnPropertyChanged(nameof(SelectionX)); } }
+
+        private double _selY;
+        public double SelectionY { get => _selY; set { _selY = value; OnPropertyChanged(nameof(SelectionY)); } }
+
+        private double _selW;
+        public double SelectionWidth { get => _selW; set { _selW = value; OnPropertyChanged(nameof(SelectionWidth)); } }
+
+        private double _selH;
+        public double SelectionHeight { get => _selH; set { _selH = value; OnPropertyChanged(nameof(SelectionHeight)); } }
 
         public event PropertyChangedEventHandler? PropertyChanged;
         protected void OnPropertyChanged(string name) => PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));
+    }
+
+    // PDFsharp 6.x 호환용 커스텀 어노테이션
+    public class CustomPdfAnnotation : PdfSharp.Pdf.Annotations.PdfAnnotation
+    {
+        public CustomPdfAnnotation(PdfDocument document) : base(document) { }
     }
 
     public partial class MainWindow : Window
@@ -83,22 +101,23 @@ namespace MinsPDFViewer
         private IDocReader? _docReader;
         public ObservableCollection<PdfPageViewModel> Pages { get; set; } = new ObservableCollection<PdfPageViewModel>();
         
-        // [중요] 1.0 배율 고정 (좌표 정확도)
         private double _renderScale = 1.0; 
         private double _currentZoom = 1.0;
-        
-        // [수정됨] 누락되었던 파일 경로 변수 추가
         private string _currentFilePath = "";
 
-        // 드래그 상태
         private Point _dragStartPoint;
-        private int _activePageIndex = -1; // 현재 드래그 중인 페이지
+        private int _activePageIndex = -1; 
         private string _selectedTextBuffer = "";
         private List<Docnet.Core.Models.Character> _selectedChars = new List<Docnet.Core.Models.Character>();
-        private int _selectedPageIndex = -1; // 팝업 액션을 위한 페이지 인덱스
+        private int _selectedPageIndex = -1; 
 
-        // 도구 상태
         private string _currentTool = "CURSOR"; 
+
+        private List<PdfAnnotation> _searchResults = new List<PdfAnnotation>();
+        private int _currentSearchIndex = -1;
+        private string _lastSearchQuery = "";
+
+        private byte[] _originalFileBytes = Array.Empty<byte>();
 
         public MainWindow()
         {
@@ -117,29 +136,95 @@ namespace MinsPDFViewer
         {
             try
             {
-                _docReader?.Dispose();
-                _docReader = _docLib.GetDocReader(path, new PageDimensions(_renderScale));
-                
-                // [수정됨] 파일 경로 저장
-                _currentFilePath = path; 
+                _currentFilePath = path;
+                _originalFileBytes = File.ReadAllBytes(path);
 
                 Pages.Clear();
-                int pageCount = _docReader.GetPageCount();
-                TxtStatus.Text = $"총 {pageCount} 페이지 로딩 중...";
 
-                for (int i = 0; i < pageCount; i++)
+                using (var msInput = new MemoryStream(_originalFileBytes))
+                using (var pdfDoc = PdfReader.Open(msInput, PdfDocumentOpenMode.Modify))
                 {
-                    using (var r = _docReader.GetPageReader(i))
+                    int pageCount = pdfDoc.PageCount;
+                    
+                    for (int i = 0; i < pageCount; i++)
                     {
-                        Pages.Add(new PdfPageViewModel 
-                        { 
-                            PageIndex = i, 
-                            Width = r.GetPageWidth(), 
-                            Height = r.GetPageHeight() 
-                        });
+                        var pdfPage = pdfDoc.Pages[i];
+                        double w = pdfPage.Width.Point;
+                        double h = pdfPage.Height.Point;
+
+                        var pageVM = new PdfPageViewModel { PageIndex = i, Width = w, Height = h };
+                        Pages.Add(pageVM);
+
+                        if (pdfPage.Annotations != null && pdfPage.Annotations.Count > 0)
+                        {
+                            var annotationsToRemove = new List<PdfSharp.Pdf.Annotations.PdfAnnotation>();
+
+                            foreach (var item in pdfPage.Annotations)
+                            {
+                                var annot = item as PdfSharp.Pdf.Annotations.PdfAnnotation;
+                                if (annot == null) continue;
+
+                                var subType = annot.Elements.GetString("/Subtype");
+
+                                if (subType == "/Highlight" || subType == "/Underline")
+                                {
+                                    var rect = annot.Rectangle;
+                                    double pW = rect.Width;
+                                    double pH = rect.Height;
+                                    double pX = rect.X1; 
+                                    double pY = h - rect.Y2; 
+
+                                    var newAnnot = new PdfAnnotation
+                                    {
+                                        X = pX, Y = pY, Width = pW, Height = pH,
+                                        Type = (subType == "/Highlight") ? AnnotationType.Highlight : AnnotationType.Underline,
+                                    };
+
+                                    Color c = Colors.Yellow; 
+                                    var colorItem = annot.Elements["/C"]; 
+                                    if (colorItem is PdfSharp.Pdf.PdfArray arr && arr.Elements.Count >= 3)
+                                    {
+                                        byte r = (byte)(arr.Elements.GetReal(0) * 255);
+                                        byte g = (byte)(arr.Elements.GetReal(1) * 255);
+                                        byte b = (byte)(arr.Elements.GetReal(2) * 255);
+                                        c = Color.FromRgb(r, g, b);
+                                    }
+                                    newAnnot.AnnotationColor = c;
+
+                                    if (newAnnot.Type == AnnotationType.Highlight)
+                                    {
+                                        newAnnot.Background = new SolidColorBrush(Color.FromArgb(80, c.R, c.G, c.B));
+                                    }
+                                    else 
+                                    {
+                                        newAnnot.Background = new SolidColorBrush(c);
+                                        newAnnot.Height = 2; 
+                                        newAnnot.Y = pY + pH - 2; 
+                                    }
+
+                                    pageVM.Annotations.Add(newAnnot);
+                                    annotationsToRemove.Add(annot);
+                                }
+                            }
+
+                            foreach(var annot in annotationsToRemove)
+                            {
+                                pdfPage.Annotations.Remove(annot);
+                            }
+                        }
+                    }
+
+                    using (var msClean = new MemoryStream())
+                    {
+                        pdfDoc.Save(msClean);
+                        msClean.Position = 0;
+                        byte[] cleanBytes = msClean.ToArray(); 
+                        _docReader?.Dispose();
+                        _docReader = _docLib.GetDocReader(cleanBytes, new PageDimensions(_renderScale));
                     }
                 }
-                Task.Run(() => RenderAllPagesAsync(pageCount));
+
+                Task.Run(() => RenderAllPagesAsync(Pages.Count));
                 FitWidth();
             }
             catch (Exception ex) { MessageBox.Show($"열기 실패: {ex.Message}"); }
@@ -157,8 +242,11 @@ namespace MinsPDFViewer
                     var h = r.GetPageHeight();
                     Application.Current.Dispatcher.Invoke(() =>
                     {
-                        var img = RawBytesToBitmapImage(bytes, w, h);
-                        if (i < Pages.Count) Pages[i].ImageSource = img;
+                        if (i < Pages.Count)
+                        {
+                            var img = RawBytesToBitmapImage(bytes, w, h);
+                            Pages[i].ImageSource = img;
+                        }
                     });
                 }
             });
@@ -166,34 +254,44 @@ namespace MinsPDFViewer
         }
 
         // =========================================================
-        // [드래그 및 선택 로직] (연속 페이지 지원)
+        // [드래그 선택 로직]
         // =========================================================
         private void Page_MouseDown(object sender, MouseButtonEventArgs e)
         {
+            if (_currentTool != "CURSOR") return;
+
             var canvas = sender as Canvas;
             if (canvas == null) return;
 
-            // 다른 페이지의 선택 초기화
-            foreach (var p in Pages) { p.IsSelecting = false; p.SelectionRect = new Rect(0,0,0,0); }
+            foreach (var p in Pages) 
+            { 
+                p.IsSelecting = false; 
+                p.SelectionWidth = 0; 
+                p.SelectionHeight = 0;
+            }
             SelectionPopup.IsOpen = false;
 
-            _activePageIndex = (int)canvas.Tag; // 이벤트가 발생한 페이지 식별
+            _activePageIndex = (int)canvas.Tag; 
             _dragStartPoint = e.GetPosition(canvas);
             
-            if (_currentTool == "CURSOR")
-            {
-                var pageVM = Pages[_activePageIndex];
-                pageVM.IsSelecting = true;
-                pageVM.SelectionRect = new Rect(_dragStartPoint, new Size(0, 0));
-                canvas.CaptureMouse();
-            }
+            var pageVM = Pages[_activePageIndex];
+            pageVM.IsSelecting = true;
+            pageVM.SelectionX = _dragStartPoint.X;
+            pageVM.SelectionY = _dragStartPoint.Y;
+            pageVM.SelectionWidth = 0;
+            pageVM.SelectionHeight = 0;
+            
+            canvas.CaptureMouse();
+            e.Handled = true; // 리스트뷰 간섭 방지
+            
+            TxtStatus.Text = $"드래그 시작: {_activePageIndex + 1} 페이지";
         }
 
         private void Page_MouseMove(object sender, MouseEventArgs e)
         {
             if (_activePageIndex == -1) return;
             var canvas = sender as Canvas;
-            if (canvas == null || !canvas.IsMouseCaptured) return;
+            if (canvas == null) return;
 
             var currentPoint = e.GetPosition(canvas);
             var pageVM = Pages[_activePageIndex];
@@ -203,7 +301,12 @@ namespace MinsPDFViewer
             double w = Math.Abs(currentPoint.X - _dragStartPoint.X);
             double h = Math.Abs(currentPoint.Y - _dragStartPoint.Y);
 
-            pageVM.SelectionRect = new Rect(x, y, w, h);
+            pageVM.SelectionX = x;
+            pageVM.SelectionY = y;
+            pageVM.SelectionWidth = w;
+            pageVM.SelectionHeight = h;
+            
+            TxtStatus.Text = $"선택 중.. W:{Math.Round(w)}, H:{Math.Round(h)}";
         }
 
         private void Page_MouseUp(object sender, MouseButtonEventArgs e)
@@ -214,29 +317,38 @@ namespace MinsPDFViewer
             canvas.ReleaseMouseCapture();
             var pageVM = Pages[_activePageIndex];
             
-            // 드래그 종료
             if (pageVM.IsSelecting)
             {
-                if (pageVM.SelectionRect.Width > 5 && pageVM.SelectionRect.Height > 5)
+                if (pageVM.SelectionWidth > 5 && pageVM.SelectionHeight > 5)
                 {
-                    // 텍스트 선택 판정
-                    CheckTextInSelection(_activePageIndex, pageVM.SelectionRect);
+                    var uiRect = new Rect(pageVM.SelectionX, pageVM.SelectionY, pageVM.SelectionWidth, pageVM.SelectionHeight);
+                    CheckTextInSelection(_activePageIndex, uiRect);
+                    
                     if (_selectedChars.Count > 0)
                     {
+                        // 팝업 위치 설정
+                        SelectionPopup.PlacementTarget = canvas;
+                        SelectionPopup.PlacementRectangle = new Rect(e.GetPosition(canvas).X, e.GetPosition(canvas).Y + 10, 0, 0);
                         SelectionPopup.IsOpen = true;
+                        
                         _selectedPageIndex = _activePageIndex;
+                        TxtStatus.Text = $"텍스트 선택됨: {_selectedChars.Count}자";
                     }
                     else
                     {
-                        pageVM.IsSelecting = false; // 텍스트 없으면 박스 끄기
+                        pageVM.IsSelecting = false; 
+                        TxtStatus.Text = "선택된 텍스트 없음";
                     }
                 }
                 else
                 {
                     pageVM.IsSelecting = false;
+                    TxtStatus.Text = "준비";
                 }
             }
+            
             _activePageIndex = -1;
+            e.Handled = true;
         }
 
         private void CheckTextInSelection(int pageIndex, Rect uiRect)
@@ -247,13 +359,18 @@ namespace MinsPDFViewer
 
             using (var reader = _docReader.GetPageReader(pageIndex))
             {
-                // _renderScale = 1.0 이므로 좌표 변환 불필요
                 var chars = reader.GetCharacters().ToList();
                 var sb = new StringBuilder();
 
                 foreach (var c in chars)
                 {
-                    var charRect = new Rect(c.Box.Left, c.Box.Top, c.Box.Right - c.Box.Left, c.Box.Bottom - c.Box.Top);
+                    double cLeft = Math.Min(c.Box.Left, c.Box.Right);
+                    double cRight = Math.Max(c.Box.Left, c.Box.Right);
+                    double cTop = Math.Min(c.Box.Top, c.Box.Bottom);
+                    double cBottom = Math.Max(c.Box.Top, c.Box.Bottom);
+                    
+                    var charRect = new Rect(cLeft, cTop, cRight - cLeft, cBottom - cTop);
+                    
                     if (uiRect.IntersectsWith(charRect))
                     {
                         _selectedChars.Add(c);
@@ -264,9 +381,6 @@ namespace MinsPDFViewer
             }
         }
 
-        // =========================================================
-        // [팝업 액션]
-        // =========================================================
         private void BtnPopupCopy_Click(object sender, RoutedEventArgs e)
         {
             if (!string.IsNullOrEmpty(_selectedTextBuffer))
@@ -277,47 +391,55 @@ namespace MinsPDFViewer
             CloseSelection();
         }
 
-        private void BtnPopupHighlightYellow_Click(object sender, RoutedEventArgs e) => AddAnnotation(Colors.Yellow, false);
-        private void BtnPopupHighlightOrange_Click(object sender, RoutedEventArgs e) => AddAnnotation(Colors.Orange, false);
-        private void BtnPopupHighlightPurple_Click(object sender, RoutedEventArgs e) => AddAnnotation(Color.FromRgb(200, 130, 255), false);
-        private void BtnPopupUnderline_Click(object sender, RoutedEventArgs e) => AddAnnotation(Colors.Black, true);
+        private void BtnPopupHighlightGreen_Click(object sender, RoutedEventArgs e) => AddAnnotation(Colors.Lime, AnnotationType.Highlight);
+        private void BtnPopupHighlightOrange_Click(object sender, RoutedEventArgs e) => AddAnnotation(Colors.Orange, AnnotationType.Highlight);
+        private void BtnPopupUnderline_Click(object sender, RoutedEventArgs e) => AddAnnotation(Colors.Black, AnnotationType.Underline);
 
-        private void AddAnnotation(Color color, bool isUnderline)
+        private void AddAnnotation(Color color, AnnotationType type)
         {
             if (_selectedPageIndex == -1 || _selectedChars.Count == 0) return;
             var pageVM = Pages[_selectedPageIndex];
 
-            // 선택된 글자들의 Union Box 계산
             double minX = double.MaxValue, minY = double.MaxValue;
             double maxX = double.MinValue, maxY = double.MinValue;
 
             foreach (var c in _selectedChars)
             {
-                minX = Math.Min(minX, c.Box.Left);
-                minY = Math.Min(minY, c.Box.Top);
-                maxX = Math.Max(maxX, c.Box.Right);
-                maxY = Math.Max(maxY, c.Box.Bottom);
+                double cLeft = Math.Min(c.Box.Left, c.Box.Right);
+                double cRight = Math.Max(c.Box.Left, c.Box.Right);
+                double cTop = Math.Min(c.Box.Top, c.Box.Bottom);
+                double cBottom = Math.Max(c.Box.Top, c.Box.Bottom);
+
+                minX = Math.Min(minX, cLeft);
+                minY = Math.Min(minY, cTop);
+                maxX = Math.Max(maxX, cRight);
+                maxY = Math.Max(maxY, cBottom);
             }
 
             double w = maxX - minX;
             double h = maxY - minY;
 
-            if (isUnderline)
+            var annot = new PdfAnnotation
             {
-                pageVM.Annotations.Add(new PdfAnnotation
-                {
-                    X = minX, Y = minY + h - 2, Width = w, Height = 2,
-                    Background = new SolidColorBrush(color)
-                });
-            }
-            else
+                X = minX, Y = minY, Width = w, Height = h,
+                Type = type,
+                AnnotationColor = color
+            };
+
+            if (type == AnnotationType.Highlight)
             {
-                pageVM.Annotations.Add(new PdfAnnotation
-                {
-                    X = minX, Y = minY, Width = w, Height = h,
-                    Background = new SolidColorBrush(Color.FromArgb(80, color.R, color.G, color.B))
-                });
+                annot.Background = new SolidColorBrush(Color.FromArgb(80, color.R, color.G, color.B));
             }
+            else if (type == AnnotationType.Underline)
+            {
+                annot.X = minX; 
+                annot.Y = minY + h - 2; 
+                annot.Width = w; 
+                annot.Height = 2;
+                annot.Background = new SolidColorBrush(color);
+            }
+
+            pageVM.Annotations.Add(annot);
             CloseSelection();
         }
 
@@ -327,52 +449,158 @@ namespace MinsPDFViewer
             foreach (var p in Pages) p.IsSelecting = false;
         }
 
+        private void BtnDeleteAnnotation_Click(object sender, RoutedEventArgs e)
+        {
+            var menuItem = sender as MenuItem;
+            if (menuItem != null && menuItem.CommandParameter is PdfAnnotation annot)
+            {
+                foreach(var page in Pages)
+                {
+                    if (page.Annotations.Contains(annot))
+                    {
+                        page.Annotations.Remove(annot);
+                        break;
+                    }
+                }
+            }
+        }
+
         // =========================================================
-        // [검색 및 줌 기능] 수정됨
+        // [저장 로직 개선]
         // =========================================================
         
-        // 버튼 클릭 이벤트 연결
+        // 1. 단순 저장 (덮어쓰기)
+        private void BtnSave_Click(object sender, RoutedEventArgs e)
+        {
+            if (string.IsNullOrEmpty(_currentFilePath)) return;
+            SavePdf(_currentFilePath);
+        }
+
+        // 2. 다른 이름으로 저장
+        private void BtnSaveAs_Click(object sender, RoutedEventArgs e)
+        {
+            if (string.IsNullOrEmpty(_currentFilePath)) return;
+
+            var dlg = new SaveFileDialog 
+            { 
+                Filter = "PDF Files|*.pdf", 
+                FileName = Path.GetFileNameWithoutExtension(_currentFilePath) + "_copy" 
+            };
+            
+            if (dlg.ShowDialog() == true)
+            {
+                SavePdf(dlg.FileName);
+                
+                // 저장 후 현재 작업 파일 변경 (선택 사항, 여기서는 변경함)
+                _currentFilePath = dlg.FileName;
+            }
+        }
+
+        // 3. 공통 저장 메서드
+        private void SavePdf(string savePath)
+        {
+            try
+            {
+                // 원본 바이트 기반으로 문서 열기
+                using (var ms = new MemoryStream(_originalFileBytes))
+                using (var doc = PdfReader.Open(ms, PdfDocumentOpenMode.Modify))
+                {
+                    for (int i = 0; i < doc.PageCount && i < Pages.Count; i++)
+                    {
+                        var pdfPage = doc.Pages[i];
+                        var pageVM = Pages[i];
+                        double pageH = pdfPage.Height.Point;
+
+                        // 기존 주석 정리 (중복 방지)
+                        if (pdfPage.Annotations != null && pdfPage.Annotations.Count > 0)
+                        {
+                            var toRemove = new List<PdfSharp.Pdf.Annotations.PdfAnnotation>();
+                            foreach (var item in pdfPage.Annotations)
+                            {
+                                var annot = item as PdfSharp.Pdf.Annotations.PdfAnnotation;
+                                if (annot == null) continue;
+
+                                var subType = annot.Elements.GetString("/Subtype");
+                                if (subType == "/Highlight" || subType == "/Underline")
+                                {
+                                    toRemove.Add(annot);
+                                }
+                            }
+                            foreach (var annot in toRemove) pdfPage.Annotations.Remove(annot);
+                        }
+
+                        // ViewModel 주석 추가
+                        foreach (var ann in pageVM.Annotations)
+                        {
+                            if (ann.Type == AnnotationType.SearchHighlight || ann.Type == AnnotationType.Other) continue;
+
+                            double pdfX = ann.X;
+                            double pdfY = 0;
+                            double pdfW = ann.Width;
+                            double pdfH = ann.Height;
+
+                            if (ann.Type == AnnotationType.Underline)
+                            {
+                                pdfH = 10; 
+                                pdfY = pageH - (ann.Y - pdfH + 2); 
+                            }
+                            else
+                            {
+                                pdfY = pageH - (ann.Y + ann.Height);
+                            }
+
+                            var pdfAnnot = new CustomPdfAnnotation(doc);
+                            
+                            pdfAnnot.Rectangle = new PdfRectangle(new XRect(pdfX, pdfY, pdfW, pdfH));
+
+                            string subtype = (ann.Type == AnnotationType.Highlight) ? "/Highlight" : "/Underline";
+                            pdfAnnot.Elements.SetName("/Subtype", subtype);
+
+                            double r = ann.AnnotationColor.R / 255.0;
+                            double g = ann.AnnotationColor.G / 255.0;
+                            double b = ann.AnnotationColor.B / 255.0;
+                            pdfAnnot.Elements["/C"] = new PdfArray(doc, new PdfReal(r), new PdfReal(g), new PdfReal(b));
+                            
+                            pdfPage.Annotations.Add(pdfAnnot);
+                        }
+                    }
+                    doc.Save(savePath);
+                }
+                MessageBox.Show($"저장 완료: {savePath}");
+            }
+            catch (Exception ex) { MessageBox.Show($"저장 실패: {ex.Message}"); }
+        }
+
+        // =========================================================
+        // [검색 및 기타 기능]
+        // =========================================================
         private void BtnSearch_Click(object sender, RoutedEventArgs e) => PerformSearch(TxtSearch.Text, true);
         private void BtnPrevSearch_Click(object sender, RoutedEventArgs e) => NavigateSearchResult(false);
         private void BtnNextSearch_Click(object sender, RoutedEventArgs e) => NavigateSearchResult(true);
 
-        // 엔터키 처리 로직 개선
-        private void TxtSearch_KeyDown(object sender, KeyEventArgs e) 
-        { 
-            if (e.Key == Key.Enter) 
+        private void TxtSearch_KeyDown(object sender, KeyEventArgs e)
+        {
+            if (e.Key == Key.Enter)
             {
-                // Shift 키가 눌려있으면 이전 찾기, 아니면 다음 찾기
                 bool isShift = (Keyboard.Modifiers & ModifierKeys.Shift) == ModifierKeys.Shift;
-                
-                // 검색어가 바뀌었거나 아직 검색 결과가 없다면 새로 검색
-                if (TxtSearch.Text != _lastSearchQuery || _searchResults.Count == 0)
-                {
-                    PerformSearch(TxtSearch.Text, true); 
-                }
-                else
-                {
-                    // 이미 검색된 상태라면 이동만 수행
-                    NavigateSearchResult(!isShift);
-                }
+                if (TxtSearch.Text != _lastSearchQuery || _searchResults.Count == 0) PerformSearch(TxtSearch.Text, true);
+                else NavigateSearchResult(!isShift);
             }
         }
 
         private void PerformSearch(string query, bool resetIndex)
         {
             if (_docReader == null || string.IsNullOrWhiteSpace(query)) return;
-
-            // 같은 검색어라도 명시적 검색 버튼 클릭 시 초기화
+            
             _lastSearchQuery = query;
             _searchResults.Clear();
 
-            // 기존 검색 결과 UI 제거
             foreach (var p in Pages) 
             {
-                var toRemove = p.Annotations.Where(a => a.SearchResultId != -1).ToList();
+                var toRemove = p.Annotations.Where(a => a.Type == AnnotationType.SearchHighlight).ToList();
                 foreach(var item in toRemove) p.Annotations.Remove(item);
             }
 
-            int globalSearchId = 0;
             int pageCount = _docReader.GetPageCount();
 
             for (int i = 0; i < pageCount; i++)
@@ -382,94 +610,71 @@ namespace MinsPDFViewer
                     string text = r.GetText();
                     var chars = r.GetCharacters().ToList();
                     int idx = 0;
-
                     while ((idx = text.IndexOf(query, idx, StringComparison.OrdinalIgnoreCase)) != -1)
                     {
                         double minX = double.MaxValue, minY = double.MaxValue;
                         double maxX = double.MinValue, maxY = double.MinValue;
                         
-                        for(int c = 0; c < query.Length; c++)
+                        for(int c=0; c<query.Length; c++)
                         {
-                            if(idx + c < chars.Count)
+                            if(idx+c < chars.Count)
                             {
-                                var b = chars[idx + c].Box;
+                                var b = chars[idx+c].Box;
                                 minX = Math.Min(minX, b.Left); minY = Math.Min(minY, b.Top);
                                 maxX = Math.Max(maxX, b.Right); maxY = Math.Max(maxY, b.Bottom);
                             }
                         }
                         
-                        // 주석 객체 생성
                         var annotation = new PdfAnnotation 
                         { 
-                            X = minX, Y = minY, Width = maxX - minX, Height = maxY - minY,
-                            Background = new SolidColorBrush(Color.FromArgb(60, 0, 255, 255)), // 기본 Cyan
-                            SearchResultId = globalSearchId
+                            X=minX, Y=minY, Width=maxX-minX, Height=maxY-minY,
+                            Background = new SolidColorBrush(Color.FromArgb(60, 0, 255, 255)),
+                            Type = AnnotationType.SearchHighlight
                         };
-
-                        // 페이지에 추가
-                        Pages[i].Annotations.Add(annotation);
                         
-                        // 네비게이션용 리스트에 보관
+                        Pages[i].Annotations.Add(annotation);
                         _searchResults.Add(annotation);
 
-                        globalSearchId++;
                         idx += query.Length;
                     }
                 }
             }
-
+            
+            TxtStatus.Text = $"검색: {_searchResults.Count}건";
             if (_searchResults.Count > 0)
             {
-                _currentSearchIndex = -1; // 초기화
-                NavigateSearchResult(true); // 첫 번째 결과로 이동
-            }
-            else
-            {
-                TxtStatus.Text = "검색 결과 없음";
+                _currentSearchIndex = -1;
+                NavigateSearchResult(true);
             }
         }
 
-        // 다음/이전 결과로 이동하는 메서드
         private void NavigateSearchResult(bool isNext)
         {
             if (_searchResults.Count == 0) return;
 
-            // 1. 이전 하이라이트 색상 복구 (선택 해제 느낌)
             if (_currentSearchIndex >= 0 && _currentSearchIndex < _searchResults.Count)
-            {
-                _searchResults[_currentSearchIndex].Background = new SolidColorBrush(Color.FromArgb(60, 0, 255, 255)); // Cyan
-            }
+                _searchResults[_currentSearchIndex].Background = new SolidColorBrush(Color.FromArgb(60, 0, 255, 255));
 
-            // 2. 인덱스 계산
             if (isNext)
             {
                 _currentSearchIndex++;
-                if (_currentSearchIndex >= _searchResults.Count) _currentSearchIndex = 0; // 루프
+                if (_currentSearchIndex >= _searchResults.Count) _currentSearchIndex = 0;
             }
             else
             {
                 _currentSearchIndex--;
-                if (_currentSearchIndex < 0) _currentSearchIndex = _searchResults.Count - 1; // 루프
+                if (_currentSearchIndex < 0) _currentSearchIndex = _searchResults.Count - 1;
             }
 
-            // 3. 현재 하이라이트 색상 변경 (강조)
             var currentAnnotation = _searchResults[_currentSearchIndex];
-            currentAnnotation.Background = new SolidColorBrush(Color.FromArgb(120, 255, 0, 255)); // Magenta (진하게)
+            currentAnnotation.Background = new SolidColorBrush(Color.FromArgb(120, 255, 0, 255));
 
-            // 4. 해당 페이지로 스크롤 이동
-            // 현재 Annotation이 속한 페이지 찾기
             var targetPage = Pages.FirstOrDefault(p => p.Annotations.Contains(currentAnnotation));
-            if (targetPage != null)
-            {
-                PdfListView.ScrollIntoView(targetPage);
-            }
+            if (targetPage != null) PdfListView.ScrollIntoView(targetPage);
 
-            // 5. 상태 표시
             TxtStatus.Text = $"검색: {_currentSearchIndex + 1} / {_searchResults.Count}";
         }
-    
 
-        // --- 뷰어 줌/맞춤 ---
         private void PdfListView_PreviewMouseWheel(object sender, MouseWheelEventArgs e)
         {
             if (Keyboard.Modifiers == ModifierKeys.Control)
@@ -503,7 +708,6 @@ namespace MinsPDFViewer
             if(Pages[0].Height > 0) UpdateZoom(h / Pages[0].Height);
         }
 
-        // 도구 선택 (단순 UI 토글)
         private void Tool_Click(object sender, RoutedEventArgs e)
         {
             if (RbCursor.IsChecked == true) _currentTool = "CURSOR";
@@ -511,53 +715,7 @@ namespace MinsPDFViewer
             else if (RbText.IsChecked == true) _currentTool = "TEXT";
         }
 
-        // 저장 (PdfSharp 연동)
-        private void BtnSave_Click(object sender, RoutedEventArgs e)
-        {
-            if (string.IsNullOrEmpty(_currentFilePath)) return;
-            string savePath = _currentFilePath.Replace(".pdf", "_edited.pdf");
-            try
-            {
-                using (var doc = PdfReader.Open(_currentFilePath, PdfDocumentOpenMode.Modify))
-                {
-                    foreach (var pageVM in Pages)
-                    {
-                        if (pageVM.Annotations.Count == 0) continue;
-                        if (pageVM.PageIndex >= doc.PageCount) continue;
-                        
-                        var page = doc.Pages[pageVM.PageIndex];
-                        using (var gfx = XGraphics.FromPdfPage(page))
-                        {
-                            foreach(var ann in pageVM.Annotations)
-                            {
-                                // 검색 결과는 저장하지 않음 (SearchResultId == -1인 것만 저장)
-                                if (ann.SearchResultId != -1) continue;
-
-                                var rect = new XRect(ann.X, ann.Y, ann.Width, ann.Height);
-                                
-                                if (ann.Background is SolidColorBrush solid)
-                                {
-                                    var c = solid.Color;
-                                    var brush = new XSolidBrush(XColor.FromArgb(c.A, c.R, c.G, c.B));
-                                    gfx.DrawRectangle(brush, rect);
-                                }
-                                if (ann.BorderThickness.Bottom > 0)
-                                {
-                                    gfx.DrawLine(XPens.Black, rect.BottomLeft, rect.BottomRight);
-                                }
-                            }
-                        }
-                    }
-                    doc.Save(savePath);
-                }
-                MessageBox.Show($"저장 완료: {savePath}");
-            }
-            catch (Exception ex) { MessageBox.Show($"저장 실패: {ex.Message}"); }
-        }
-
-        private void Window_KeyDown(object sender, KeyEventArgs e)
-        {
-        }
+        private void Window_KeyDown(object sender, KeyEventArgs e) { }
 
         private BitmapImage RawBytesToBitmapImage(byte[] b, int w, int h)
         {
