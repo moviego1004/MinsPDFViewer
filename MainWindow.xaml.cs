@@ -103,8 +103,7 @@ namespace MinsPDFViewer
         public double PdfPageWidthPoint { get; set; }
         public double PdfPageHeightPoint { get; set; }
 
-        public double CropX { get; set; } = 0;
-        public double CropY { get; set; } = 0;
+        // [수정] 불필요한 보정 속성 제거 (Docnet 좌표 그대로 사용)
         
         private bool _isSelecting;
         public bool IsSelecting { get => _isSelecting; set { _isSelecting = value; OnPropertyChanged(nameof(IsSelecting)); } }
@@ -147,7 +146,7 @@ namespace MinsPDFViewer
         private Point _annotationDragStartOffset;
         private bool _isUpdatingUiFromSelection = false;
 
-        // [추가] 검색 관련 필드
+        // 검색 관련 필드
         private List<PdfAnnotation> _searchResults = new List<PdfAnnotation>();
         private int _currentSearchIndex = -1;
         private string _lastSearchQuery = "";
@@ -187,7 +186,7 @@ namespace MinsPDFViewer
 
         private void BtnOpen_Click(object sender, RoutedEventArgs e) { var dlg = new OpenFileDialog { Filter = "PDF Files|*.pdf" }; if (dlg.ShowDialog() == true) LoadPdf(dlg.FileName); }
         
-         private void LoadPdf(string path)
+        private void LoadPdf(string path)
         {
             try
             {
@@ -197,9 +196,6 @@ namespace MinsPDFViewer
                 var extractedRawData = new Dictionary<int, List<RawAnnotationInfo>>();
                 var pdfPageSizes = new Dictionary<int, XSize>();
                 
-                // [추가] 페이지별 CropBox 오프셋 저장소
-                var pageCropOffsets = new Dictionary<int, Point>(); 
-
                 using (var msInput = new MemoryStream(fileBytes))
                 using (var doc = PdfReader.Open(msInput, PdfDocumentOpenMode.Modify))
                 {
@@ -208,8 +204,7 @@ namespace MinsPDFViewer
                         var page = doc.Pages[i];
                         pdfPageSizes[i] = new XSize(page.Width.Point, page.Height.Point);
                         
-                        // [추가] CropBox의 시작 위치(X, Y)를 저장 (.ToXRect() 추가)
-                        pageCropOffsets[i] = new Point(page.CropBox.ToXRect().X, page.CropBox.ToXRect().Y);
+                        // [수정] 복잡한 CropBox/MediaBox 오프셋 계산 제거 (Docnet 호환성 위해)
 
                         extractedRawData[i] = new List<RawAnnotationInfo>();
                         
@@ -245,7 +240,7 @@ namespace MinsPDFViewer
                         }
                     }
                     var cleanStream = new MemoryStream(); doc.Save(cleanStream);
-                    newDoc.DocReader = _docLib.GetDocReader(cleanStream.ToArray(), new PageDimensions(2.0));
+                    newDoc.DocReader = _docLib.GetDocReader(cleanStream.ToArray(), new PageDimensions(2.0)); // 2.0 배율 렌더링
                 }
 
                 if (newDoc.DocReader != null)
@@ -257,20 +252,18 @@ namespace MinsPDFViewer
                         {
                             double viewW = r.GetPageWidth(); double viewH = r.GetPageHeight();
                             
-                            // [수정] ViewModel 생성 시 CropX, CropY 설정
                             var pvm = new PdfPageViewModel { 
                                 PageIndex = i, Width = viewW, Height = viewH,
                                 PdfPageWidthPoint = pdfPageSizes.ContainsKey(i) ? pdfPageSizes[i].Width : viewW,
-                                PdfPageHeightPoint = pdfPageSizes.ContainsKey(i) ? pdfPageSizes[i].Height : viewH,
-                                // [추가] 저장해둔 오프셋 할당
-                                CropX = pageCropOffsets.ContainsKey(i) ? pageCropOffsets[i].X : 0,
-                                CropY = pageCropOffsets.ContainsKey(i) ? pageCropOffsets[i].Y : 0
+                                PdfPageHeightPoint = pdfPageSizes.ContainsKey(i) ? pdfPageSizes[i].Height : viewH
                             };
 
                             double scaleX = viewW / pvm.PdfPageWidthPoint; double scaleY = viewH / pvm.PdfPageHeightPoint;
 
                             if (extractedRawData.ContainsKey(i)) {
                                 foreach (var raw in extractedRawData[i]) {
+                                    // 기존 주석 처리 (PDFSharp 좌표계는 Bottom-Up이므로 변환 유지)
+                                    // 주의: Docnet 검색 좌표와 PDFSharp 주석 좌표계는 다름
                                     double pdfTopY = raw.Rect.Y + raw.Rect.Height; 
                                     double viewY = (pvm.PdfPageHeightPoint - pdfTopY) * scaleY;
                                     var ann = new PdfAnnotation {
@@ -639,46 +632,40 @@ namespace MinsPDFViewer
             _selectedTextBuffer = sb.ToString(); 
         }
 
-        // [구현] 검색 버튼 클릭
         private void BtnSearch_Click(object sender, RoutedEventArgs e)
         {
             PerformSearch(TxtSearch.Text);
         }
 
-        // [구현] 검색창 엔터키 입력 처리
         private void TxtSearch_KeyDown(object sender, KeyEventArgs e)
         {
             if (e.Key == Key.Enter)
             {
                 if ((Keyboard.Modifiers & ModifierKeys.Shift) == ModifierKeys.Shift)
-                    NavigateSearchResult(false); // Shift + Enter: 이전 찾기
+                    NavigateSearchResult(false); 
                 else
                 {
                     string query = TxtSearch.Text;
                     if (query == _lastSearchQuery && _searchResults.Count > 0)
-                        NavigateSearchResult(true); // 다음 찾기
+                        NavigateSearchResult(true); 
                     else
-                        PerformSearch(query); // 새 검색
+                        PerformSearch(query); 
                 }
                 e.Handled = true;
             }
         }
 
-        // [구현] 이전 찾기
         private void BtnPrevSearch_Click(object sender, RoutedEventArgs e)
         {
             NavigateSearchResult(false);
         }
 
-        // [구현] 다음 찾기
         private void BtnNextSearch_Click(object sender, RoutedEventArgs e)
         {
             NavigateSearchResult(true);
         }
 
-        // [핵심 로직] 검색 수행 (OCR + PDF Text)
-        // [수정] 검색 로직 (좌표 보정 및 스케일링 적용)
-        // [수정] 검색 로직 (좌표 자동 보정 적용)        
+        // [핵심 수정] 좌표잘찾는 로직 적용 (단순화)
         private void PerformSearch(string query)
         {
             if (string.IsNullOrWhiteSpace(query) || SelectedDocument == null) return;
@@ -687,14 +674,12 @@ namespace MinsPDFViewer
             _searchResults.Clear();
             _currentSearchIndex = -1;
 
-            // 1. 기존 하이라이트 제거 (기존 코드 동일)
             foreach (var p in SelectedDocument.Pages)
             {
                 var toRemove = p.Annotations.Where(a => a.Type == AnnotationType.SearchHighlight).ToList();
                 foreach (var r in toRemove) p.Annotations.Remove(r);
             }
 
-            // 2. 검색 수행
             if (SelectedDocument.DocReader != null)
             {
                 for (int i = 0; i < SelectedDocument.Pages.Count; i++)
@@ -702,17 +687,19 @@ namespace MinsPDFViewer
                     var pageVM = SelectedDocument.Pages[i];
                     double scaleX = pageVM.Width / pageVM.PdfPageWidthPoint;
                     double scaleY = pageVM.Height / pageVM.PdfPageHeightPoint;
-
-                    // A. OCR 검색 (이미지 기준이므로 오프셋 보정 불필요)
+                    
+                    // 1. OCR 검색
                     if (pageVM.OcrWords != null)
                     {
                         foreach (var word in pageVM.OcrWords)
                         {
                             if (word.Text.Contains(query, StringComparison.OrdinalIgnoreCase))
                             {
+                                // OCR 좌표는 이미지 상의 좌표이므로 그대로 사용 (Scale만 적용 필요 시 적용하나 보통 이미지 기준)
+                                // OcrEngine의 BoundingBox는 보통 이미지 픽셀 단위
                                 var ann = new PdfAnnotation
                                 {
-                                    X = word.BoundingBox.X,
+                                    X = word.BoundingBox.X, // OCR 엔진이 이미지 좌표를 주므로 Scale 불필요 (이미 PageVM 크기에 맞음)
                                     Y = word.BoundingBox.Y,
                                     Width = word.BoundingBox.Width,
                                     Height = word.BoundingBox.Height,
@@ -725,7 +712,7 @@ namespace MinsPDFViewer
                         }
                     }
 
-                    // B. PDF 텍스트 검색 (PDF 좌표 -> 오프셋 보정 -> View 좌표)
+                    // 2. Docnet 텍스트 검색
                     using (var pageReader = SelectedDocument.DocReader.GetPageReader(i))
                     {
                         string pageText = pageReader.GetText();
@@ -734,8 +721,8 @@ namespace MinsPDFViewer
                         int index = 0;
                         while ((index = pageText.IndexOf(query, index, StringComparison.OrdinalIgnoreCase)) != -1)
                         {
-                            double pdfMinX = double.MaxValue, pdfMaxX = double.MinValue;
-                            double pdfMinY = double.MaxValue, pdfMaxY = double.MinValue;
+                            double minX = double.MaxValue, minY = double.MaxValue;
+                            double maxX = double.MinValue, maxY = double.MinValue;
                             bool found = false;
 
                             for (int c = 0; c < query.Length; c++)
@@ -743,31 +730,31 @@ namespace MinsPDFViewer
                                 if (index + c < chars.Count)
                                 {
                                     var box = chars[index + c].Box;
-                                    pdfMinX = Math.Min(pdfMinX, box.Left);
-                                    pdfMaxX = Math.Max(pdfMaxX, box.Right);
-                                    // Y축: Top/Bottom 중 큰 값이 위쪽(Top)인지 아래쪽인지 PDF 설정에 따름
-                                    // 안전하게 Min/Max로 범위 확보
-                                    double y1 = box.Top; double y2 = box.Bottom;
-                                    pdfMinY = Math.Min(pdfMinY, Math.Min(y1, y2));
-                                    pdfMaxY = Math.Max(pdfMaxY, Math.Max(y1, y2));
+                                    
+                                    // [좌표잘찾는 파일의 핵심 로직] 
+                                    // Docnet은 Top-Left 기준 좌표를 반환하므로 Y반전 없이 그대로 사용
+                                    // Left/Right, Top/Bottom 중 작은/큰 값을 안전하게 추출
+                                    double cLeft = Math.Min(box.Left, box.Right);
+                                    double cRight = Math.Max(box.Left, box.Right);
+                                    double cTop = Math.Min(box.Top, box.Bottom);
+                                    double cBottom = Math.Max(box.Top, box.Bottom);
+
+                                    minX = Math.Min(minX, cLeft);
+                                    minY = Math.Min(minY, cTop);
+                                    maxX = Math.Max(maxX, cRight);
+                                    maxY = Math.Max(maxY, cBottom);
+                                    
                                     found = true;
                                 }
                             }
 
                             if (found)
                             {
-                                // [중요] 오프셋 보정 공식
-                                // View X = (PDF좌표 - CropX) * 배율
-                                double finalX = (pdfMinX - pageVM.CropX) * scaleX;
-                                double finalW = (pdfMaxX - pdfMinX) * scaleX;
-
-                                // View Y (Flip) = ( (CropY + CropHeight) - PDF_Top ) * 배율
-                                // 해석: 페이지 최상단(CropY + Height)에서 글자 상단(pdfMaxY)까지의 거리가 View Y
-                                double finalY = (pageVM.CropY + pageVM.PdfPageHeightPoint - pdfMaxY) * scaleY;
-                                double finalH = (pdfMaxY - pdfMinY) * scaleY;
-
-                                // 높이 최소값 보정
-                                if (finalH < 2) finalH = 15 * scaleY;
+                                // Scale만 적용 (MinsPDFViewer는 2.0배 렌더링 등 확대/축소 지원하므로)
+                                double finalX = minX * scaleX;
+                                double finalY = minY * scaleY;
+                                double finalW = (maxX - minX) * scaleX;
+                                double finalH = (maxY - minY) * scaleY;
 
                                 var ann = new PdfAnnotation
                                 {
@@ -775,7 +762,7 @@ namespace MinsPDFViewer
                                     Y = finalY,
                                     Width = finalW,
                                     Height = finalH,
-                                    Background = new SolidColorBrush(Color.FromArgb(120, 0, 255, 255)),
+                                    Background = new SolidColorBrush(Color.FromArgb(120, 0, 255, 255)), // 진한 하늘색
                                     Type = AnnotationType.SearchHighlight
                                 };
                                 pageVM.Annotations.Add(ann);
@@ -792,18 +779,15 @@ namespace MinsPDFViewer
             else MessageBox.Show("검색 결과가 없습니다.");
         }
 
-        // [핵심 로직] 결과 이동 및 스크롤
         private void NavigateSearchResult(bool next)
         {
             if (_searchResults.Count == 0) return;
 
-            // 이전 강조 해제
             if (_currentSearchIndex >= 0 && _currentSearchIndex < _searchResults.Count)
             {
                 _searchResults[_currentSearchIndex].Background = new SolidColorBrush(Color.FromArgb(60, 0, 255, 255));
             }
 
-            // 인덱스 이동
             if (next)
             {
                 _currentSearchIndex++;
@@ -815,17 +799,14 @@ namespace MinsPDFViewer
                 if (_currentSearchIndex < 0) _currentSearchIndex = _searchResults.Count - 1;
             }
 
-            // 현재 항목 강조
             var currentAnnot = _searchResults[_currentSearchIndex];
-            currentAnnot.Background = new SolidColorBrush(Color.FromArgb(120, 255, 0, 255)); // 진한 보라색
+            currentAnnot.Background = new SolidColorBrush(Color.FromArgb(120, 255, 0, 255)); 
 
-            // 해당 페이지로 스크롤 이동
             if (SelectedDocument != null)
             {
                 var targetPage = SelectedDocument.Pages.FirstOrDefault(p => p.Annotations.Contains(currentAnnot));
                 if (targetPage != null)
                 {
-                    // 활성화된 ListView 찾기
                     var listView = GetVisualChild<ListView>(MainTabControl);
                     if (listView != null)
                     {
