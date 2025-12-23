@@ -15,6 +15,7 @@ namespace MinsPDFViewer
             if (string.IsNullOrWhiteSpace(query) || document == null || document.DocReader == null) 
                 return results;
 
+            // 기존 하이라이트 제거
             foreach (var p in document.Pages)
             {
                 var toRemove = p.Annotations.Where(a => a.Type == AnnotationType.SearchHighlight).ToList();
@@ -49,7 +50,7 @@ namespace MinsPDFViewer
                     }
                 }
 
-                // 2. Docnet 텍스트 검색 (보정 로직 적용)
+                // 2. Docnet 텍스트 검색
                 using (var pageReader = document.DocReader.GetPageReader(i))
                 {
                     string pageText = pageReader.GetText();
@@ -67,12 +68,11 @@ namespace MinsPDFViewer
                             if (index + c < chars.Count)
                             {
                                 var box = chars[index + c].Box;
-                                
-                                // 좌표 수집 (Bottom-Left 기준)
+                                // PDF 좌표 수집 (Bottom-Left 기준)
                                 double cLeft = Math.Min(box.Left, box.Right);
                                 double cRight = Math.Max(box.Left, box.Right);
-                                double cTop = Math.Max(box.Top, box.Bottom);    // 큰 값이 Top (Y축 위쪽)
-                                double cBottom = Math.Min(box.Top, box.Bottom); // 작은 값이 Bottom
+                                double cTop = Math.Max(box.Top, box.Bottom);
+                                double cBottom = Math.Min(box.Top, box.Bottom);
 
                                 minX = Math.Min(minX, cLeft);
                                 minY = Math.Min(minY, cBottom);
@@ -84,24 +84,44 @@ namespace MinsPDFViewer
 
                         if (found)
                         {
-                            // [핵심] 회전 감지 및 높이 기준 설정
-                            // 만약 maxY가 현재 페이지 높이보다 크다면, 회전되어 Width가 Height 역할을 하는 것임.
-                            // 또는 Rotation이 90/270도인 경우.
-                            double flipBaseHeight = pageVM.PdfPageHeightPoint;
-                            if (pageVM.Rotation == 90 || pageVM.Rotation == 270 || maxY > flipBaseHeight)
+                            double finalX, finalY, finalW, finalH;
+
+                            // [회전 보정 로직]
+                            // 90도 회전된 경우: Y축이 화면의 X축이 되고, X축이 화면의 Y축이 됨
+                            // 또는 좌표값(maxY)이 페이지 높이(612)를 초과하는 경우 회전된 것으로 간주
+                            bool isRotated90 = (pageVM.Rotation == 90) || (maxY > pageVM.PdfPageHeightPoint);
+
+                            if (isRotated90)
                             {
-                                flipBaseHeight = pageVM.PdfPageWidthPoint;
+                                // 90도 회전 공식:
+                                // View X = (PageWidth - PDF_MaxY) * Scale
+                                // View Y = (PDF_MinX) * Scale
+                                
+                                // Width는 회전된 상태의 너비(792)를 사용해야 함
+                                double pageWidth = pageVM.PdfPageWidthPoint; 
+
+                                finalX = (pageWidth - maxY) * scaleX; 
+                                finalY = (minX) * scaleY;
+                                
+                                // 너비/높이도 스왑
+                                finalW = (maxY - minY) * scaleX; 
+                                finalH = (maxX - minX) * scaleY;
+                            }
+                            else
+                            {
+                                // 표준 (회전 없음):
+                                // View X = (PDF_MinX) * Scale
+                                // View Y = (PageHeight - PDF_MaxY) * Scale (Y축 반전)
+                                
+                                finalX = (minX - pageVM.CropX) * scaleX;
+                                finalY = (pageVM.PdfPageHeightPoint + pageVM.CropY - maxY) * scaleY;
+                                finalW = (maxX - minX) * scaleX;
+                                finalH = (maxY - minY) * scaleY;
                             }
 
-                            // 1. X축: (절대좌표 - CropBox시작점) * 배율
-                            double finalX = (minX - pageVM.CropX) * scaleX;
-                            double finalW = (maxX - minX) * scaleX;
-
-                            // 2. Y축: (기준높이 + CropBox시작점 - 절대좌표Top) * 배율
-                            // maxY가 710이면 flipBaseHeight는 792(Width)가 되어 정상적인 양수 좌표가 나옴
-                            double cropTopY = pageVM.CropY + flipBaseHeight;
-                            double finalY = (cropTopY - maxY) * scaleY;
-                            double finalH = (maxY - minY) * scaleY;
+                            // 음수 보정 (화면 밖으로 나가는 경우 방지)
+                            if (finalX < 0) finalX = 0;
+                            if (finalY < 0) finalY = 0;
 
                             var ann = new PdfAnnotation
                             {
