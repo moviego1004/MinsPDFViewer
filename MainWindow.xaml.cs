@@ -208,8 +208,8 @@ namespace MinsPDFViewer
                         var page = doc.Pages[i];
                         pdfPageSizes[i] = new XSize(page.Width.Point, page.Height.Point);
                         
-                        // [추가] CropBox의 시작 위치(X, Y)를 저장
-                        pageCropOffsets[i] = new Point(page.CropBox.X, page.CropBox.Y);
+                        // [추가] CropBox의 시작 위치(X, Y)를 저장 (.ToXRect() 추가)
+                        pageCropOffsets[i] = new Point(page.CropBox.ToXRect().X, page.CropBox.ToXRect().Y);
 
                         extractedRawData[i] = new List<RawAnnotationInfo>();
                         
