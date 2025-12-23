@@ -144,6 +144,11 @@ namespace MinsPDFViewer
         private Point _annotationDragStartOffset;
         private bool _isUpdatingUiFromSelection = false;
 
+        // [추가] 검색 관련 필드
+        private List<PdfAnnotation> _searchResults = new List<PdfAnnotation>();
+        private int _currentSearchIndex = -1;
+        private string _lastSearchQuery = "";
+
         public MainWindow()
         {
             InitializeComponent();
@@ -179,7 +184,7 @@ namespace MinsPDFViewer
 
         private void BtnOpen_Click(object sender, RoutedEventArgs e) { var dlg = new OpenFileDialog { Filter = "PDF Files|*.pdf" }; if (dlg.ShowDialog() == true) LoadPdf(dlg.FileName); }
         
-        private void LoadPdf(string path)
+         private void LoadPdf(string path)
         {
             try
             {
@@ -187,7 +192,10 @@ namespace MinsPDFViewer
                 var fileBytes = File.ReadAllBytes(path);
 
                 var extractedRawData = new Dictionary<int, List<RawAnnotationInfo>>();
-                var pdfPageSizes = new Dictionary<int, XSize>(); 
+                var pdfPageSizes = new Dictionary<int, XSize>();
+                
+                // [추가] 페이지별 CropBox 오프셋 저장소
+                var pageCropOffsets = new Dictionary<int, Point>(); 
 
                 using (var msInput = new MemoryStream(fileBytes))
                 using (var doc = PdfReader.Open(msInput, PdfDocumentOpenMode.Modify))
@@ -196,8 +204,12 @@ namespace MinsPDFViewer
                     {
                         var page = doc.Pages[i];
                         pdfPageSizes[i] = new XSize(page.Width.Point, page.Height.Point);
-                        extractedRawData[i] = new List<RawAnnotationInfo>();
+                        
+                        // [추가] CropBox의 시작 위치(X, Y)를 저장
+                        pageCropOffsets[i] = new Point(page.CropBox.X, page.CropBox.Y);
 
+                        extractedRawData[i] = new List<RawAnnotationInfo>();
+                        
                         if (page.Annotations != null)
                         {
                             var annotsToRemove = new List<PdfSharp.Pdf.Annotations.PdfAnnotation>();
@@ -241,11 +253,17 @@ namespace MinsPDFViewer
                         using (var r = newDoc.DocReader.GetPageReader(i))
                         {
                             double viewW = r.GetPageWidth(); double viewH = r.GetPageHeight();
+                            
+                            // [수정] ViewModel 생성 시 CropX, CropY 설정
                             var pvm = new PdfPageViewModel { 
                                 PageIndex = i, Width = viewW, Height = viewH,
                                 PdfPageWidthPoint = pdfPageSizes.ContainsKey(i) ? pdfPageSizes[i].Width : viewW,
-                                PdfPageHeightPoint = pdfPageSizes.ContainsKey(i) ? pdfPageSizes[i].Height : viewH
+                                PdfPageHeightPoint = pdfPageSizes.ContainsKey(i) ? pdfPageSizes[i].Height : viewH,
+                                // [추가] 저장해둔 오프셋 할당
+                                CropX = pageCropOffsets.ContainsKey(i) ? pageCropOffsets[i].X : 0,
+                                CropY = pageCropOffsets.ContainsKey(i) ? pageCropOffsets[i].Y : 0
                             };
+
                             double scaleX = viewW / pvm.PdfPageWidthPoint; double scaleY = viewH / pvm.PdfPageHeightPoint;
 
                             if (extractedRawData.ContainsKey(i)) {
@@ -618,10 +636,202 @@ namespace MinsPDFViewer
             _selectedTextBuffer = sb.ToString(); 
         }
 
-        private void BtnSearch_Click(object sender, RoutedEventArgs e) { }
-        private void TxtSearch_KeyDown(object sender, KeyEventArgs e) { }
-        private void BtnPrevSearch_Click(object sender, RoutedEventArgs e) { }
-        private void BtnNextSearch_Click(object sender, RoutedEventArgs e) { }
+        // [구현] 검색 버튼 클릭
+        private void BtnSearch_Click(object sender, RoutedEventArgs e)
+        {
+            PerformSearch(TxtSearch.Text);
+        }
+
+        // [구현] 검색창 엔터키 입력 처리
+        private void TxtSearch_KeyDown(object sender, KeyEventArgs e)
+        {
+            if (e.Key == Key.Enter)
+            {
+                if ((Keyboard.Modifiers & ModifierKeys.Shift) == ModifierKeys.Shift)
+                    NavigateSearchResult(false); // Shift + Enter: 이전 찾기
+                else
+                {
+                    string query = TxtSearch.Text;
+                    if (query == _lastSearchQuery && _searchResults.Count > 0)
+                        NavigateSearchResult(true); // 다음 찾기
+                    else
+                        PerformSearch(query); // 새 검색
+                }
+                e.Handled = true;
+            }
+        }
+
+        // [구현] 이전 찾기
+        private void BtnPrevSearch_Click(object sender, RoutedEventArgs e)
+        {
+            NavigateSearchResult(false);
+        }
+
+        // [구현] 다음 찾기
+        private void BtnNextSearch_Click(object sender, RoutedEventArgs e)
+        {
+            NavigateSearchResult(true);
+        }
+
+        // [핵심 로직] 검색 수행 (OCR + PDF Text)
+        // [수정] 검색 로직 (좌표 보정 및 스케일링 적용)
+        // [수정] 검색 로직 (좌표 자동 보정 적용)        
+        private void PerformSearch(string query)
+        {
+            if (string.IsNullOrWhiteSpace(query) || SelectedDocument == null) return;
+
+            _lastSearchQuery = query;
+            _searchResults.Clear();
+            _currentSearchIndex = -1;
+
+            // 1. 기존 하이라이트 제거 (기존 코드 동일)
+            foreach (var p in SelectedDocument.Pages)
+            {
+                var toRemove = p.Annotations.Where(a => a.Type == AnnotationType.SearchHighlight).ToList();
+                foreach (var r in toRemove) p.Annotations.Remove(r);
+            }
+
+            // 2. 검색 수행
+            if (SelectedDocument.DocReader != null)
+            {
+                for (int i = 0; i < SelectedDocument.Pages.Count; i++)
+                {
+                    var pageVM = SelectedDocument.Pages[i];
+                    double scaleX = pageVM.Width / pageVM.PdfPageWidthPoint;
+                    double scaleY = pageVM.Height / pageVM.PdfPageHeightPoint;
+
+                    // A. OCR 검색 (이미지 기준이므로 오프셋 보정 불필요)
+                    if (pageVM.OcrWords != null)
+                    {
+                        foreach (var word in pageVM.OcrWords)
+                        {
+                            if (word.Text.Contains(query, StringComparison.OrdinalIgnoreCase))
+                            {
+                                var ann = new PdfAnnotation
+                                {
+                                    X = word.BoundingBox.X,
+                                    Y = word.BoundingBox.Y,
+                                    Width = word.BoundingBox.Width,
+                                    Height = word.BoundingBox.Height,
+                                    Background = new SolidColorBrush(Color.FromArgb(120, 255, 255, 0)),
+                                    Type = AnnotationType.SearchHighlight
+                                };
+                                pageVM.Annotations.Add(ann);
+                                _searchResults.Add(ann);
+                            }
+                        }
+                    }
+
+                    // B. PDF 텍스트 검색 (PDF 좌표 -> 오프셋 보정 -> View 좌표)
+                    using (var pageReader = SelectedDocument.DocReader.GetPageReader(i))
+                    {
+                        string pageText = pageReader.GetText();
+                        var chars = pageReader.GetCharacters().ToList();
+
+                        int index = 0;
+                        while ((index = pageText.IndexOf(query, index, StringComparison.OrdinalIgnoreCase)) != -1)
+                        {
+                            double pdfMinX = double.MaxValue, pdfMaxX = double.MinValue;
+                            double pdfMinY = double.MaxValue, pdfMaxY = double.MinValue;
+                            bool found = false;
+
+                            for (int c = 0; c < query.Length; c++)
+                            {
+                                if (index + c < chars.Count)
+                                {
+                                    var box = chars[index + c].Box;
+                                    pdfMinX = Math.Min(pdfMinX, box.Left);
+                                    pdfMaxX = Math.Max(pdfMaxX, box.Right);
+                                    // Y축: Top/Bottom 중 큰 값이 위쪽(Top)인지 아래쪽인지 PDF 설정에 따름
+                                    // 안전하게 Min/Max로 범위 확보
+                                    double y1 = box.Top; double y2 = box.Bottom;
+                                    pdfMinY = Math.Min(pdfMinY, Math.Min(y1, y2));
+                                    pdfMaxY = Math.Max(pdfMaxY, Math.Max(y1, y2));
+                                    found = true;
+                                }
+                            }
+
+                            if (found)
+                            {
+                                // [중요] 오프셋 보정 공식
+                                // View X = (PDF좌표 - CropX) * 배율
+                                double finalX = (pdfMinX - pageVM.CropX) * scaleX;
+                                double finalW = (pdfMaxX - pdfMinX) * scaleX;
+
+                                // View Y (Flip) = ( (CropY + CropHeight) - PDF_Top ) * 배율
+                                // 해석: 페이지 최상단(CropY + Height)에서 글자 상단(pdfMaxY)까지의 거리가 View Y
+                                double finalY = (pageVM.CropY + pageVM.PdfPageHeightPoint - pdfMaxY) * scaleY;
+                                double finalH = (pdfMaxY - pdfMinY) * scaleY;
+
+                                // 높이 최소값 보정
+                                if (finalH < 2) finalH = 15 * scaleY;
+
+                                var ann = new PdfAnnotation
+                                {
+                                    X = finalX,
+                                    Y = finalY,
+                                    Width = finalW,
+                                    Height = finalH,
+                                    Background = new SolidColorBrush(Color.FromArgb(120, 0, 255, 255)),
+                                    Type = AnnotationType.SearchHighlight
+                                };
+                                pageVM.Annotations.Add(ann);
+                                _searchResults.Add(ann);
+                            }
+                            index += query.Length;
+                        }
+                    }
+                }
+            }
+
+            TxtStatus.Text = $"검색 결과: {_searchResults.Count}건";
+            if (_searchResults.Count > 0) NavigateSearchResult(true);
+            else MessageBox.Show("검색 결과가 없습니다.");
+        }
+
+        // [핵심 로직] 결과 이동 및 스크롤
+        private void NavigateSearchResult(bool next)
+        {
+            if (_searchResults.Count == 0) return;
+
+            // 이전 강조 해제
+            if (_currentSearchIndex >= 0 && _currentSearchIndex < _searchResults.Count)
+            {
+                _searchResults[_currentSearchIndex].Background = new SolidColorBrush(Color.FromArgb(60, 0, 255, 255));
+            }
+
+            // 인덱스 이동
+            if (next)
+            {
+                _currentSearchIndex++;
+                if (_currentSearchIndex >= _searchResults.Count) _currentSearchIndex = 0;
+            }
+            else
+            {
+                _currentSearchIndex--;
+                if (_currentSearchIndex < 0) _currentSearchIndex = _searchResults.Count - 1;
+            }
+
+            // 현재 항목 강조
+            var currentAnnot = _searchResults[_currentSearchIndex];
+            currentAnnot.Background = new SolidColorBrush(Color.FromArgb(120, 255, 0, 255)); // 진한 보라색
+
+            // 해당 페이지로 스크롤 이동
+            if (SelectedDocument != null)
+            {
+                var targetPage = SelectedDocument.Pages.FirstOrDefault(p => p.Annotations.Contains(currentAnnot));
+                if (targetPage != null)
+                {
+                    // 활성화된 ListView 찾기
+                    var listView = GetVisualChild<ListView>(MainTabControl);
+                    if (listView != null)
+                    {
+                        listView.ScrollIntoView(targetPage);
+                    }
+                    TxtStatus.Text = $"검색: {_currentSearchIndex + 1} / {_searchResults.Count}";
+                }
+            }
+        }
         
         private void BtnPopupCopy_Click(object sender, RoutedEventArgs e) { Clipboard.SetText(_selectedTextBuffer); SelectionPopup.IsOpen = false; }
         private void BtnPopupCopyImage_Click(object sender, RoutedEventArgs e) { SelectionPopup.IsOpen = false; }
