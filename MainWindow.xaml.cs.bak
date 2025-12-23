@@ -6,6 +6,7 @@ using PdfSharp.Pdf;
 using PdfSharp.Pdf.IO;
 using PdfSharp.Pdf.Annotations;
 using PdfSharp.Drawing;
+using PdfSharp.Fonts;
 using System;
 using System.IO;
 using System.Linq;
@@ -20,6 +21,7 @@ using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using System.Text;
+using System.Runtime.InteropServices.WindowsRuntime;
 
 // WinRT APIs for OCR
 using Windows.Security.Cryptography;
@@ -29,13 +31,14 @@ using Windows.Media.Ocr;
 
 namespace MinsPDFViewer
 {
-    // ... [기존 클래스들(GenericPdfAnnotation, WindowsFontResolver 등)은 그대로 유지] ...
+    // [PDFSharp 6.x 호환용]
     public class GenericPdfAnnotation : PdfSharp.Pdf.Annotations.PdfAnnotation
     {
         public GenericPdfAnnotation(PdfDocument document) : base(document) { }
     }
 
-    public class WindowsFontResolver : PdfSharp.Fonts.IFontResolver
+    // [시스템 폰트 리졸버]
+    public class WindowsFontResolver : IFontResolver
     {
         public byte[]? GetFont(string faceName)
         {
@@ -43,11 +46,16 @@ namespace MinsPDFViewer
             if (File.Exists(fontPath)) return File.ReadAllBytes(fontPath);
             fontPath = @"C:\Windows\Fonts\gulim.ttc";
             if (File.Exists(fontPath)) return File.ReadAllBytes(fontPath);
+            fontPath = @"C:\Windows\Fonts\batang.ttc"; 
+            if (File.Exists(fontPath)) return File.ReadAllBytes(fontPath);
+            fontPath = @"C:\Windows\Fonts\arial.ttf";
+            if (File.Exists(fontPath)) return File.ReadAllBytes(fontPath);
             return null;
         }
-        public PdfSharp.Fonts.FontResolverInfo? ResolveTypeface(string familyName, bool isBold, bool isItalic) => new PdfSharp.Fonts.FontResolverInfo("Malgun Gothic");
+        public FontResolverInfo? ResolveTypeface(string familyName, bool isBold, bool isItalic) => new FontResolverInfo("Malgun Gothic");
     }
 
+    // 주석 데이터 모델
     public enum AnnotationType { Highlight, Underline, SearchHighlight, FreeText, Other }
 
     public class PdfAnnotation : INotifyPropertyChanged
@@ -56,33 +64,40 @@ namespace MinsPDFViewer
         private double _y; public double Y { get => _y; set { _y = value; OnPropertyChanged(nameof(Y)); } }
         private double _width; public double Width { get => _width; set { _width = value; OnPropertyChanged(nameof(Width)); } }
         private double _height; public double Height { get => _height; set { _height = value; OnPropertyChanged(nameof(Height)); } }
-        
+
         private Brush _background = Brushes.Transparent;
         public Brush Background { get => _background; set { _background = value; OnPropertyChanged(nameof(Background)); } }
-        
+
         private Brush _borderBrush = Brushes.Transparent;
         public Brush BorderBrush { get => _borderBrush; set { _borderBrush = value; OnPropertyChanged(nameof(BorderBrush)); } }
-        
+
         private Thickness _borderThickness = new Thickness(0);
         public Thickness BorderThickness { get => _borderThickness; set { _borderThickness = value; OnPropertyChanged(nameof(BorderThickness)); } }
-        
+
         private string _textContent = "";
-        public string TextContent { get => _textContent; set { _textContent = value; OnPropertyChanged(nameof(TextContent)); } }
-        
+        public string TextContent { get => _textContent; set { _textContent = value; OnPropertyChanged(nameof(TextContent)); OnPropertyChanged(nameof(HasText)); } }
+
+        public bool HasText => !string.IsNullOrEmpty(TextContent) || Type == AnnotationType.FreeText;
+
         public AnnotationType Type { get; set; } = AnnotationType.Other;
         public Color AnnotationColor { get; set; } = Colors.Transparent;
-        
+
+        // 스타일 속성
         private double _fontSize = 12;
         public double FontSize { get => _fontSize; set { _fontSize = value; OnPropertyChanged(nameof(FontSize)); } }
+
         private string _fontFamily = "Malgun Gothic"; 
         public string FontFamily { get => _fontFamily; set { _fontFamily = value; OnPropertyChanged(nameof(FontFamily)); } }
+
         private bool _isBold;
         public bool IsBold { get => _isBold; set { _isBold = value; OnPropertyChanged(nameof(IsBold)); } }
+
         private Brush _foreground = Brushes.Black;
         public Brush Foreground { get => _foreground; set { _foreground = value; OnPropertyChanged(nameof(Foreground)); } }
-        
+
         private bool _isSelected;
         public bool IsSelected { get => _isSelected; set { _isSelected = value; OnPropertyChanged(nameof(IsSelected)); } }
+
         public bool IsFreeText => Type == AnnotationType.FreeText;
 
         public event PropertyChangedEventHandler? PropertyChanged;
@@ -90,7 +105,16 @@ namespace MinsPDFViewer
     }
 
     public class OcrWordInfo { public string Text { get; set; } = ""; public Rect BoundingBox { get; set; } }
-    public class RawAnnotationInfo { public AnnotationType Type; public XRect Rect; public string Content = ""; public double FontSize; public Color Color; }
+    
+    // [수정] 필드 초기화로 경고 제거
+    public class RawAnnotationInfo 
+    { 
+        public AnnotationType Type; 
+        public XRect Rect; 
+        public string Content = ""; 
+        public double FontSize; 
+        public Color Color; 
+    }
 
     public class PdfPageViewModel : INotifyPropertyChanged
     {
@@ -103,14 +127,12 @@ namespace MinsPDFViewer
         public List<OcrWordInfo> OcrWords { get; set; } = new List<OcrWordInfo>();
         public double PdfPageWidthPoint { get; set; }
         public double PdfPageHeightPoint { get; set; }
-        
         private bool _isSelecting;
         public bool IsSelecting { get => _isSelecting; set { _isSelecting = value; OnPropertyChanged(nameof(IsSelecting)); } }
         private double _selX; public double SelectionX { get => _selX; set { _selX = value; OnPropertyChanged(nameof(SelectionX)); } }
         private double _selY; public double SelectionY { get => _selY; set { _selY = value; OnPropertyChanged(nameof(SelectionY)); } }
         private double _selW; public double SelectionWidth { get => _selW; set { _selW = value; OnPropertyChanged(nameof(SelectionWidth)); } }
         private double _selH; public double SelectionHeight { get => _selH; set { _selH = value; OnPropertyChanged(nameof(SelectionHeight)); } }
-        
         public event PropertyChangedEventHandler? PropertyChanged;
         protected void OnPropertyChanged(string name) => PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));
     }
@@ -128,6 +150,7 @@ namespace MinsPDFViewer
         }
 
         private OcrEngine? _ocrEngine;
+
         private string _currentTool = "CURSOR";
         private PdfAnnotation? _selectedAnnotation = null;
 
@@ -139,16 +162,22 @@ namespace MinsPDFViewer
         private Point _dragStartPoint;
         private int _activePageIndex = -1;
         private string _selectedTextBuffer = "";
+        private List<Docnet.Core.Models.Character> _selectedChars = new List<Docnet.Core.Models.Character>();
         private int _selectedPageIndex = -1;
-        
+
         private bool _isDraggingAnnotation = false;
         private Point _annotationDragStartOffset;
+
+        private List<PdfAnnotation> _searchResults = new List<PdfAnnotation>();
+        private int _currentSearchIndex = -1;
+        private string _lastSearchQuery = "";
+        
         private bool _isUpdatingUiFromSelection = false;
 
         public MainWindow()
         {
             InitializeComponent();
-            try { if (PdfSharp.Fonts.GlobalFontSettings.FontResolver == null) PdfSharp.Fonts.GlobalFontSettings.FontResolver = new WindowsFontResolver(); } catch { }
+            try { if (GlobalFontSettings.FontResolver == null) GlobalFontSettings.FontResolver = new WindowsFontResolver(); } catch { }
             _docLib = DocLib.Instance;
             DataContext = this;
             try { _ocrEngine = OcrEngine.TryCreateFromLanguage(new Language("ko-KR")) ?? OcrEngine.TryCreateFromUserProfileLanguages(); } catch { }
@@ -172,14 +201,22 @@ namespace MinsPDFViewer
                 }
             }
         }
-
         private void MainTabControl_SelectionChanged(object sender, SelectionChangedEventArgs e)
         {
             if (_selectedAnnotation != null) { _selectedAnnotation.IsSelected = false; _selectedAnnotation = null; CheckToolbarVisibility(); }
         }
-
+        
         private void BtnOpen_Click(object sender, RoutedEventArgs e) { var dlg = new OpenFileDialog { Filter = "PDF Files|*.pdf" }; if (dlg.ShowDialog() == true) LoadPdf(dlg.FileName); }
         
+
+        // [헬퍼] PdfItem에서 숫자 값 추출 (Real 또는 Integer)
+        private double GetPdfNumber(PdfItem item)
+        {
+            if (item is PdfReal r) return r.Value;
+            if (item is PdfInteger i) return i.Value;
+            return 0.0;
+        }
+
         private void LoadPdf(string path)
         {
             try
@@ -287,11 +324,31 @@ namespace MinsPDFViewer
             Application.Current.Dispatcher.Invoke(() => TxtStatus.Text = "로딩 완료");
         }
 
-        // =========================================================
-        // [중요 수정] 탭별 독립 스크롤 처리 로직
-        // =========================================================
-        
-        // 탭이 로드될 때: 저장된 스크롤 위치로 이동
+        // [수정] 탭(문서) 데이터가 변경될 때 스크롤 간섭을 방지하고 위치를 복원하는 핵심 로직
+        private void PdfListView_DataContextChanged(object sender, DependencyPropertyChangedEventArgs e)
+        {
+            var listView = sender as ListView;
+            if (listView == null) return;
+
+            // 아직 VisualTree가 만들어지지 않았다면(Loaded 전) 무시
+            var scrollViewer = GetVisualChild<ScrollViewer>(listView);
+            if (scrollViewer == null) return;
+
+            // 1. 이벤트 연결 해제: 이전 탭의 위치가 새 탭 데이터에 덮어씌워지는 것 방지
+            scrollViewer.ScrollChanged -= ScrollViewer_ScrollChanged;
+
+            // 2. 새 문서의 저장된 위치로 스크롤 즉시 이동
+            if (e.NewValue is PdfDocumentModel newDoc)
+            {
+                scrollViewer.ScrollToVerticalOffset(newDoc.SavedVerticalOffset);
+                scrollViewer.ScrollToHorizontalOffset(newDoc.SavedHorizontalOffset);
+            }
+
+            // 3. 이벤트 다시 연결: 이제부터 발생하는 스크롤은 새 문서에 저장됨
+            scrollViewer.ScrollChanged += ScrollViewer_ScrollChanged;
+        }
+
+        // 탭이 처음 로드될 때 (최초 1회 실행)
         private void PdfListView_Loaded(object sender, RoutedEventArgs e)
         {
             var listView = sender as ListView;
@@ -300,20 +357,20 @@ namespace MinsPDFViewer
                 var scrollViewer = GetVisualChild<ScrollViewer>(listView);
                 if (scrollViewer != null)
                 {
-                    // 이벤트 중복 방지
+                    // 중복 방지용 해제
                     scrollViewer.ScrollChanged -= ScrollViewer_ScrollChanged;
-                    
-                    // 위치 복원
+
+                    // 저장된 위치로 복원
                     scrollViewer.ScrollToVerticalOffset(doc.SavedVerticalOffset);
                     scrollViewer.ScrollToHorizontalOffset(doc.SavedHorizontalOffset);
-                    
+
                     // 이벤트 연결
                     scrollViewer.ScrollChanged += ScrollViewer_ScrollChanged;
                 }
             }
         }
 
-        // 탭이 언로드(다른 탭으로 이동)될 때: 이벤트 연결 해제
+        // 탭이 완전히 제거될 때
         private void PdfListView_Unloaded(object sender, RoutedEventArgs e)
         {
             var listView = sender as ListView;
@@ -324,7 +381,7 @@ namespace MinsPDFViewer
             }
         }
 
-        // 스크롤 변경 시: 현재 문서 모델에 위치 저장
+        // 스크롤 변경 시 현재 문서 모델에 위치 저장
         private void ScrollViewer_ScrollChanged(object sender, ScrollChangedEventArgs e)
         {
             if (sender is ScrollViewer sv && sv.DataContext is PdfDocumentModel doc)
@@ -334,7 +391,6 @@ namespace MinsPDFViewer
             }
         }
         
-        // Visual Tree에서 자식 요소 찾기 (ScrollViewer 찾기용)
         private static T? GetVisualChild<T>(DependencyObject parent) where T : Visual
         {
             if (parent == null) return null;
@@ -348,8 +404,6 @@ namespace MinsPDFViewer
             }
             return child;
         }
-
-        // =========================================================
 
         private void PdfListView_PreviewMouseWheel(object sender, MouseWheelEventArgs e)
         {
@@ -368,11 +422,13 @@ namespace MinsPDFViewer
         {
             if (SelectedDocument == null || SelectedDocument.Pages.Count == 0) return;
             
-            // TabControl 전체 너비에서 여백(60) 제외
             double viewWidth = MainTabControl.ActualWidth - 60; 
             if (viewWidth > 0) {
                 double pageWidth = SelectedDocument.Pages[0].Width; 
-                if (pageWidth > 0) SelectedDocument.Zoom = viewWidth / pageWidth;
+                if (pageWidth > 0)
+                {
+                    SelectedDocument.Zoom = viewWidth / pageWidth;
+                }
             }
         }
 
@@ -380,11 +436,13 @@ namespace MinsPDFViewer
         {
             if (SelectedDocument == null || SelectedDocument.Pages.Count == 0) return;
             
-            // TabControl 전체 높이에서 여백(60) 제외
             double viewHeight = MainTabControl.ActualHeight - 60;
             if (viewHeight > 0) {
                 double pageHeight = SelectedDocument.Pages[0].Height;
-                if (pageHeight > 0) SelectedDocument.Zoom = viewHeight / pageHeight;
+                if (pageHeight > 0)
+                {
+                    SelectedDocument.Zoom = viewHeight / pageHeight;
+                }
             }
         }
 
@@ -576,76 +634,65 @@ namespace MinsPDFViewer
             } finally { _isUpdatingUiFromSelection = false; }
         }
 
-        private void BtnDeleteAnnotation_Click(object sender, RoutedEventArgs e) {
+        private void StyleChanged(object sender, RoutedEventArgs e)
+        {
+            if (!IsLoaded || _isUpdatingUiFromSelection) return;
+            if (CbFont.SelectedItem != null) _defaultFontFamily = CbFont.SelectedItem.ToString() ?? "Malgun Gothic";
+            if (CbSize.SelectedItem != null) _defaultFontSize = (double)CbSize.SelectedItem;
+            _defaultIsBold = BtnBold.IsChecked == true;
+            if (CbColor.SelectedItem is ComboBoxItem item && item.Tag != null) {
+                string cn = item.Tag.ToString() ?? "Black";
+                if (cn == "Black") _defaultFontColor = Colors.Black; else if (cn == "Red") _defaultFontColor = Colors.Red; else if (cn == "Blue") _defaultFontColor = Colors.Blue; else if (cn == "Green") _defaultFontColor = Colors.Green; else if (cn == "Orange") _defaultFontColor = Colors.Orange;
+            }
+            if (_selectedAnnotation != null) {
+                _selectedAnnotation.FontFamily = _defaultFontFamily; _selectedAnnotation.FontSize = _defaultFontSize;
+                _selectedAnnotation.IsBold = _defaultIsBold; _selectedAnnotation.Foreground = new SolidColorBrush(_defaultFontColor);
+            }
+        }
+
+       private void BtnDeleteAnnotation_Click(object sender, RoutedEventArgs e) {
             if (_selectedAnnotation != null && SelectedDocument != null) { foreach(var p in SelectedDocument.Pages) { if (p.Annotations.Contains(_selectedAnnotation)) { p.Annotations.Remove(_selectedAnnotation); _selectedAnnotation = null; CheckToolbarVisibility(); break; } } }
             else if ((sender as MenuItem)?.CommandParameter is PdfAnnotation a && SelectedDocument != null) { foreach(var p in SelectedDocument.Pages) if (p.Annotations.Contains(a)) { p.Annotations.Remove(a); break; } }
         }
-
+        
         private void Tool_Click(object sender, RoutedEventArgs e) { if (RbCursor.IsChecked == true) _currentTool = "CURSOR"; else if (RbHighlight.IsChecked == true) _currentTool = "HIGHLIGHT"; else if (RbText.IsChecked == true) _currentTool = "TEXT"; CheckToolbarVisibility(); }
 
         private void Window_KeyDown(object sender, KeyEventArgs e) { if (e.Key == Key.F && (Keyboard.Modifiers & ModifierKeys.Control) == ModifierKeys.Control) { TxtSearch.Focus(); TxtSearch.SelectAll(); e.Handled = true; } else if (e.Key == Key.Delete) BtnDeleteAnnotation_Click(this, new RoutedEventArgs()); else if (e.Key == Key.Escape && _selectedAnnotation != null) { _selectedAnnotation.IsSelected = false; _selectedAnnotation = null; CheckToolbarVisibility(); } }
-
-        private void BtnOCR_Click(object sender, RoutedEventArgs e) { 
-            if (_ocrEngine == null || SelectedDocument == null) return; 
-            BtnOCR.IsEnabled = false; PbStatus.Visibility = Visibility.Visible; PbStatus.Maximum = SelectedDocument.Pages.Count; PbStatus.Value = 0; TxtStatus.Text = "OCR 분석 중..."; 
-            var targetDoc = SelectedDocument; 
-            Task.Run(async () => { 
-                try { 
-                    for (int i = 0; i < targetDoc.Pages.Count; i++) { 
-                        var pageVM = targetDoc.Pages[i]; if (targetDoc.DocReader == null) continue; 
-                        using (var r = targetDoc.DocReader.GetPageReader(i)) { 
-                            var rawBytes = r.GetImage(); var w = r.GetPageWidth(); var h = r.GetPageHeight(); 
-                            using (var stream = new MemoryStream(rawBytes)) { 
-                                var sb = new SoftwareBitmap(BitmapPixelFormat.Bgra8, w, h, BitmapAlphaMode.Premultiplied);
-                                var ibuffer = CryptographicBuffer.CreateFromByteArray(rawBytes);
-                                sb.CopyFromBuffer(ibuffer); 
-                                var res = await _ocrEngine.RecognizeAsync(sb); 
-                                var list = new List<OcrWordInfo>(); foreach (var l in res.Lines) foreach (var wd in l.Words) list.Add(new OcrWordInfo { Text = wd.Text, BoundingBox = new Rect(wd.BoundingRect.X, wd.BoundingRect.Y, wd.BoundingRect.Width, wd.BoundingRect.Height) }); 
-                                pageVM.OcrWords = list; 
-                            } 
-                        } 
-                        Application.Current.Dispatcher.Invoke(() => PbStatus.Value = i + 1); 
-                    } 
-                    Application.Current.Dispatcher.Invoke(() => TxtStatus.Text = "OCR 완료"); 
-                } catch (Exception ex) { Application.Current.Dispatcher.Invoke(() => MessageBox.Show($"OCR 오류: {ex.Message}")); } 
-                finally { Application.Current.Dispatcher.Invoke(() => { BtnOCR.IsEnabled = true; PbStatus.Visibility = Visibility.Collapsed; }); } 
-            }); 
-        }
-
-        private void CheckTextInSelection(int pageIndex, Rect uiRect) { 
-            _selectedTextBuffer = ""; if (SelectedDocument?.DocReader == null) return; 
-            var sb = new StringBuilder(); 
-            using (var reader = SelectedDocument.DocReader.GetPageReader(pageIndex)) { 
-                var chars = reader.GetCharacters().ToList(); 
-                foreach (var c in chars) { var r = new Rect(Math.Min(c.Box.Left, c.Box.Right), Math.Min(c.Box.Top, c.Box.Bottom), Math.Abs(c.Box.Right - c.Box.Left), Math.Abs(c.Box.Bottom - c.Box.Top)); if (uiRect.IntersectsWith(r)) sb.Append(c.Char); } 
-            } 
-            var pageVM = SelectedDocument.Pages[pageIndex];
-            if (pageVM.OcrWords != null) { foreach (var word in pageVM.OcrWords) if (uiRect.IntersectsWith(word.BoundingBox)) sb.Append(word.Text + " "); }
-            _selectedTextBuffer = sb.ToString(); 
-        }
-
-        private void BtnSearch_Click(object sender, RoutedEventArgs e) { }
-        private void TxtSearch_KeyDown(object sender, KeyEventArgs e) { }
-        private void BtnPrevSearch_Click(object sender, RoutedEventArgs e) { }
-        private void BtnNextSearch_Click(object sender, RoutedEventArgs e) { }
         
-        private void BtnPopupCopy_Click(object sender, RoutedEventArgs e) { Clipboard.SetText(_selectedTextBuffer); SelectionPopup.IsOpen = false; }
-        private void BtnPopupCopyImage_Click(object sender, RoutedEventArgs e) { SelectionPopup.IsOpen = false; }
-        private void BtnPopupHighlightGreen_Click(object sender, RoutedEventArgs e) { AddAnnotation(Colors.Lime, AnnotationType.Highlight); }
-        private void BtnPopupHighlightOrange_Click(object sender, RoutedEventArgs e) { AddAnnotation(Colors.Orange, AnnotationType.Highlight); }
-        private void BtnPopupUnderline_Click(object sender, RoutedEventArgs e) { AddAnnotation(Colors.Black, AnnotationType.Underline); }
-        private void AddAnnotation(Color color, AnnotationType type) { 
-            if (_selectedPageIndex == -1 || SelectedDocument == null) return; 
-            var p = SelectedDocument.Pages[_selectedPageIndex]; 
-            var ann = new PdfAnnotation { X = p.SelectionX, Y = p.SelectionY, Width = p.SelectionWidth, Height = p.SelectionHeight, Type = type, AnnotationColor = color }; 
-            if (type == AnnotationType.Highlight) ann.Background = new SolidColorBrush(Color.FromArgb(80, color.R, color.G, color.B)); else { ann.Background = new SolidColorBrush(color); ann.Height = 2; ann.Y = p.SelectionY + p.SelectionHeight - 2; } 
-            p.Annotations.Add(ann); SelectionPopup.IsOpen = false; p.IsSelecting = false;
+        private void Tool_Click(object sender, RoutedEventArgs e) { 
+            if (RbCursor.IsChecked == true) _currentTool = "CURSOR"; 
+            else if (RbHighlight.IsChecked == true) _currentTool = "HIGHLIGHT"; 
+            else if (RbText.IsChecked == true) _currentTool = "TEXT"; 
+            CheckToolbarVisibility();
         }
 
+        private void BtnOCR_Click(object sender, RoutedEventArgs e) { if (_ocrEngine == null) { MessageBox.Show("OCR 미지원"); return; } if (Pages.Count == 0) return; BtnOCR.IsEnabled = false; PbStatus.Visibility = Visibility.Visible; PbStatus.Maximum = Pages.Count; PbStatus.Value = 0; TxtStatus.Text = "OCR 분석 중..."; Task.Run(async () => { try { for (int i = 0; i < Pages.Count; i++) { var pageVM = Pages[i]; if (_docReader == null) continue; using (var r = _docReader.GetPageReader(i)) { var rawBytes = r.GetImage(); var w = r.GetPageWidth(); var h = r.GetPageHeight(); using (var stream = new MemoryStream(rawBytes)) { var softwareBitmap = new SoftwareBitmap(BitmapPixelFormat.Bgra8, w, h, BitmapAlphaMode.Premultiplied); softwareBitmap.CopyFromBuffer(rawBytes.AsBuffer()); var ocrResult = await _ocrEngine.RecognizeAsync(softwareBitmap); var wordList = new List<OcrWordInfo>(); foreach (var line in ocrResult.Lines) { foreach (var word in line.Words) { wordList.Add(new OcrWordInfo { Text = word.Text, BoundingBox = new Rect(word.BoundingRect.X, word.BoundingRect.Y, word.BoundingRect.Width, word.BoundingRect.Height) }); } } pageVM.OcrWords = wordList; } } Application.Current.Dispatcher.Invoke(() => { PbStatus.Value = i + 1; }); } Application.Current.Dispatcher.Invoke(() => TxtStatus.Text = "OCR 완료. 저장하세요."); } catch (Exception ex) { Application.Current.Dispatcher.Invoke(() => MessageBox.Show($"OCR 오류: {ex.Message}")); } finally { Application.Current.Dispatcher.Invoke(() => { BtnOCR.IsEnabled = true; PbStatus.Visibility = Visibility.Collapsed; }); } }); }
+        private void CheckTextInSelection(int pageIndex, Rect uiRect) { _selectedTextBuffer = ""; _selectedChars.Clear(); if (_docReader == null) return; var sb = new StringBuilder(); using (var reader = _docReader.GetPageReader(pageIndex)) { var chars = reader.GetCharacters().ToList(); foreach (var c in chars) { var r = new Rect(Math.Min(c.Box.Left, c.Box.Right), Math.Min(c.Box.Top, c.Box.Bottom), Math.Abs(c.Box.Right - c.Box.Left), Math.Abs(c.Box.Bottom - c.Box.Top)); if (uiRect.IntersectsWith(r)) { _selectedChars.Add(c); sb.Append(c.Char); } } } var pageVM = Pages[pageIndex]; if (pageVM.OcrWords != null) { foreach (var word in pageVM.OcrWords) { if (uiRect.IntersectsWith(word.BoundingBox)) sb.Append(word.Text + " "); } } _selectedTextBuffer = sb.ToString(); }
+        private void PerformSearch(string query) { if (string.IsNullOrWhiteSpace(query)) return; _lastSearchQuery = query; _searchResults.Clear(); foreach (var p in Pages) { var tr = p.Annotations.Where(a => a.Type == AnnotationType.SearchHighlight).ToList(); foreach (var i in tr) p.Annotations.Remove(i); } for (int i = 0; i < Pages.Count; i++) { var p = Pages[i]; if (p.OcrWords != null) { foreach (var word in p.OcrWords) { if (word.Text.Contains(query, StringComparison.OrdinalIgnoreCase)) { var a = new PdfAnnotation { X = word.BoundingBox.X, Y = word.BoundingBox.Y, Width = word.BoundingBox.Width, Height = word.BoundingBox.Height, Background = new SolidColorBrush(Color.FromArgb(60, 0, 255, 255)), Type = AnnotationType.SearchHighlight }; p.Annotations.Add(a); _searchResults.Add(a); } } } if (_docReader != null) { using (var r = _docReader.GetPageReader(i)) { string t = r.GetText(); var cs = r.GetCharacters().ToList(); int idx = 0; while ((idx = t.IndexOf(query, idx, StringComparison.OrdinalIgnoreCase)) != -1) { double mx = double.MaxValue, my = double.MaxValue, Mx = double.MinValue, My = double.MinValue; for (int c = 0; c < query.Length; c++) { if (idx + c < cs.Count) { var b = cs[idx + c].Box; mx = Math.Min(mx, b.Left); my = Math.Min(my, b.Top); Mx = Math.Max(Mx, b.Right); My = Math.Max(My, b.Bottom); } } var a = new PdfAnnotation { X = mx, Y = my, Width = Mx - mx, Height = My - my, Background = new SolidColorBrush(Color.FromArgb(60, 0, 255, 255)), Type = AnnotationType.SearchHighlight }; Pages[i].Annotations.Add(a); _searchResults.Add(a); idx += query.Length; } } } } TxtStatus.Text = $"검색: {_searchResults.Count}건"; if (_searchResults.Count > 0) { _currentSearchIndex = -1; NavigateSearchResult(true); } }
+        private void TxtSearch_KeyDown(object sender, KeyEventArgs e) { if (e.Key == Key.Enter) { if ((Keyboard.Modifiers & ModifierKeys.Shift) == ModifierKeys.Shift) NavigateSearchResult(false); else { string query = TxtSearch.Text; if (query == _lastSearchQuery && _searchResults.Count > 0) NavigateSearchResult(true); else PerformSearch(query); } e.Handled = true; } }
+        private void BtnSave_Click(object sender, RoutedEventArgs e) { if (!string.IsNullOrEmpty(_currentFilePath)) SavePdf(_currentFilePath); }
+        private void BtnSaveAs_Click(object sender, RoutedEventArgs e) { if (string.IsNullOrEmpty(_currentFilePath)) return; var dlg = new SaveFileDialog { Filter = "PDF Files|*.pdf", FileName = Path.GetFileNameWithoutExtension(_currentFilePath) + "_copy" }; if (dlg.ShowDialog() == true) { SavePdf(dlg.FileName); _currentFilePath = dlg.FileName; } }
+        private void BtnPopupCopy_Click(object sender, RoutedEventArgs e) { if (!string.IsNullOrEmpty(_selectedTextBuffer)) { Clipboard.SetText(_selectedTextBuffer); TxtStatus.Text = "텍스트 복사됨"; } CloseSelection(); }
+        private void BtnPopupCopyImage_Click(object sender, RoutedEventArgs e) { if (_selectedPageIndex == -1) return; var p = Pages[_selectedPageIndex]; var bmp = p.ImageSource as BitmapSource; if (bmp == null) return; double sx = bmp.PixelWidth / p.Width; double sy = bmp.PixelHeight / p.Height; int x = (int)(p.SelectionX * sx); int y = (int)(p.SelectionY * sy); int w = (int)(p.SelectionWidth * sx); int h = (int)(p.SelectionHeight * sy); if (w > 0 && h > 0 && x >= 0 && y >= 0 && x + w <= bmp.PixelWidth && y + h <= bmp.PixelHeight) { try { Clipboard.SetImage(new CroppedBitmap(bmp, new Int32Rect(x, y, w, h))); TxtStatus.Text = "이미지 복사됨"; } catch { TxtStatus.Text = "복사 실패"; } } CloseSelection(); }
+        private void BtnPopupHighlightGreen_Click(object sender, RoutedEventArgs e) => AddAnnotation(Colors.Lime, AnnotationType.Highlight);
+        private void BtnPopupHighlightOrange_Click(object sender, RoutedEventArgs e) => AddAnnotation(Colors.Orange, AnnotationType.Highlight);
+        private void BtnPopupUnderline_Click(object sender, RoutedEventArgs e) => AddAnnotation(Colors.Black, AnnotationType.Underline);
+        private void AddAnnotation(Color color, AnnotationType type) { if (_selectedPageIndex == -1) return; var p = Pages[_selectedPageIndex]; var ann = new PdfAnnotation { X = p.SelectionX, Y = p.SelectionY, Width = p.SelectionWidth, Height = p.SelectionHeight, Type = type, AnnotationColor = color }; if (type == AnnotationType.Highlight) ann.Background = new SolidColorBrush(Color.FromArgb(80, color.R, color.G, color.B)); else { ann.Background = new SolidColorBrush(color); ann.Height = 2; ann.Y = p.SelectionY + p.SelectionHeight - 2; } p.Annotations.Add(ann); CloseSelection(); }
+        private void CloseSelection() { SelectionPopup.IsOpen = false; foreach (var p in Pages) p.IsSelecting = false; }
+        private void BtnDeleteAnnotation_Click(object sender, RoutedEventArgs e) { if ((sender as MenuItem)?.CommandParameter is PdfAnnotation a) foreach (var p in Pages) if (p.Annotations.Contains(a)) { p.Annotations.Remove(a); break; } }
+        private void BtnSearch_Click(object sender, RoutedEventArgs e) => PerformSearch(TxtSearch.Text);
+        private void BtnPrevSearch_Click(object sender, RoutedEventArgs e) => NavigateSearchResult(false);
+        private void BtnNextSearch_Click(object sender, RoutedEventArgs e) => NavigateSearchResult(true);
+        private void NavigateSearchResult(bool n) { if (_searchResults.Count == 0) return; if (_currentSearchIndex >= 0 && _currentSearchIndex < _searchResults.Count) _searchResults[_currentSearchIndex].Background = new SolidColorBrush(Color.FromArgb(60, 0, 255, 255)); if (n) { _currentSearchIndex++; if (_currentSearchIndex >= _searchResults.Count) _currentSearchIndex = 0; } else { _currentSearchIndex--; if (_currentSearchIndex < 0) _currentSearchIndex = _searchResults.Count - 1; } var c = _searchResults[_currentSearchIndex]; c.Background = new SolidColorBrush(Color.FromArgb(120, 255, 0, 255)); var tp = Pages.FirstOrDefault(p => p.Annotations.Contains(c)); if (tp != null) PdfListView.ScrollIntoView(tp); TxtStatus.Text = $"검색: {_currentSearchIndex + 1} / {_searchResults.Count}"; }
+        private void PdfListView_PreviewMouseWheel(object sender, MouseWheelEventArgs e) { if ((Keyboard.Modifiers & ModifierKeys.Control) == ModifierKeys.Control) { if (e.Delta > 0) UpdateZoom(_currentZoom + 0.1); else UpdateZoom(_currentZoom - 0.1); e.Handled = true; } }
+        private void BtnZoomIn_Click(object sender, RoutedEventArgs e) => UpdateZoom(_currentZoom + 0.1);
+        private void BtnZoomOut_Click(object sender, RoutedEventArgs e) => UpdateZoom(_currentZoom - 0.1);
+        private void BtnFitWidth_Click(object sender, RoutedEventArgs e) => FitWidth();
+        private void BtnFitHeight_Click(object sender, RoutedEventArgs e) => FitHeight();
+        private void UpdateZoom(double z) { _currentZoom = Math.Clamp(z, 0.2, 5.0); ViewScaleTransform.ScaleX = _currentZoom; ViewScaleTransform.ScaleY = _currentZoom; TxtZoom.Text = $"{Math.Round(_currentZoom * 100)}%"; }
+        private void FitWidth() { if (Pages.Count > 0 && Pages[0].Width > 0) UpdateZoom((PdfListView.ActualWidth - 60) / Pages[0].Width); }
+        private void FitHeight() { if (Pages.Count > 0 && Pages[0].Height > 0) UpdateZoom((PdfListView.ActualHeight - 60) / Pages[0].Height); }
         private BitmapImage RawBytesToBitmapImage(byte[] b, int w, int h) { var bm = new WriteableBitmap(w, h, 96, 96, PixelFormats.Bgra32, null); bm.WritePixels(new Int32Rect(0, 0, w, h), b, w * 4, 0); if (bm.CanFreeze) bm.Freeze(); return ConvertWriteableBitmapToBitmapImage(bm); }
         private BitmapImage ConvertWriteableBitmapToBitmapImage(WriteableBitmap wbm) { using (var ms = new MemoryStream()) { var enc = new PngBitmapEncoder(); enc.Frames.Add(System.Windows.Media.Imaging.BitmapFrame.Create(wbm)); enc.Save(ms); var img = new BitmapImage(); img.BeginInit(); img.CacheOption = BitmapCacheOption.OnLoad; img.StreamSource = ms; img.EndInit(); if (img.CanFreeze) img.Freeze(); return img; } }
-        
-        public event PropertyChangedEventHandler? PropertyChanged;
-        protected void OnPropertyChanged(string name) => PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));
     }
 }
