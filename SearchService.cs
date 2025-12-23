@@ -2,13 +2,12 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Windows.Media;
-using System.Windows; // Rect 사용을 위해
+using System.Windows; 
 
 namespace MinsPDFViewer
 {
     public class SearchService
     {
-        // 검색 결과 리스트 반환
         public List<PdfAnnotation> PerformSearch(PdfDocumentModel document, string query)
         {
             var results = new List<PdfAnnotation>();
@@ -16,28 +15,41 @@ namespace MinsPDFViewer
             if (string.IsNullOrWhiteSpace(query) || document == null || document.DocReader == null) 
                 return results;
 
-            // 1. 기존 검색 하이라이트 제거
             foreach (var p in document.Pages)
             {
                 var toRemove = p.Annotations.Where(a => a.Type == AnnotationType.SearchHighlight).ToList();
                 foreach (var r in toRemove) p.Annotations.Remove(r);
             }
 
-            // 2. 페이지 순회하며 검색
             for (int i = 0; i < document.Pages.Count; i++)
             {
                 var pageVM = document.Pages[i];
-
-                // *** 핵심: 배율 계산 ***
-                // Docnet이 반환하는 텍스트 좌표는 Point 단위(72dpi)입니다.
-                // 렌더링된 이미지는 2.0배 확대(PageDimensions(2.0))되어 있으므로, 좌표도 비율만큼 늘려야 합니다.
-                // 보통 scale = ViewWidth / PdfPointWidth 입니다.
                 double scaleX = pageVM.Width / pageVM.PdfPageWidthPoint;
                 double scaleY = pageVM.Height / pageVM.PdfPageHeightPoint;
 
-                // [OCR 검색 부분 생략 가능 - 필요시 추가]
+                // 1. OCR 검색
+                if (pageVM.OcrWords != null)
+                {
+                    foreach (var word in pageVM.OcrWords)
+                    {
+                        if (word.Text.Contains(query, StringComparison.OrdinalIgnoreCase))
+                        {
+                            var ann = new PdfAnnotation
+                            {
+                                X = word.BoundingBox.X,
+                                Y = word.BoundingBox.Y,
+                                Width = word.BoundingBox.Width,
+                                Height = word.BoundingBox.Height,
+                                Background = new SolidColorBrush(Color.FromArgb(120, 255, 255, 0)),
+                                Type = AnnotationType.SearchHighlight
+                            };
+                            pageVM.Annotations.Add(ann);
+                            results.Add(ann);
+                        }
+                    }
+                }
 
-                // [Docnet 텍스트 검색]
+                // 2. Docnet 텍스트 검색 (보정 로직 적용)
                 using (var pageReader = document.DocReader.GetPageReader(i))
                 {
                     string pageText = pageReader.GetText();
@@ -50,36 +62,45 @@ namespace MinsPDFViewer
                         double maxX = double.MinValue, maxY = double.MinValue;
                         bool found = false;
 
-                        // 검색된 단어의 각 글자들의 바운딩 박스를 합칩니다.
                         for (int c = 0; c < query.Length; c++)
                         {
                             if (index + c < chars.Count)
                             {
                                 var box = chars[index + c].Box;
                                 
-                                // *** 중요: Docnet 좌표는 Top-Left 기준이므로 그대로 사용합니다. ***
-                                // Y축 반전(Flip)이나 CropBox 오프셋 계산을 하지 않습니다.
-                                // '좌표잘찾는_MainWindow.xaml.cs'와 동일한 로직입니다.
+                                // 좌표 수집 (Bottom-Left 기준)
                                 double cLeft = Math.Min(box.Left, box.Right);
                                 double cRight = Math.Max(box.Left, box.Right);
-                                double cTop = Math.Min(box.Top, box.Bottom);
-                                double cBottom = Math.Max(box.Top, box.Bottom);
+                                double cTop = Math.Max(box.Top, box.Bottom);    // 큰 값이 Top (Y축 위쪽)
+                                double cBottom = Math.Min(box.Top, box.Bottom); // 작은 값이 Bottom
 
                                 minX = Math.Min(minX, cLeft);
-                                minY = Math.Min(minY, cTop);
+                                minY = Math.Min(minY, cBottom);
                                 maxX = Math.Max(maxX, cRight);
-                                maxY = Math.Max(maxY, cBottom);
-                                
+                                maxY = Math.Max(maxY, cTop);
                                 found = true;
                             }
                         }
 
                         if (found)
                         {
-                            // *** 핵심: 좌표에 배율만 적용 ***
-                            double finalX = minX * scaleX;
-                            double finalY = minY * scaleY;
+                            // [핵심] 회전 감지 및 높이 기준 설정
+                            // 만약 maxY가 현재 페이지 높이보다 크다면, 회전되어 Width가 Height 역할을 하는 것임.
+                            // 또는 Rotation이 90/270도인 경우.
+                            double flipBaseHeight = pageVM.PdfPageHeightPoint;
+                            if (pageVM.Rotation == 90 || pageVM.Rotation == 270 || maxY > flipBaseHeight)
+                            {
+                                flipBaseHeight = pageVM.PdfPageWidthPoint;
+                            }
+
+                            // 1. X축: (절대좌표 - CropBox시작점) * 배율
+                            double finalX = (minX - pageVM.CropX) * scaleX;
                             double finalW = (maxX - minX) * scaleX;
+
+                            // 2. Y축: (기준높이 + CropBox시작점 - 절대좌표Top) * 배율
+                            // maxY가 710이면 flipBaseHeight는 792(Width)가 되어 정상적인 양수 좌표가 나옴
+                            double cropTopY = pageVM.CropY + flipBaseHeight;
+                            double finalY = (cropTopY - maxY) * scaleY;
                             double finalH = (maxY - minY) * scaleY;
 
                             var ann = new PdfAnnotation
@@ -88,7 +109,7 @@ namespace MinsPDFViewer
                                 Y = finalY,
                                 Width = finalW,
                                 Height = finalH,
-                                Background = new SolidColorBrush(Color.FromArgb(120, 0, 255, 255)), // 진한 하늘색
+                                Background = new SolidColorBrush(Color.FromArgb(120, 0, 255, 255)),
                                 Type = AnnotationType.SearchHighlight
                             };
                             pageVM.Annotations.Add(ann);
@@ -98,7 +119,6 @@ namespace MinsPDFViewer
                     }
                 }
             }
-
             return results;
         }
     }

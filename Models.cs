@@ -1,20 +1,18 @@
 using System.Collections.ObjectModel;
 using System.ComponentModel;
+using System.IO;
 using System.Windows;
 using System.Windows.Media;
+using PdfSharp.Pdf;
 
 namespace MinsPDFViewer
 {
-    // 주석 타입 열거형
     public enum AnnotationType { Highlight, Underline, SearchHighlight, FreeText, Other }
 
-    // OCR 단어 정보
     public class OcrWordInfo { public string Text { get; set; } = ""; public Rect BoundingBox { get; set; } }
 
-    // PDFSharp 원본 주석 정보
     public class RawAnnotationInfo { public AnnotationType Type; public Rect Rect; public string Content = ""; public double FontSize; public Color Color; }
 
-    // [ViewModel] 주석
     public class PdfAnnotation : INotifyPropertyChanged
     {
         private double _x; public double X { get => _x; set { _x = value; OnPropertyChanged(nameof(X)); } }
@@ -29,7 +27,6 @@ namespace MinsPDFViewer
         public AnnotationType Type { get; set; } = AnnotationType.Other;
         public Color AnnotationColor { get; set; } = Colors.Transparent;
 
-        // 폰트 스타일 속성 생략 가능 (필요시 추가)
         public double FontSize { get; set; } = 12;
         public string FontFamily { get; set; } = "Malgun Gothic";
         public bool IsBold { get; set; }
@@ -42,16 +39,19 @@ namespace MinsPDFViewer
         protected void OnPropertyChanged(string name) => PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));
     }
 
-    // [ViewModel] 페이지
     public class PdfPageViewModel : INotifyPropertyChanged
     {
         public int PageIndex { get; set; }
-        public double Width { get; set; }  // View(이미지) 기준 너비
-        public double Height { get; set; } // View(이미지) 기준 높이
+        public double Width { get; set; }
+        public double Height { get; set; }
         
-        // 원본 PDF 포인트 단위 크기 (좌표 변환용)
+        // PDF 좌표 변환용
         public double PdfPageWidthPoint { get; set; }
         public double PdfPageHeightPoint { get; set; }
+        public double CropX { get; set; }
+        public double CropY { get; set; }
+        // [추가] 회전 각도
+        public int Rotation { get; set; }
 
         private ImageSource? _imageSource;
         public ImageSource? ImageSource { get => _imageSource; set { _imageSource = value; OnPropertyChanged(nameof(ImageSource)); } }
@@ -59,7 +59,6 @@ namespace MinsPDFViewer
         public ObservableCollection<PdfAnnotation> Annotations { get; set; } = new ObservableCollection<PdfAnnotation>();
         public System.Collections.Generic.List<OcrWordInfo> OcrWords { get; set; } = new System.Collections.Generic.List<OcrWordInfo>();
 
-        // 드래그 선택 관련 속성
         private bool _isSelecting;
         public bool IsSelecting { get => _isSelecting; set { _isSelecting = value; OnPropertyChanged(nameof(IsSelecting)); } }
         private double _selX; public double SelectionX { get => _selX; set { _selX = value; OnPropertyChanged(nameof(SelectionX)); } }
@@ -71,7 +70,6 @@ namespace MinsPDFViewer
         protected void OnPropertyChanged(string name) => PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));
     }
 
-    // [ViewModel] 문서 모델
     public class PdfDocumentModel : INotifyPropertyChanged
     {
         public string FilePath { get; set; } = "";
@@ -87,5 +85,23 @@ namespace MinsPDFViewer
 
         public event PropertyChangedEventHandler? PropertyChanged;
         protected void OnPropertyChanged(string name) => PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));
+    }
+
+    public class GenericPdfAnnotation : PdfSharp.Pdf.Annotations.PdfAnnotation
+    {
+        public GenericPdfAnnotation(PdfDocument document) : base(document) { }
+    }
+
+    public class WindowsFontResolver : PdfSharp.Fonts.IFontResolver
+    {
+        public byte[]? GetFont(string faceName)
+        {
+            string fontPath = @"C:\Windows\Fonts\malgun.ttf";
+            if (File.Exists(fontPath)) return File.ReadAllBytes(fontPath);
+            fontPath = @"C:\Windows\Fonts\gulim.ttc";
+            if (File.Exists(fontPath)) return File.ReadAllBytes(fontPath);
+            return null;
+        }
+        public PdfSharp.Fonts.FontResolverInfo? ResolveTypeface(string familyName, bool isBold, bool isItalic) => new PdfSharp.Fonts.FontResolverInfo("Malgun Gothic");
     }
 }
