@@ -29,7 +29,6 @@ using Windows.Media.Ocr;
 
 namespace MinsPDFViewer
 {
-    // ... [기존 클래스들(GenericPdfAnnotation, WindowsFontResolver 등)은 그대로 유지] ...
     public class GenericPdfAnnotation : PdfSharp.Pdf.Annotations.PdfAnnotation
     {
         public GenericPdfAnnotation(PdfDocument document) : base(document) { }
@@ -287,33 +286,20 @@ namespace MinsPDFViewer
             Application.Current.Dispatcher.Invoke(() => TxtStatus.Text = "로딩 완료");
         }
 
-        // =========================================================
-        // [중요 수정] 탭별 독립 스크롤 처리 로직
-        // =========================================================
-        
-        // 탭이 로드될 때: 저장된 스크롤 위치로 이동
         private void PdfListView_Loaded(object sender, RoutedEventArgs e)
         {
             var listView = sender as ListView;
-            if (listView?.DataContext is PdfDocumentModel doc)
-            {
+            if (listView != null && listView.DataContext is PdfDocumentModel doc) {
                 var scrollViewer = GetVisualChild<ScrollViewer>(listView);
-                if (scrollViewer != null)
-                {
-                    // 이벤트 중복 방지
+                if (scrollViewer != null) {
                     scrollViewer.ScrollChanged -= ScrollViewer_ScrollChanged;
-                    
-                    // 위치 복원
                     scrollViewer.ScrollToVerticalOffset(doc.SavedVerticalOffset);
                     scrollViewer.ScrollToHorizontalOffset(doc.SavedHorizontalOffset);
-                    
-                    // 이벤트 연결
                     scrollViewer.ScrollChanged += ScrollViewer_ScrollChanged;
                 }
             }
         }
 
-        // 탭이 언로드(다른 탭으로 이동)될 때: 이벤트 연결 해제
         private void PdfListView_Unloaded(object sender, RoutedEventArgs e)
         {
             var listView = sender as ListView;
@@ -324,7 +310,6 @@ namespace MinsPDFViewer
             }
         }
 
-        // 스크롤 변경 시: 현재 문서 모델에 위치 저장
         private void ScrollViewer_ScrollChanged(object sender, ScrollChangedEventArgs e)
         {
             if (sender is ScrollViewer sv && sv.DataContext is PdfDocumentModel doc)
@@ -334,7 +319,6 @@ namespace MinsPDFViewer
             }
         }
         
-        // Visual Tree에서 자식 요소 찾기 (ScrollViewer 찾기용)
         private static T? GetVisualChild<T>(DependencyObject parent) where T : Visual
         {
             if (parent == null) return null;
@@ -348,8 +332,6 @@ namespace MinsPDFViewer
             }
             return child;
         }
-
-        // =========================================================
 
         private void PdfListView_PreviewMouseWheel(object sender, MouseWheelEventArgs e)
         {
@@ -367,8 +349,6 @@ namespace MinsPDFViewer
         private void BtnFitWidth_Click(object sender, RoutedEventArgs e)
         {
             if (SelectedDocument == null || SelectedDocument.Pages.Count == 0) return;
-            
-            // TabControl 전체 너비에서 여백(60) 제외
             double viewWidth = MainTabControl.ActualWidth - 60; 
             if (viewWidth > 0) {
                 double pageWidth = SelectedDocument.Pages[0].Width; 
@@ -379,8 +359,6 @@ namespace MinsPDFViewer
         private void BtnFitHeight_Click(object sender, RoutedEventArgs e)
         {
             if (SelectedDocument == null || SelectedDocument.Pages.Count == 0) return;
-            
-            // TabControl 전체 높이에서 여백(60) 제외
             double viewHeight = MainTabControl.ActualHeight - 60;
             if (viewHeight > 0) {
                 double pageHeight = SelectedDocument.Pages[0].Height;
@@ -574,6 +552,22 @@ namespace MinsPDFViewer
                     }
                 }
             } finally { _isUpdatingUiFromSelection = false; }
+        }
+
+        private void StyleChanged(object sender, RoutedEventArgs e)
+        {
+            if (!IsLoaded || _isUpdatingUiFromSelection) return;
+            if (CbFont.SelectedItem != null) _defaultFontFamily = CbFont.SelectedItem.ToString() ?? "Malgun Gothic";
+            if (CbSize.SelectedItem != null) _defaultFontSize = (double)CbSize.SelectedItem;
+            _defaultIsBold = BtnBold.IsChecked == true;
+            if (CbColor.SelectedItem is ComboBoxItem item && item.Tag != null) {
+                string cn = item.Tag.ToString() ?? "Black";
+                if (cn == "Black") _defaultFontColor = Colors.Black; else if (cn == "Red") _defaultFontColor = Colors.Red; else if (cn == "Blue") _defaultFontColor = Colors.Blue; else if (cn == "Green") _defaultFontColor = Colors.Green; else if (cn == "Orange") _defaultFontColor = Colors.Orange;
+            }
+            if (_selectedAnnotation != null) {
+                _selectedAnnotation.FontFamily = _defaultFontFamily; _selectedAnnotation.FontSize = _defaultFontSize;
+                _selectedAnnotation.IsBold = _defaultIsBold; _selectedAnnotation.Foreground = new SolidColorBrush(_defaultFontColor);
+            }
         }
 
         private void BtnDeleteAnnotation_Click(object sender, RoutedEventArgs e) {

@@ -1,22 +1,21 @@
 using System;
 using System.Collections.ObjectModel;
 using System.ComponentModel;
-using System.Windows.Media;
 using Docnet.Core.Readers;
 
 namespace MinsPDFViewer
 {
-    // 각 탭(문서)의 상태를 관리하는 클래스
+    // 탭별 데이터(문서) 상태 관리 모델
     public class PdfDocumentModel : INotifyPropertyChanged
     {
         public string FilePath { get; set; } = "";
         public string FileName { get; set; } = "제목 없음";
         
-        // 탭마다 독립적인 DocReader와 페이지 목록을 가짐 (잔상 방지 핵심)
+        // 문서 객체와 페이지 목록
         public IDocReader? DocReader { get; set; }
         public ObservableCollection<PdfPageViewModel> Pages { get; set; } = new ObservableCollection<PdfPageViewModel>();
         
-        // 탭별 줌 상태 유지
+        // 탭별 독립적인 줌 레벨
         private double _zoom = 1.0;
         public double Zoom 
         { 
@@ -30,7 +29,7 @@ namespace MinsPDFViewer
         }
         public string ZoomPercentText => $"{Math.Round(Zoom * 100)}%";
 
-        // 탭 전환 시 스크롤 위치 기억
+        // 탭 전환 시 복원할 스크롤 위치
         public double SavedVerticalOffset { get; set; } = 0;
         public double SavedHorizontalOffset { get; set; } = 0;
 
