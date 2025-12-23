@@ -35,9 +35,6 @@ namespace MinsPDFViewer
 
         public event PropertyChangedEventHandler? PropertyChanged;
         protected void OnPropertyChanged(string name) => PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));
-
-        // [추가] PDF 페이지의 실제 시작 좌표 (여백 보정용)
-        public double CropX { get; set; } = 0;
-        public double CropY { get; set; } = 0;
+        
     }
 }

@@ -102,6 +102,9 @@ namespace MinsPDFViewer
         public List<OcrWordInfo> OcrWords { get; set; } = new List<OcrWordInfo>();
         public double PdfPageWidthPoint { get; set; }
         public double PdfPageHeightPoint { get; set; }
+
+        public double CropX { get; set; } = 0;
+        public double CropY { get; set; } = 0;
         
         private bool _isSelecting;
         public bool IsSelecting { get => _isSelecting; set { _isSelecting = value; OnPropertyChanged(nameof(IsSelecting)); } }
