@@ -16,7 +16,9 @@
         <DataTemplate x:Key="FreeTextTemplate">
             <Grid Width="{Binding Width}" Height="{Binding Height}">
                 <Grid.RowDefinitions>
-                    <RowDefinition Height="20" /> <RowDefinition Height="*" />  </Grid.RowDefinitions>
+                    <RowDefinition Height="20" />
+                    <RowDefinition Height="*" />
+                </Grid.RowDefinitions>
 
                 <Border Grid.Row="0" 
                         Background="#DDDDDD" 
@@ -24,6 +26,7 @@
                         BorderThickness="1,1,1,0"
                         CornerRadius="3,3,0,0"
                         Cursor="SizeAll"
+                        Visibility="{Binding IsSelected, Converter={StaticResource BooleanToVisibilityConverter}}"
                         PreviewMouseDown="AnnotationDragHandle_PreviewMouseDown">
                     <TextBlock Text="::" HorizontalAlignment="Center" VerticalAlignment="Center" Foreground="Gray" FontWeight="Bold" FontSize="10"/>
                 </Border>
@@ -54,13 +57,15 @@
         <DataTemplate x:Key="HighlightTemplate">
             <Border Width="{Binding Width}" Height="{Binding Height}" 
                     Background="{Binding Background}"
-                    Cursor="Hand"/>
+                    Cursor="Hand"
+                    PreviewMouseDown="Annotation_PreviewMouseDown"/>
         </DataTemplate>
 
         <DataTemplate x:Key="UnderlineTemplate">
             <Border Width="{Binding Width}" Height="{Binding Height}" 
                     Background="{Binding Background}"
-                    Cursor="Hand"/>
+                    Cursor="Hand"
+                    PreviewMouseDown="Annotation_PreviewMouseDown"/>
         </DataTemplate>
         
         <DataTemplate x:Key="SearchHighlightTemplate">
@@ -71,7 +76,10 @@
 
     <Grid>
         <Grid.RowDefinitions>
-            <RowDefinition Height="Auto"/> <RowDefinition Height="*"/>    <RowDefinition Height="Auto"/> </Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
 
         <ToolBarTray Grid.Row="0" Background="White">
             <ToolBar>
@@ -142,7 +150,8 @@
                             <Style TargetType="ListViewItem">
                                 <Setter Property="Margin" Value="10"/>
                                 <Setter Property="HorizontalContentAlignment" Value="Center"/>
-                                <Setter Property="Focusable" Value="False"/> </Style>
+                                <Setter Property="Focusable" Value="False"/>
+                            </Style>
                         </ListView.ItemContainerStyle>
                         
                         <ListView.ItemTemplate>
@@ -152,20 +161,20 @@
                                         <DropShadowEffect BlurRadius="10" ShadowDepth="5" Opacity="0.5"/>
                                     </Border.Effect>
                                     
-                                    <Grid Width="{Binding Width}" Height="{Binding Height}">
-                                        <Grid.LayoutTransform>
+                                    <Grid Width="{Binding Width}" Height="{Binding Height}"
+                                          Tag="{Binding PageIndex}"
+                                          MouseDown="Page_MouseDown"
+                                          MouseMove="Page_MouseMove"
+                                          MouseUp="Page_MouseUp"
+                                          Background="Transparent"> 
+                                          <Grid.LayoutTransform>
                                             <ScaleTransform ScaleX="{Binding DataContext.Zoom, RelativeSource={RelativeSource AncestorType=TabControl}}" 
                                                             ScaleY="{Binding DataContext.Zoom, RelativeSource={RelativeSource AncestorType=TabControl}}"/>
                                         </Grid.LayoutTransform>
                                         
                                         <Image Source="{Binding ImageSource}" Stretch="Fill"/>
                                         
-                                        <Canvas Background="Transparent"
-                                                Tag="{Binding PageIndex}"
-                                                MouseDown="Page_MouseDown"
-                                                MouseMove="Page_MouseMove"
-                                                MouseUp="Page_MouseUp">
-                                            
+                                        <Canvas Background="Transparent">
                                             <Border Canvas.Left="{Binding SelectionX}" Canvas.Top="{Binding SelectionY}"
                                                     Width="{Binding SelectionWidth}" Height="{Binding SelectionHeight}"
                                                     BorderBrush="Blue" BorderThickness="1" Background="#300000FF"
