@@ -9,10 +9,6 @@ using System.Windows.Input;
 using System.Windows.Media;
 using System.IO;
 using System.Threading.Tasks;
-using Windows.Graphics.Imaging;
-using Windows.Media.Ocr;
-using Windows.Security.Cryptography;
-using Windows.Globalization;
 
 namespace MinsPDFViewer
 {
@@ -20,7 +16,7 @@ namespace MinsPDFViewer
     {
         private readonly PdfService _pdfService;
         private readonly SearchService _searchService;
-        private OcrEngine? _ocrEngine;
+        private readonly OcrService _ocrService;
 
         public System.Collections.ObjectModel.ObservableCollection<PdfDocumentModel> Documents { get; set; } 
             = new System.Collections.ObjectModel.ObservableCollection<PdfDocumentModel>();
@@ -31,8 +27,6 @@ namespace MinsPDFViewer
             get => _selectedDocument;
             set { _selectedDocument = value; OnPropertyChanged(nameof(SelectedDocument)); CheckToolbarVisibility(); }
         }
-
-        // [삭제됨] 사용하지 않는 검색용 필드 제거 (경고 CS0414 해결)
 
         private string _currentTool = "CURSOR";
         private PdfAnnotation? _selectedAnnotation = null;
@@ -55,13 +49,12 @@ namespace MinsPDFViewer
             DataContext = this;
             _pdfService = new PdfService();
             _searchService = new SearchService();
+            _ocrService = new OcrService();
             
             try { 
                 if (PdfSharp.Fonts.GlobalFontSettings.FontResolver == null) 
                     PdfSharp.Fonts.GlobalFontSettings.FontResolver = new WindowsFontResolver(); 
             } catch { }
-
-            try { _ocrEngine = OcrEngine.TryCreateFromLanguage(new Language("ko-KR")) ?? OcrEngine.TryCreateFromUserProfileLanguages(); } catch { }
 
             CbFont.ItemsSource = new string[] { "Malgun Gothic", "Gulim", "Dotum", "Batang" };
             CbFont.SelectedIndex = 0;
@@ -138,78 +131,39 @@ namespace MinsPDFViewer
             }
         }
 
-        // ... (이하 기존 코드 동일) ...
         private void Page_MouseDown(object sender, MouseButtonEventArgs e) { if (_selectedAnnotation != null) { _selectedAnnotation.IsSelected = false; _selectedAnnotation = null; } if (SelectedDocument == null) return; var canvas = sender as Canvas; if (canvas == null) return; _activePageIndex = (int)canvas.Tag; _dragStartPoint = e.GetPosition(canvas); var pageVM = SelectedDocument.Pages[_activePageIndex]; if (_currentTool == "TEXT") { var newAnnot = new PdfAnnotation { Type = AnnotationType.FreeText, X = _dragStartPoint.X, Y = _dragStartPoint.Y, Width = 150, Height = 50, FontSize = _defaultFontSize, FontFamily = _defaultFontFamily, Foreground = new SolidColorBrush(_defaultFontColor), IsBold = _defaultIsBold, TextContent = "", IsSelected = true }; pageVM.Annotations.Add(newAnnot); _selectedAnnotation = newAnnot; _currentTool = "CURSOR"; RbCursor.IsChecked = true; UpdateToolbarFromAnnotation(_selectedAnnotation); CheckToolbarVisibility(); e.Handled = true; return; } if (_currentTool == "CURSOR") { foreach (var p in SelectedDocument.Pages) { p.IsSelecting = false; p.SelectionWidth = 0; p.SelectionHeight = 0; } SelectionPopup.IsOpen = false; pageVM.IsSelecting = true; pageVM.SelectionX = _dragStartPoint.X; pageVM.SelectionY = _dragStartPoint.Y; pageVM.SelectionWidth = 0; pageVM.SelectionHeight = 0; canvas.CaptureMouse(); e.Handled = true; } CheckToolbarVisibility(); }
         private void Page_MouseMove(object sender, MouseEventArgs e) { if (_activePageIndex == -1 || SelectedDocument == null) return; var canvas = sender as Canvas; if (canvas == null) return; var pageVM = SelectedDocument.Pages[_activePageIndex]; if (_currentTool == "CURSOR" && _isDraggingAnnotation && _selectedAnnotation != null && _selectedAnnotation.Type == AnnotationType.FreeText) { var currentPoint = e.GetPosition(canvas); _selectedAnnotation.X = currentPoint.X - _annotationDragStartOffset.X; _selectedAnnotation.Y = currentPoint.Y - _annotationDragStartOffset.Y; e.Handled = true; return; } if (_currentTool == "CURSOR" && pageVM.IsSelecting) { var pt = e.GetPosition(canvas); double x = Math.Min(_dragStartPoint.X, pt.X); double y = Math.Min(_dragStartPoint.Y, pt.Y); double w = Math.Abs(pt.X - _dragStartPoint.X); double h = Math.Abs(pt.Y - _dragStartPoint.Y); pageVM.SelectionX = x; pageVM.SelectionY = y; pageVM.SelectionWidth = w; pageVM.SelectionHeight = h; } }
         private void Page_MouseUp(object sender, MouseButtonEventArgs e) { var canvas = sender as Canvas; if (canvas == null || _activePageIndex == -1 || SelectedDocument == null) return; canvas.ReleaseMouseCapture(); var p = SelectedDocument.Pages[_activePageIndex]; if (p.IsSelecting && _currentTool == "CURSOR") { if (p.SelectionWidth > 5 && p.SelectionHeight > 5) { var rect = new Rect(p.SelectionX, p.SelectionY, p.SelectionWidth, p.SelectionHeight); CheckTextInSelection(_activePageIndex, rect); SelectionPopup.PlacementTarget = canvas; SelectionPopup.PlacementRectangle = new Rect(e.GetPosition(canvas).X, e.GetPosition(canvas).Y + 10, 0, 0); SelectionPopup.IsOpen = true; _selectedPageIndex = _activePageIndex; TxtStatus.Text = string.IsNullOrEmpty(_selectedTextBuffer) ? "영역 선택됨" : "텍스트 선택됨"; } else { p.IsSelecting = false; TxtStatus.Text = "준비"; if (_selectedAnnotation != null) { _selectedAnnotation.IsSelected = false; _selectedAnnotation = null; } } } _activePageIndex = -1; _isDraggingAnnotation = false; e.Handled = true; CheckToolbarVisibility(); }
         private void Annotation_PreviewMouseDown(object sender, MouseButtonEventArgs e) { if (_currentTool != "CURSOR") return; var element = sender as FrameworkElement; if (element?.DataContext is PdfAnnotation ann) { if (_selectedAnnotation != null) _selectedAnnotation.IsSelected = false; _selectedAnnotation = ann; _selectedAnnotation.IsSelected = true; if (ann.Type == AnnotationType.FreeText) { _isDraggingAnnotation = true; _annotationDragStartOffset = e.GetPosition(element); } else { _isDraggingAnnotation = false; } UpdateToolbarFromAnnotation(ann); CheckToolbarVisibility(); e.Handled = true; } }
         
-        // [수정됨] 사용자 제공 OCR 로직 반영 (안정성 강화)
+        // [수정됨] 언어 체크 로직 완화
         private async void BtnOCR_Click(object sender, RoutedEventArgs e)
         {
-            if (_ocrEngine == null) { MessageBox.Show("OCR 미지원 (Windows 10/11 기능 필요)"); return; }
+            if (!_ocrService.IsAvailable) 
+            { 
+                MessageBox.Show("OCR 엔진을 초기화할 수 없습니다.\nWindows 설정에서 언어 팩을 확인하세요."); 
+                return; 
+            }
             if (SelectedDocument == null || SelectedDocument.Pages.Count == 0) return;
 
-            // UI 잠금
+            // [수정] 'ko' 또는 'ko-KR' 모두 허용하도록 StartsWith 사용
+            string langTag = _ocrService.CurrentLanguage;
+            if (!langTag.StartsWith("ko", StringComparison.OrdinalIgnoreCase))
+            {
+                if (MessageBox.Show($"현재 OCR 언어가 '{langTag}'로 설정되어 있습니다.\n한글 인식률이 낮을 수 있습니다. 계속하시겠습니까?", "언어 경고", MessageBoxButton.YesNo, MessageBoxImage.Warning) == MessageBoxResult.No)
+                    return;
+            }
+
             BtnOCR.IsEnabled = false;
             PbStatus.Visibility = Visibility.Visible;
             PbStatus.Maximum = SelectedDocument.Pages.Count;
             PbStatus.Value = 0;
-            TxtStatus.Text = "OCR 분석 중...";
-
-            var targetDoc = SelectedDocument; // 현재 선택된 문서
+            TxtStatus.Text = "고해상도 OCR 분석 중...";
 
             try
             {
-                await Task.Run(async () =>
-                {
-                    for (int i = 0; i < targetDoc.Pages.Count; i++)
-                    {
-                        var pageVM = targetDoc.Pages[i];
-                        if (targetDoc.DocReader == null) continue;
-
-                        using (var r = targetDoc.DocReader.GetPageReader(i))
-                        {
-                            var rawBytes = r.GetImage();
-                            var w = r.GetPageWidth();
-                            var h = r.GetPageHeight();
-
-                            // [안정성] 메모리 스트림 및 버퍼 변환
-                            using (var stream = new MemoryStream(rawBytes))
-                            {
-                                // IBuffer로 변환 (Windows Runtime API용)
-                                var ibuffer = Windows.Security.Cryptography.CryptographicBuffer.CreateFromByteArray(rawBytes);
-                                
-                                using (var softwareBitmap = new SoftwareBitmap(BitmapPixelFormat.Bgra8, w, h, BitmapAlphaMode.Premultiplied))
-                                {
-                                    softwareBitmap.CopyFromBuffer(ibuffer);
-
-                                    // OCR 수행
-                                    var ocrResult = await _ocrEngine.RecognizeAsync(softwareBitmap);
-
-                                    // 결과 변환
-                                    var wordList = new List<OcrWordInfo>();
-                                    foreach (var line in ocrResult.Lines)
-                                    {
-                                        foreach (var word in line.Words)
-                                        {
-                                            wordList.Add(new OcrWordInfo
-                                            {
-                                                Text = word.Text,
-                                                BoundingBox = new Rect(word.BoundingRect.X, word.BoundingRect.Y, word.BoundingRect.Width, word.BoundingRect.Height)
-                                            });
-                                        }
-                                    }
-                                    // 결과 저장
-                                    pageVM.OcrWords = wordList;
-                                }
-                            }
-                        }
-                        // 진행률 업데이트
-                        Application.Current.Dispatcher.Invoke(() => { PbStatus.Value = i + 1; });
-                    }
-                });
-
+                var progressIndicator = new Progress<int>(value => PbStatus.Value = value);
+                await _ocrService.RunOcrAsync(SelectedDocument, progressIndicator);
                 TxtStatus.Text = "OCR 완료. 저장하세요.";
             }
             catch (Exception ex)
@@ -224,25 +178,21 @@ namespace MinsPDFViewer
             }
         }
 
-        // [수정됨] PdfService를 통해 저장 호출
         private void BtnSave_Click(object sender, RoutedEventArgs e)
         {
             if (SelectedDocument != null)
             {
-                var service = new PdfService(); // 서비스 인스턴스 생성 (또는 필드로 선언)
-                service.SavePdf(SelectedDocument, SelectedDocument.FilePath);
+                _pdfService.SavePdf(SelectedDocument, SelectedDocument.FilePath);
             }
         }
 
-        // [수정됨] 다른 이름으로 저장
         private void BtnSaveAs_Click(object sender, RoutedEventArgs e)
         {
             if (SelectedDocument == null) return;
-            var dlg = new SaveFileDialog { Filter = "PDF Files|*.pdf", FileName = Path.GetFileNameWithoutExtension(SelectedDocument.FilePath) + "_ocr" };
+            var dlg = new Microsoft.Win32.SaveFileDialog { Filter = "PDF Files|*.pdf", FileName = Path.GetFileNameWithoutExtension(SelectedDocument.FilePath) + "_ocr" };
             if (dlg.ShowDialog() == true)
             {
-                var service = new PdfService();
-                service.SavePdf(SelectedDocument, dlg.FileName);
+                _pdfService.SavePdf(SelectedDocument, dlg.FileName);
             }
         }
         private void CheckTextInSelection(int pageIndex, Rect uiRect) { _selectedTextBuffer = ""; if (SelectedDocument?.DocReader == null) return; var sb = new StringBuilder(); using (var reader = SelectedDocument.DocReader.GetPageReader(pageIndex)) { var chars = reader.GetCharacters().ToList(); foreach (var c in chars) { var r = new Rect(Math.Min(c.Box.Left, c.Box.Right), Math.Min(c.Box.Top, c.Box.Bottom), Math.Abs(c.Box.Right - c.Box.Left), Math.Abs(c.Box.Bottom - c.Box.Top)); if (uiRect.IntersectsWith(r)) sb.Append(c.Char); } } var pageVM = SelectedDocument.Pages[pageIndex]; if (pageVM.OcrWords != null) { foreach (var word in pageVM.OcrWords) if (uiRect.IntersectsWith(word.BoundingBox)) sb.Append(word.Text + " "); } _selectedTextBuffer = sb.ToString(); }

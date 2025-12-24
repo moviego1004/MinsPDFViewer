@@ -55,7 +55,8 @@ namespace MinsPDFViewer
             return null; 
         }
 
-        private PdfAnnotation CreateHighlight(PdfPageViewModel pageVM, Docnet.Core.Readers.IPageReader pageReader, int index, string query)
+        // [수정] 반환 타입을 PdfAnnotation? (nullable)로 변경하여 CS8603 경고 해결
+        private PdfAnnotation? CreateHighlight(PdfPageViewModel pageVM, Docnet.Core.Readers.IPageReader pageReader, int index, string query)
         {
             var chars = pageReader.GetCharacters().ToList();
             double minX = double.MaxValue, minY = double.MaxValue;
