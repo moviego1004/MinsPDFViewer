@@ -49,7 +49,7 @@ namespace MinsPDFViewer
         public double Width { get; set; }
         public double Height { get; set; }
         
-        // PDF 좌표 변환용 정보
+        // 좌표 변환용 정보
         public double PdfPageWidthPoint { get; set; }
         public double PdfPageHeightPoint { get; set; }
         public double CropX { get; set; }
@@ -73,7 +73,7 @@ namespace MinsPDFViewer
         protected void OnPropertyChanged(string name) => PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));
     }
 
-    // [ViewModel] 문서
+    // [ViewModel] 문서 모델
     public class PdfDocumentModel : INotifyPropertyChanged
     {
         public string FilePath { get; set; } = "";
@@ -81,6 +81,7 @@ namespace MinsPDFViewer
         public Docnet.Core.Readers.IDocReader? DocReader { get; set; }
         public ObservableCollection<PdfPageViewModel> Pages { get; set; } = new ObservableCollection<PdfPageViewModel>();
 
+        // 탭별 스크롤 위치 저장
         public double SavedVerticalOffset { get; set; }
         public double SavedHorizontalOffset { get; set; }
         
@@ -91,7 +92,7 @@ namespace MinsPDFViewer
         protected void OnPropertyChanged(string name) => PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));
     }
 
-    // [Helper] PDF Sharp용
+    // [Helper] PDF Sharp용 주석 클래스
     public class GenericPdfAnnotation : PdfSharp.Pdf.Annotations.PdfAnnotation
     {
         public GenericPdfAnnotation(PdfDocument document) : base(document) { }
