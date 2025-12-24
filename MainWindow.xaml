@@ -9,6 +9,8 @@
         KeyDown="Window_KeyDown">
 
     <Window.Resources>
+        <BooleanToVisibilityConverter x:Key="BooleanToVisibilityConverter"/>
+        
         <local:BoolToFontWeightConverter x:Key="BoolToFontWeightConverter"/>
 
         <DataTemplate x:Key="FreeTextTemplate">
@@ -145,7 +147,11 @@
                         
                         <ListView.ItemTemplate>
                             <DataTemplate>
-                                <Border BorderBrush="Black" BorderThickness="1" Background="White" Effect="{StaticResource {x:Static DropShadowEffect.ShadowDepthProperty}}">
+                                <Border BorderBrush="Black" BorderThickness="1" Background="White">
+                                    <Border.Effect>
+                                        <DropShadowEffect BlurRadius="10" ShadowDepth="5" Opacity="0.5"/>
+                                    </Border.Effect>
+                                    
                                     <Grid Width="{Binding Width}" Height="{Binding Height}">
                                         <Grid.LayoutTransform>
                                             <ScaleTransform ScaleX="{Binding DataContext.Zoom, RelativeSource={RelativeSource AncestorType=TabControl}}" 
