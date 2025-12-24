@@ -26,14 +26,41 @@ namespace MinsPDFViewer
         private Brush _background = Brushes.Transparent;
         public Brush Background { get => _background; set { _background = value; OnPropertyChanged(nameof(Background)); } }
 
-        public string TextContent { get; set; } = "";
-        public AnnotationType Type { get; set; } = AnnotationType.Other;
-        public Color AnnotationColor { get; set; } = Colors.Transparent;
+        // [수정] 변경 알림 추가 (UI 업데이트를 위해 필수)
+        private string _textContent = "";
+        public string TextContent { get => _textContent; set { _textContent = value; OnPropertyChanged(nameof(TextContent)); } }
 
-        public double FontSize { get; set; } = 12;
-        public string FontFamily { get; set; } = "Malgun Gothic";
-        public bool IsBold { get; set; }
-        public Brush Foreground { get; set; } = Brushes.Black;
+        // [수정] Type 변경 시 IsFreeText도 같이 알림
+        private AnnotationType _type = AnnotationType.Other;
+        public AnnotationType Type 
+        { 
+            get => _type; 
+            set 
+            { 
+                _type = value; 
+                OnPropertyChanged(nameof(Type)); 
+                OnPropertyChanged(nameof(IsFreeText)); 
+            } 
+        }
+
+        // [추가] XAML에서 사용하는 속성 (누락되었던 부분)
+        public bool IsFreeText => Type == AnnotationType.FreeText;
+
+        // [수정] 변경 알림 추가
+        private Color _annotationColor = Colors.Transparent;
+        public Color AnnotationColor { get => _annotationColor; set { _annotationColor = value; OnPropertyChanged(nameof(AnnotationColor)); } }
+
+        private double _fontSize = 12;
+        public double FontSize { get => _fontSize; set { _fontSize = value; OnPropertyChanged(nameof(FontSize)); } }
+
+        private string _fontFamily = "Malgun Gothic";
+        public string FontFamily { get => _fontFamily; set { _fontFamily = value; OnPropertyChanged(nameof(FontFamily)); } }
+
+        private bool _isBold;
+        public bool IsBold { get => _isBold; set { _isBold = value; OnPropertyChanged(nameof(IsBold)); } }
+
+        private Brush _foreground = Brushes.Black;
+        public Brush Foreground { get => _foreground; set { _foreground = value; OnPropertyChanged(nameof(Foreground)); } }
 
         private bool _isSelected;
         public bool IsSelected { get => _isSelected; set { _isSelected = value; OnPropertyChanged(nameof(IsSelected)); } }
