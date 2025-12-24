@@ -32,8 +32,8 @@ namespace MinsPDFViewer
 
                 var extractedRawData = new Dictionary<int, List<RawAnnotationInfo>>();
                 var pdfPageSizes = new Dictionary<int, XSize>();
-                var pageRotations = new Dictionary<int, int>();
                 var pageCropOffsets = new Dictionary<int, Point>();
+                var pageRotations = new Dictionary<int, int>();
 
                 using (var msInput = new MemoryStream(fileBytes))
                 using (var doc = PdfReader.Open(msInput, PdfDocumentOpenMode.Modify))
@@ -42,10 +42,10 @@ namespace MinsPDFViewer
                     {
                         var page = doc.Pages[i];
                         pdfPageSizes[i] = new XSize(page.Width.Point, page.Height.Point);
-                        pageRotations[i] = page.Rotate;
                         
                         var crop = page.CropBox.ToXRect();
                         pageCropOffsets[i] = new Point(crop.X, crop.Y);
+                        pageRotations[i] = page.Rotate;
 
                         extractedRawData[i] = new List<RawAnnotationInfo>();
 
@@ -103,9 +103,9 @@ namespace MinsPDFViewer
                                 Height = viewH,
                                 PdfPageWidthPoint = pdfPageSizes.ContainsKey(i) ? pdfPageSizes[i].Width : viewW / 2.0,
                                 PdfPageHeightPoint = pdfPageSizes.ContainsKey(i) ? pdfPageSizes[i].Height : viewH / 2.0,
-                                Rotation = pageRotations.ContainsKey(i) ? pageRotations[i] : 0,
                                 CropX = pageCropOffsets.ContainsKey(i) ? pageCropOffsets[i].X : 0,
-                                CropY = pageCropOffsets.ContainsKey(i) ? pageCropOffsets[i].Y : 0
+                                CropY = pageCropOffsets.ContainsKey(i) ? pageCropOffsets[i].Y : 0,
+                                Rotation = pageRotations.ContainsKey(i) ? pageRotations[i] : 0
                             };
 
                             double scaleX = viewW / pvm.PdfPageWidthPoint; 

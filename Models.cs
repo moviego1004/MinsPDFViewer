@@ -1,18 +1,21 @@
 using System.Collections.ObjectModel;
 using System.ComponentModel;
-using System.IO;
 using System.Windows;
 using System.Windows.Media;
 using PdfSharp.Pdf;
 
 namespace MinsPDFViewer
 {
+    // 주석 타입
     public enum AnnotationType { Highlight, Underline, SearchHighlight, FreeText, Other }
 
+    // OCR 정보
     public class OcrWordInfo { public string Text { get; set; } = ""; public Rect BoundingBox { get; set; } }
 
+    // PDFSharp 원본 주석 정보
     public class RawAnnotationInfo { public AnnotationType Type; public Rect Rect; public string Content = ""; public double FontSize; public Color Color; }
 
+    // [ViewModel] 주석
     public class PdfAnnotation : INotifyPropertyChanged
     {
         private double _x; public double X { get => _x; set { _x = value; OnPropertyChanged(nameof(X)); } }
@@ -39,18 +42,18 @@ namespace MinsPDFViewer
         protected void OnPropertyChanged(string name) => PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));
     }
 
+    // [ViewModel] 페이지
     public class PdfPageViewModel : INotifyPropertyChanged
     {
         public int PageIndex { get; set; }
         public double Width { get; set; }
         public double Height { get; set; }
         
-        // PDF 좌표 변환용
+        // PDF 좌표 변환용 정보
         public double PdfPageWidthPoint { get; set; }
         public double PdfPageHeightPoint { get; set; }
         public double CropX { get; set; }
         public double CropY { get; set; }
-        // [추가] 회전 각도
         public int Rotation { get; set; }
 
         private ImageSource? _imageSource;
@@ -70,6 +73,7 @@ namespace MinsPDFViewer
         protected void OnPropertyChanged(string name) => PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));
     }
 
+    // [ViewModel] 문서
     public class PdfDocumentModel : INotifyPropertyChanged
     {
         public string FilePath { get; set; } = "";
@@ -87,19 +91,21 @@ namespace MinsPDFViewer
         protected void OnPropertyChanged(string name) => PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));
     }
 
+    // [Helper] PDF Sharp용
     public class GenericPdfAnnotation : PdfSharp.Pdf.Annotations.PdfAnnotation
     {
         public GenericPdfAnnotation(PdfDocument document) : base(document) { }
     }
 
+    // [Helper] 폰트 리졸버
     public class WindowsFontResolver : PdfSharp.Fonts.IFontResolver
     {
         public byte[]? GetFont(string faceName)
         {
             string fontPath = @"C:\Windows\Fonts\malgun.ttf";
-            if (File.Exists(fontPath)) return File.ReadAllBytes(fontPath);
+            if (System.IO.File.Exists(fontPath)) return System.IO.File.ReadAllBytes(fontPath);
             fontPath = @"C:\Windows\Fonts\gulim.ttc";
-            if (File.Exists(fontPath)) return File.ReadAllBytes(fontPath);
+            if (System.IO.File.Exists(fontPath)) return System.IO.File.ReadAllBytes(fontPath);
             return null;
         }
         public PdfSharp.Fonts.FontResolverInfo? ResolveTypeface(string familyName, bool isBold, bool isItalic) => new PdfSharp.Fonts.FontResolverInfo("Malgun Gothic");
