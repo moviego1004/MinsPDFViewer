@@ -23,8 +23,10 @@ namespace MinsPDFViewer
     // 서명 생성 시 필요한 정보 묶음
     public class SignatureConfig
     {
-        public NpkiCertificateModel Certificate { get; set; }
-        public AsymmetricKeyParameter PrivateKey { get; set; } // 비밀번호로 푼 개인키
+        // [수정] 필수 값으로 지정하여 Null 경고 제거
+        public required NpkiCertificateModel Certificate { get; set; }
+        public required AsymmetricKeyParameter PrivateKey { get; set; } // 비밀번호로 푼 개인키
+        
         public string Reason { get; set; } = "I agree to the terms of this document.";
         public string Location { get; set; } = "Korea";
         public bool UseVisualStamp { get; set; } = true;

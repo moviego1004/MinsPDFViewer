@@ -117,7 +117,7 @@
                 <Button Name="BtnOCR" Content="👁 OCR 분석" Click="BtnOCR_Click" FontWeight="Bold" Foreground="Blue"/>
 
                 <Separator/>
-                <Button Name="BtnSignSettings" Content="🔐 서명 설정" Click="BtnSignSettings_Click" FontWeight="Bold" Margin="0,0,5,0"/>
+                <Button Name="BtnSign" Content="🔐 전자서명" Click="BtnSign_Click" FontWeight="Bold" Margin="0,0,5,0"/>
                 <Separator/>
             </ToolBar>
 
@@ -179,7 +179,7 @@
                                     <Border.Effect>
                                         <DropShadowEffect BlurRadius="10" ShadowDepth="5" Opacity="0.5"/>
                                     </Border.Effect>
-                                    
+                                                      
                                     <Grid Width="{Binding Width}" Height="{Binding Height}"
                                           Tag="{Binding PageIndex}"
                                           MouseDown="Page_MouseDown"
@@ -191,7 +191,7 @@
                                             <ScaleTransform ScaleX="{Binding DataContext.Zoom, RelativeSource={RelativeSource AncestorType=ListView}}" 
                                                             ScaleY="{Binding DataContext.Zoom, RelativeSource={RelativeSource AncestorType=ListView}}"/>
                                         </Grid.LayoutTransform>
-                                        
+                                          
                                         <Image Source="{Binding ImageSource}" Stretch="Fill"/>
                                         
                                         <Canvas Background="Transparent">
@@ -207,6 +207,7 @@
                                                     <Canvas/>
                                                 </ItemsPanelTemplate>
                                             </ItemsControl.ItemsPanel>
+                                         
                                             <ItemsControl.ItemContainerStyle>
                                                 <Style TargetType="ContentPresenter">
                                                     <Setter Property="Canvas.Left" Value="{Binding X}"/>
@@ -214,7 +215,7 @@
                                                 </Style>
                                             </ItemsControl.ItemContainerStyle>
                                             
-                                            <ItemsControl.ItemTemplate>
+                                           <ItemsControl.ItemTemplate>
                                                 <DataTemplate>
                                                     <ContentControl Content="{Binding}">
                                                         <ContentControl.Style>
