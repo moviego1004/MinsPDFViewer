@@ -31,26 +31,41 @@
                     <TextBlock Text="::" HorizontalAlignment="Center" VerticalAlignment="Center" Foreground="Gray" FontWeight="Bold" FontSize="10"/>
                 </Border>
 
-                <TextBox Grid.Row="1"
-                         Text="{Binding TextContent, UpdateSourceTrigger=PropertyChanged}"
-                         FontFamily="{Binding FontFamily}"
-                         FontSize="{Binding FontSize}"
-                         FontWeight="{Binding IsBold, Converter={StaticResource BoolToFontWeightConverter}}"
-                         Foreground="{Binding Foreground}"
-                         Background="#55FFFFFF"
-                         BorderBrush="Gray"
-                         BorderThickness="1,0,1,1"
-                         AcceptsReturn="True"
-                         TextWrapping="Wrap"
-                         Padding="5"
-                         Loaded="AnnotationTextBox_Loaded"
-                         GotFocus="AnnotationTextBox_GotFocus"
-                         TextChanged="AnnotationTextBox_TextChanged"/>
+                <Border Grid.Row="1" BorderThickness="1,0,1,1">
+                    <Border.Style>
+                        <Style TargetType="Border">
+                            <Setter Property="BorderBrush" Value="Transparent"/>
+                            <Setter Property="Background" Value="Transparent"/>
+                            <Style.Triggers>
+                                <DataTrigger Binding="{Binding IsSelected}" Value="True">
+                                    <Setter Property="BorderBrush" Value="Gray"/>
+                                    <Setter Property="Background" Value="#55FFFFFF"/>
+                                </DataTrigger>
+                            </Style.Triggers>
+                        </Style>
+                    </Border.Style>
+
+                    <TextBox Text="{Binding TextContent, UpdateSourceTrigger=PropertyChanged}"
+                             FontFamily="{Binding FontFamily}"
+                             FontSize="{Binding FontSize}"
+                             FontWeight="{Binding IsBold, Converter={StaticResource BoolToFontWeightConverter}}"
+                             Foreground="{Binding Foreground}"
+                             Background="Transparent"
+                             BorderThickness="0"
+                             FocusVisualStyle="{x:Null}"
+                             AcceptsReturn="True"
+                             TextWrapping="Wrap"
+                             Padding="5"
+                             Loaded="AnnotationTextBox_Loaded"
+                             GotFocus="AnnotationTextBox_GotFocus"
+                             TextChanged="AnnotationTextBox_TextChanged"/>
+                </Border>
 
                 <Thumb Grid.Row="1" HorizontalAlignment="Right" VerticalAlignment="Bottom"
                        Width="10" Height="10" Cursor="SizeNWSE"
                        DragDelta="ResizeThumb_DragDelta"
-                       Background="Gray" Opacity="0.5" Margin="0,0,0,0"/>
+                       Background="Gray" Opacity="0.5" Margin="0,0,0,0"
+                       Visibility="{Binding IsSelected, Converter={StaticResource BooleanToVisibilityConverter}}"/>
             </Grid>
         </DataTemplate>
 
@@ -69,7 +84,7 @@
         </DataTemplate>
         
         <DataTemplate x:Key="SearchHighlightTemplate">
-            <Border Width="{Binding Width}" Height="{Binding Height}" Background="#80FF0000"/>
+            <Border Width="{Binding Width}" Height="{Binding Height}" Background="{Binding Background}"/>
         </DataTemplate>
 
     </Window.Resources>
@@ -117,7 +132,7 @@
             </ToolBar>
             
              <ToolBar>
-                <TextBox Name="TxtSearch" Width="150" KeyDown="TxtSearch_KeyDown" ToolTip="Ctrl+F"/>
+                <TextBox Name="TxtSearch" Width="150" PreviewKeyDown="TxtSearch_PreviewKeyDown" ToolTip="Enter: 다음, Ctrl+Enter: 이전"/>
                 <Button Name="BtnSearch" Content="🔍" Click="BtnSearch_Click"/>
                 <Button Name="BtnPrevSearch" Content="◀" Click="BtnPrevSearch_Click"/>
                 <Button Name="BtnNextSearch" Content="▶" Click="BtnNextSearch_Click"/>
@@ -166,10 +181,11 @@
                                           MouseDown="Page_MouseDown"
                                           MouseMove="Page_MouseMove"
                                           MouseUp="Page_MouseUp"
-                                          Background="Transparent"> 
-                                          <Grid.LayoutTransform>
-                                            <ScaleTransform ScaleX="{Binding DataContext.Zoom, RelativeSource={RelativeSource AncestorType=TabControl}}" 
-                                                            ScaleY="{Binding DataContext.Zoom, RelativeSource={RelativeSource AncestorType=TabControl}}"/>
+                                          Background="Transparent">
+
+                                        <Grid.LayoutTransform>
+                                            <ScaleTransform ScaleX="{Binding DataContext.Zoom, RelativeSource={RelativeSource AncestorType=ListView}}" 
+                                                            ScaleY="{Binding DataContext.Zoom, RelativeSource={RelativeSource AncestorType=ListView}}"/>
                                         </Grid.LayoutTransform>
                                         
                                         <Image Source="{Binding ImageSource}" Stretch="Fill"/>

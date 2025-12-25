@@ -12,9 +12,6 @@ namespace MinsPDFViewer
     // OCR 정보
     public class OcrWordInfo { public string Text { get; set; } = ""; public Rect BoundingBox { get; set; } }
 
-    // PDFSharp 원본 주석 정보
-    public class RawAnnotationInfo { public AnnotationType Type; public Rect Rect; public string Content = ""; public double FontSize; public Color Color; }
-
     // [ViewModel] 주석
     public class PdfAnnotation : INotifyPropertyChanged
     {
@@ -26,11 +23,9 @@ namespace MinsPDFViewer
         private Brush _background = Brushes.Transparent;
         public Brush Background { get => _background; set { _background = value; OnPropertyChanged(nameof(Background)); } }
 
-        // [수정] 변경 알림 추가 (UI 업데이트를 위해 필수)
         private string _textContent = "";
         public string TextContent { get => _textContent; set { _textContent = value; OnPropertyChanged(nameof(TextContent)); } }
 
-        // [수정] Type 변경 시 IsFreeText도 같이 알림
         private AnnotationType _type = AnnotationType.Other;
         public AnnotationType Type 
         { 
@@ -43,10 +38,8 @@ namespace MinsPDFViewer
             } 
         }
 
-        // [추가] XAML에서 사용하는 속성 (누락되었던 부분)
         public bool IsFreeText => Type == AnnotationType.FreeText;
 
-        // [수정] 변경 알림 추가
         private Color _annotationColor = Colors.Transparent;
         public Color AnnotationColor { get => _annotationColor; set { _annotationColor = value; OnPropertyChanged(nameof(AnnotationColor)); } }
 
@@ -73,14 +66,19 @@ namespace MinsPDFViewer
     public class PdfPageViewModel : INotifyPropertyChanged
     {
         public int PageIndex { get; set; }
-        public double Width { get; set; }
-        public double Height { get; set; }
+        public double Width { get; set; }  // 화면(이미지) 너비 (Pixel)
+        public double Height { get; set; } // 화면(이미지) 높이 (Pixel)
         
         // 좌표 변환용 정보
         public double PdfPageWidthPoint { get; set; }
         public double PdfPageHeightPoint { get; set; }
+        
+        // [수정] CropBox 정보 (Point 단위)
         public double CropX { get; set; }
         public double CropY { get; set; }
+        public double CropWidthPoint { get; set; }  // 실제 보이는 영역 너비
+        public double CropHeightPoint { get; set; } // 실제 보이는 영역 높이
+        
         public int Rotation { get; set; }
 
         private ImageSource? _imageSource;
@@ -108,7 +106,6 @@ namespace MinsPDFViewer
         public Docnet.Core.Readers.IDocReader? DocReader { get; set; }
         public ObservableCollection<PdfPageViewModel> Pages { get; set; } = new ObservableCollection<PdfPageViewModel>();
 
-        // 탭별 스크롤 위치 저장
         public double SavedVerticalOffset { get; set; }
         public double SavedHorizontalOffset { get; set; }
         
@@ -119,13 +116,11 @@ namespace MinsPDFViewer
         protected void OnPropertyChanged(string name) => PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));
     }
 
-    // [Helper] PDF Sharp용 주석 클래스
     public class GenericPdfAnnotation : PdfSharp.Pdf.Annotations.PdfAnnotation
     {
         public GenericPdfAnnotation(PdfDocument document) : base(document) { }
     }
 
-    // [Helper] 폰트 리졸버
     public class WindowsFontResolver : PdfSharp.Fonts.IFontResolver
     {
         public byte[]? GetFont(string faceName)

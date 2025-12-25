@@ -123,9 +123,55 @@ namespace MinsPDFViewer
         private void BtnCloseTab_Click(object sender, RoutedEventArgs e) { if (sender is Button btn && btn.Tag is PdfDocumentModel doc) { doc.DocReader?.Dispose(); Documents.Remove(doc); if (Documents.Count == 0) SelectedDocument = null; } }
 
         private async void BtnSearch_Click(object sender, RoutedEventArgs e) => await FindNextSearchResult();
-        private async void TxtSearch_KeyDown(object sender, KeyEventArgs e) { if (e.Key == Key.Enter) await FindNextSearchResult(); }
-        private void BtnPrevSearch_Click(object sender, RoutedEventArgs e) { } 
         private async void BtnNextSearch_Click(object sender, RoutedEventArgs e) => await FindNextSearchResult();
+
+        // [수정] PreviewKeyDown으로 변경하여 Ctrl+Enter 확실하게 처리
+        private async void TxtSearch_PreviewKeyDown(object sender, KeyEventArgs e) 
+        { 
+            if (e.Key == Key.Enter) 
+            {
+                e.Handled = true; // 이벤트 버블링 방지
+                
+                if ((Keyboard.Modifiers & ModifierKeys.Control) == ModifierKeys.Control)
+                {
+                    // 뒤로 찾기
+                    BtnPrevSearch_Click(sender, e);
+                }
+                else
+                {
+                    // 앞으로 찾기
+                    await FindNextSearchResult();
+                }
+            } 
+        }
+
+        private async void BtnPrevSearch_Click(object sender, RoutedEventArgs e) 
+        { 
+            if (SelectedDocument == null) return;
+            string query = TxtSearch.Text;
+            if (string.IsNullOrWhiteSpace(query)) return;
+            TxtStatus.Text = "이전 찾는 중...";
+            
+            var foundAnnot = await _searchService.FindPrevAsync(SelectedDocument, query);
+            
+            if (foundAnnot != null) {
+                PdfPageViewModel? targetPage = null;
+                foreach(var p in SelectedDocument.Pages) { if(p.Annotations.Contains(foundAnnot)) { targetPage = p; break; } }
+                if (targetPage != null) { 
+                    var listView = GetVisualChild<ListView>(MainTabControl); 
+                    if (listView != null) listView.ScrollIntoView(targetPage); 
+                    TxtStatus.Text = $"발견: {targetPage.PageIndex + 1}페이지"; 
+                }
+            } else {
+                var result = MessageBox.Show("문서의 시작입니다. 끝에서부터 다시 찾으시겠습니까?", "검색 완료", MessageBoxButton.OKCancel, MessageBoxImage.Question);
+                if (result == MessageBoxResult.OK) { 
+                    _searchService.ResetSearch(); 
+                    await _searchService.FindPrevAsync(SelectedDocument, query); 
+                } else { 
+                    TxtStatus.Text = "검색 종료"; 
+                }
+            }
+        } 
 
         private async Task FindNextSearchResult()
         {
@@ -144,10 +190,8 @@ namespace MinsPDFViewer
             }
         }
 
-        // [수정] Grid에서 MouseDown 처리
         private void Page_MouseDown(object sender, MouseButtonEventArgs e) 
         { 
-            // 배경을 클릭하면 선택 해제 (헤더 숨김)
             if (_selectedAnnotation != null) 
             { 
                 _selectedAnnotation.IsSelected = false; 
@@ -157,7 +201,6 @@ namespace MinsPDFViewer
             
             if (SelectedDocument == null) return; 
             
-            // Canvas가 아닌 Grid로 변경
             var grid = sender as Grid; 
             if (grid == null) return; 
             
@@ -178,7 +221,7 @@ namespace MinsPDFViewer
                     Foreground = new SolidColorBrush(_defaultFontColor), 
                     IsBold = _defaultIsBold, 
                     TextContent = "", 
-                    IsSelected = true // 생성 시 바로 선택 및 헤더 노출
+                    IsSelected = true
                 }; 
                 pageVM.Annotations.Add(newAnnot); 
                 _selectedAnnotation = newAnnot; 
@@ -190,7 +233,7 @@ namespace MinsPDFViewer
                 return; 
             } 
             
-            if (_currentTool == "CURSOR") 
+            if (_currentTool == "CURSOR" || _currentTool == "HIGHLIGHT") 
             { 
                 foreach (var p in SelectedDocument.Pages) { 
                     p.IsSelecting = false; p.SelectionWidth = 0; p.SelectionHeight = 0; 
@@ -202,13 +245,12 @@ namespace MinsPDFViewer
                 pageVM.SelectionWidth = 0; 
                 pageVM.SelectionHeight = 0; 
                 
-                grid.CaptureMouse(); // Grid가 캡처
+                grid.CaptureMouse();
                 e.Handled = true; 
             } 
             CheckToolbarVisibility(); 
         }
         
-        // [수정] Grid에서 MouseMove 처리 (드래그 로직 통합)
         private void Page_MouseMove(object sender, MouseEventArgs e) 
         { 
             if (_activePageIndex == -1 || SelectedDocument == null) return; 
@@ -217,12 +259,9 @@ namespace MinsPDFViewer
             if (grid == null) return; 
             var pageVM = SelectedDocument.Pages[_activePageIndex]; 
             
-            // 1. 주석 드래그 이동
             if (_currentTool == "CURSOR" && _isDraggingAnnotation && _selectedAnnotation != null) 
             { 
                 var currentPoint = e.GetPosition(grid); 
-                
-                // 마우스 위치 - 오프셋 = 새 좌표
                 double newX = currentPoint.X - _annotationDragStartOffset.X;
                 double newY = currentPoint.Y - _annotationDragStartOffset.Y;
 
@@ -236,8 +275,7 @@ namespace MinsPDFViewer
                 return; 
             } 
             
-            // 2. 영역 선택
-            if (_currentTool == "CURSOR" && pageVM.IsSelecting) 
+            if ((_currentTool == "CURSOR" || _currentTool == "HIGHLIGHT") && pageVM.IsSelecting) 
             { 
                 var pt = e.GetPosition(grid); 
                 double x = Math.Min(_dragStartPoint.X, pt.X); 
@@ -251,7 +289,6 @@ namespace MinsPDFViewer
             } 
         }
 
-        // [수정] Grid에서 MouseUp 처리
         private void Page_MouseUp(object sender, MouseButtonEventArgs e) 
         { 
             var grid = sender as Grid; 
@@ -260,7 +297,17 @@ namespace MinsPDFViewer
             grid.ReleaseMouseCapture(); 
             
             var p = SelectedDocument.Pages[_activePageIndex]; 
-            if (p.IsSelecting && _currentTool == "CURSOR") 
+            
+            if (_currentTool == "HIGHLIGHT" && p.IsSelecting)
+            {
+                if (p.SelectionWidth > 5 && p.SelectionHeight > 5)
+                {
+                    _selectedPageIndex = _activePageIndex;
+                    AddAnnotation(Colors.Yellow, AnnotationType.Highlight); 
+                }
+                p.IsSelecting = false;
+            }
+            else if (p.IsSelecting && _currentTool == "CURSOR") 
             { 
                 if (p.SelectionWidth > 5 && p.SelectionHeight > 5) 
                 { 
@@ -285,13 +332,11 @@ namespace MinsPDFViewer
             CheckToolbarVisibility(); 
         }
         
-        // [수정] 텍스트 박스 헤더 클릭 시 드래그 시작 (부모 Grid 찾아서 캡처)
         private void AnnotationDragHandle_PreviewMouseDown(object sender, MouseButtonEventArgs e)
         {
             var border = sender as FrameworkElement;
             if (border?.DataContext is PdfAnnotation ann)
             {
-                // 주석 선택 유지
                 if (_selectedAnnotation != null && _selectedAnnotation != ann)
                     _selectedAnnotation.IsSelected = false;
 
@@ -300,7 +345,6 @@ namespace MinsPDFViewer
                 UpdateToolbarFromAnnotation(ann);
                 CheckToolbarVisibility();
 
-                // 부모 Grid 찾기
                 _activePageIndex = -1;
                 DependencyObject parent = border;
                 Grid? parentGrid = null;
@@ -316,27 +360,23 @@ namespace MinsPDFViewer
                     parent = VisualTreeHelper.GetParent(parent);
                 }
 
-                // Grid에 캡처 및 드래그 변수 설정
                 if (parentGrid != null)
                 {
                     _currentTool = "CURSOR";
                     _isDraggingAnnotation = true;
                     
-                    // 주석(ItemsControl Item) 기준 클릭 위치 오프셋 계산
-                    // ItemsControl 내부 컨테이너 찾기
                     var container = GetParentContentPresenter(border);
                     if (container != null)
                         _annotationDragStartOffset = e.GetPosition(container);
                     else
                         _annotationDragStartOffset = e.GetPosition(border);
 
-                    parentGrid.CaptureMouse(); // 드래그가 Grid 밖으로 나가도 유지되도록 캡처
+                    parentGrid.CaptureMouse(); 
                     e.Handled = true; 
                 }
             }
         }
         
-        // [추가] ContentPresenter(주석의 실제 컨테이너)를 찾는 헬퍼
         private FrameworkElement? GetParentContentPresenter(DependencyObject child)
         {
             DependencyObject parent = child;
@@ -384,19 +424,17 @@ namespace MinsPDFViewer
             { 
                 if (!_isDraggingAnnotation)
                 {
-                    // 다른 주석 선택 해제
                     if (_selectedAnnotation != null && _selectedAnnotation != ann)
                         _selectedAnnotation.IsSelected = false;
 
                     _selectedAnnotation = ann; 
-                    _selectedAnnotation.IsSelected = true; // 헤더 보임 처리
+                    _selectedAnnotation.IsSelected = true;
                     UpdateToolbarFromAnnotation(ann); 
                     CheckToolbarVisibility(); 
                 }
             } 
         }
 
-        // [수정] 일반 주석(형광펜 등) 드래그 처리
         private void Annotation_PreviewMouseDown(object sender, MouseButtonEventArgs e)
         {
             var element = sender as FrameworkElement;
@@ -414,7 +452,6 @@ namespace MinsPDFViewer
                 _selectedAnnotation.IsSelected = true;
                 UpdateToolbarFromAnnotation(ann);
                 
-                // 부모 Grid 찾기
                 DependencyObject parent = element;
                 Grid? parentGrid = null;
                 while (parent != null)
