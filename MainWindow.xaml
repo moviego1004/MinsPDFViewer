@@ -115,6 +115,10 @@
                 <Separator/>
                 
                 <Button Name="BtnOCR" Content="👁 OCR 분석" Click="BtnOCR_Click" FontWeight="Bold" Foreground="Blue"/>
+
+                <Separator/>
+                <Button Name="BtnSignSettings" Content="🔐 서명 설정" Click="BtnSignSettings_Click" FontWeight="Bold" Margin="0,0,5,0"/>
+                <Separator/>
             </ToolBar>
 
             <ToolBar Name="TextStyleToolbar" Visibility="Collapsed">

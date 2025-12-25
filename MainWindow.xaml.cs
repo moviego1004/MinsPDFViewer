@@ -50,6 +50,9 @@ namespace MinsPDFViewer
         private Color _defaultFontColor = Colors.Red;
         private bool _defaultIsBold = false;
 
+        // [신규] 현재 로그인된 서명 설정 저장
+        private SignatureConfig? _currentSignatureConfig;
+
         public MainWindow()
         {
             InitializeComponent();
@@ -568,5 +571,25 @@ namespace MinsPDFViewer
 
         public event System.ComponentModel.PropertyChangedEventHandler? PropertyChanged;
         protected void OnPropertyChanged(string name) => PropertyChanged?.Invoke(this, new System.ComponentModel.PropertyChangedEventArgs(name));
+   
+
+        // [신규] 서명 설정 버튼 클릭 핸들러
+        private void BtnSignSettings_Click(object sender, RoutedEventArgs e)
+        {
+            var dlg = new CertificateWindow();
+            dlg.Owner = this;
+            
+            // 이미 로그인된 상태라면 안내? (일단은 그냥 다시 띄워서 변경 가능하게)
+            
+            if (dlg.ShowDialog() == true)
+            {
+                _currentSignatureConfig = dlg.ResultConfig;
+                // 상태바나 버튼 텍스트 등을 업데이트해서 로그인 상태임을 알려주면 좋음
+                TxtStatus.Text = $"서명 준비 완료: {_currentSignatureConfig?.Certificate.Subject}";
+                BtnSignSettings.Content = "🔐 서명 설정 (완료)";
+                BtnSignSettings.Foreground = Brushes.Green;
+            }
+        }
     }
+
 }
