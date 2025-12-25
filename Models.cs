@@ -2,10 +2,11 @@ using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.Windows.Media;
+using PdfSharp.Pdf; // [필수] PdfDocument 참조용
 
 namespace MinsPDFViewer
 {
-    // [수정] SignatureField 타입 추가됨
+    // 주석 타입
     public enum AnnotationType
     {
         Highlight,
@@ -15,6 +16,7 @@ namespace MinsPDFViewer
         SignatureField // 클릭 가능한 서명 영역
     }
 
+    // 문서 모델
     public class PdfDocumentModel : INotifyPropertyChanged
     {
         public string FilePath { get; set; } = "";
@@ -39,6 +41,7 @@ namespace MinsPDFViewer
         protected void OnPropertyChanged(string name) => PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));
     }
 
+    // 페이지 뷰모델
     public class PdfPageViewModel : INotifyPropertyChanged
     {
         public int PageIndex { get; set; }
@@ -78,6 +81,7 @@ namespace MinsPDFViewer
         protected void OnPropertyChanged(string name) => PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));
     }
 
+    // 주석 뷰모델
     public class PdfAnnotation : INotifyPropertyChanged
     {
         private double _x, _y, _width, _height;
@@ -93,11 +97,12 @@ namespace MinsPDFViewer
         // FreeText용 속성
         public string TextContent { get; set; } = "";
         public double FontSize { get; set; } = 12;
-        public FontFamily FontFamily { get; set; } = new FontFamily("Malgun Gothic");
+        // [주의] 여기서 FontFamily는 string 타입입니다.
+        public string FontFamily { get; set; } = "Malgun Gothic"; 
         public Brush Foreground { get; set; } = Brushes.Black;
         public bool IsBold { get; set; } = false;
 
-        // [신규] 서명 필드용 데이터 (검증을 위해 PDF 내부 Dictionary 참조 보관)
+        // 서명 필드용 데이터
         public object? SignatureData { get; set; } 
 
         private bool _isSelected;
@@ -111,5 +116,11 @@ namespace MinsPDFViewer
     {
         public string Text { get; set; } = "";
         public System.Windows.Rect BoundingBox { get; set; }
+    }
+
+    // [중요] PdfSignatureService에서 사용하는 클래스 정의 추가
+    public class GenericPdfAnnotation : PdfSharp.Pdf.Annotations.PdfAnnotation
+    {
+        public GenericPdfAnnotation(PdfDocument document) : base(document) { }
     }
 }

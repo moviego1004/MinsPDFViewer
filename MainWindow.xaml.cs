@@ -40,6 +40,7 @@ namespace MinsPDFViewer
         private int _activePageIndex = -1;
         private string _selectedTextBuffer = "";
         private int _selectedPageIndex = -1;
+        
         private bool _isDraggingAnnotation = false;
         private Point _annotationDragStartOffset;
         private bool _isUpdatingUiFromSelection = false;
@@ -86,10 +87,17 @@ namespace MinsPDFViewer
         {
             var listView = sender as ListView;
             if (listView == null) return;
+            
             listView.DataContextChanged -= PdfListView_DataContextChanged;
             listView.DataContextChanged += PdfListView_DataContextChanged;
             if (listView.DataContext is PdfDocumentModel doc) UpdateScrollViewerState(listView, null, doc);
-            if (listView.ItemContainerStyle == null) { var style = new Style(typeof(ListViewItem)); style.Setters.Add(new Setter(UIElement.FocusableProperty, false)); listView.ItemContainerStyle = style; }
+
+            if (listView.ItemContainerStyle == null)
+            {
+                var style = new Style(typeof(ListViewItem));
+                style.Setters.Add(new Setter(UIElement.FocusableProperty, false));
+                listView.ItemContainerStyle = style;
+            }
         }
 
         private void PdfListView_Unloaded(object sender, RoutedEventArgs e) { var listView = sender as ListView; if (listView == null) return; listView.DataContextChanged -= PdfListView_DataContextChanged; var scrollViewer = GetVisualChild<ScrollViewer>(listView); if (scrollViewer != null) scrollViewer.ScrollChanged -= ScrollViewer_ScrollChanged; }
@@ -112,15 +120,14 @@ namespace MinsPDFViewer
         private void AnnotationDragHandle_PreviewMouseDown(object sender, MouseButtonEventArgs e) { var border = sender as FrameworkElement; if (border?.DataContext is PdfAnnotation ann) { if (_selectedAnnotation != null && _selectedAnnotation != ann) _selectedAnnotation.IsSelected = false; _selectedAnnotation = ann; _selectedAnnotation.IsSelected = true; UpdateToolbarFromAnnotation(ann); CheckToolbarVisibility(); _activePageIndex = -1; DependencyObject parent = border; Grid? parentGrid = null; while (parent != null) { if (parent is Grid g && g.Tag is int pageIndex) { _activePageIndex = pageIndex; parentGrid = g; break; } parent = VisualTreeHelper.GetParent(parent); } if (parentGrid != null) { _currentTool = "CURSOR"; _isDraggingAnnotation = true; var container = GetParentContentPresenter(border); _annotationDragStartOffset = container != null ? e.GetPosition(container) : e.GetPosition(border); parentGrid.CaptureMouse(); e.Handled = true; } } }
         private FrameworkElement? GetParentContentPresenter(DependencyObject child) { DependencyObject parent = child; while (parent != null) { if (parent is ContentPresenter cp) return cp; parent = VisualTreeHelper.GetParent(parent); } return null; }
         private void AnnotationTextBox_Loaded(object sender, RoutedEventArgs e) { if (sender is TextBox tb && tb.DataContext is PdfAnnotation ann) { tb.TextChanged -= AnnotationTextBox_TextChanged; tb.TextChanged += AnnotationTextBox_TextChanged; if (ann.IsSelected) tb.Focus(); } }
-        // [수정] string -> FontFamily 변환 오류 해결
+        
         private void AnnotationTextBox_TextChanged(object sender, TextChangedEventArgs e) 
         { 
             if (sender is TextBox tb && tb.DataContext is PdfAnnotation ann) 
             { 
-                // ann.FontFamily는 이미 FontFamily 타입임
                 var formattedText = new FormattedText(tb.Text, CultureInfo.CurrentCulture, FlowDirection.LeftToRight, 
-                    new Typeface(ann.FontFamily, 
-                                 ann.IsBold ? FontStyles.Normal : FontStyles.Normal, // 예시: 간단화
+                    new Typeface(new FontFamily(ann.FontFamily), 
+                                 ann.IsBold ? FontStyles.Normal : FontStyles.Normal, 
                                  ann.IsBold ? FontWeights.Bold : FontWeights.Normal, 
                                  FontStretches.Normal), 
                     ann.FontSize, Brushes.Black, VisualTreeHelper.GetDpi(this).PixelsPerDip); 
@@ -161,24 +168,24 @@ namespace MinsPDFViewer
         private void PdfListView_PreviewMouseWheel(object sender, MouseWheelEventArgs e) { if ((Keyboard.Modifiers & ModifierKeys.Control) == ModifierKeys.Control) { if (SelectedDocument != null) { if (e.Delta > 0) SelectedDocument.Zoom += 0.1; else SelectedDocument.Zoom -= 0.1; } e.Handled = true; } }
         private void BtnDeleteAnnotation_Click(object sender, RoutedEventArgs e) { if (_selectedAnnotation != null && SelectedDocument != null) { foreach(var p in SelectedDocument.Pages) { if (p.Annotations.Contains(_selectedAnnotation)) { p.Annotations.Remove(_selectedAnnotation); _selectedAnnotation = null; CheckToolbarVisibility(); break; } } } else if ((sender as MenuItem)?.CommandParameter is PdfAnnotation a && SelectedDocument != null) { foreach(var p in SelectedDocument.Pages) if (p.Annotations.Contains(a)) { p.Annotations.Remove(a); break; } } }
         private void CheckToolbarVisibility() { bool shouldShow = (_currentTool == "TEXT") || (_selectedAnnotation != null); if (TextStyleToolbar != null) TextStyleToolbar.Visibility = shouldShow ? Visibility.Visible : Visibility.Collapsed; }
+        
         private void ResizeThumb_DragDelta(object sender, DragDeltaEventArgs e) { var thumb = sender as Thumb; if (thumb?.DataContext is PdfAnnotation ann) { ann.Width = Math.Max(50, ann.Width + e.HorizontalChange); ann.Height = Math.Max(30, ann.Height + e.VerticalChange); } }
         private void UpdateToolbarFromAnnotation(PdfAnnotation ann) { _isUpdatingUiFromSelection = true; try { CbFont.SelectedItem = ann.FontFamily; CbSize.SelectedItem = ann.FontSize; BtnBold.IsChecked = ann.IsBold; if (ann.Foreground is SolidColorBrush brush) { foreach (ComboBoxItem item in CbColor.Items) { string cn = item.Tag?.ToString() ?? ""; Color c = Colors.Black; if (cn == "Red") c = Colors.Red; else if (cn == "Blue") c = Colors.Blue; else if (cn == "Green") c = Colors.Green; else if (cn == "Orange") c = Colors.Orange; if (brush.Color == c) { CbColor.SelectedItem = item; break; } } } } finally { _isUpdatingUiFromSelection = false; } }
         private void StyleChanged(object sender, RoutedEventArgs e) 
         { 
             if (!IsLoaded || _isUpdatingUiFromSelection) return; 
             
-            // 콤보박스 선택된 문자열 가져오기
             string selectedFont = CbFont.SelectedItem?.ToString() ?? "Malgun Gothic";
             _defaultFontFamily = selectedFont; 
             
             if (CbSize.SelectedItem != null) _defaultFontSize = (double)CbSize.SelectedItem; 
             _defaultIsBold = BtnBold.IsChecked == true; 
-            // ... (Color 로직 유지)
+            
+            if (CbColor.SelectedItem is ComboBoxItem item && item.Tag != null) { string cn = item.Tag.ToString() ?? "Black"; if (cn == "Black") _defaultFontColor = Colors.Black; else if (cn == "Red") _defaultFontColor = Colors.Red; else if (cn == "Blue") _defaultFontColor = Colors.Blue; else if (cn == "Green") _defaultFontColor = Colors.Green; else if (cn == "Orange") _defaultFontColor = Colors.Orange; } 
 
             if (_selectedAnnotation != null) 
             { 
-                // [핵심] string -> new FontFamily()
-                _selectedAnnotation.FontFamily = new FontFamily(_defaultFontFamily); 
+                _selectedAnnotation.FontFamily = _defaultFontFamily; 
                 _selectedAnnotation.FontSize = _defaultFontSize; 
                 _selectedAnnotation.IsBold = _defaultIsBold; 
                 _selectedAnnotation.Foreground = new SolidColorBrush(_defaultFontColor); 
@@ -191,29 +198,19 @@ namespace MinsPDFViewer
         public event System.ComponentModel.PropertyChangedEventHandler? PropertyChanged;
         protected void OnPropertyChanged(string name) => PropertyChanged?.Invoke(this, new System.ComponentModel.PropertyChangedEventArgs(name));
 
-        // [신규] 서명 수행 및 별도 저장
         private void BtnSign_Click(object sender, RoutedEventArgs e)
         {
             if (SelectedDocument == null) { MessageBox.Show("서명할 문서가 없습니다."); return; }
 
-            // 1. 인증서 선택 및 로그인
             var dlg = new CertificateWindow();
             dlg.Owner = this;
             
             if (dlg.ShowDialog() == true && dlg.ResultConfig != null)
             {
                 var config = dlg.ResultConfig;
-                
-                // 도장 이미지 경로 설정 (실행 파일 경로의 stamp.png 사용 예시)
                 string defaultStampPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "stamp.png");
-                if (File.Exists(defaultStampPath)) 
-                    config.VisualStampPath = defaultStampPath;
-                else
-                {
-                    // 필요 시 사용자에게 안내하거나 이미지 선택 로직 추가
-                }
+                if (File.Exists(defaultStampPath)) config.VisualStampPath = defaultStampPath;
 
-                // 2. 저장 경로 선택
                 var saveDlg = new SaveFileDialog
                 {
                     Filter = "PDF Files|*.pdf",
@@ -225,16 +222,10 @@ namespace MinsPDFViewer
                 {
                     try
                     {
-                        // 3. 현재 상태(주석 포함)를 임시 파일로 저장
                         string tempPath = Path.GetTempFileName();
                         _pdfService.SavePdf(SelectedDocument, tempPath);
-
-                        // 4. 임시 파일에 서명 수행
                         _signatureService.SignPdf(tempPath, saveDlg.FileName, config);
-
-                        // 5. 임시 파일 삭제
                         if (File.Exists(tempPath)) File.Delete(tempPath);
-
                         MessageBox.Show($"전자서명 완료!\n저장됨: {saveDlg.FileName}");
                     }
                     catch (Exception ex)
@@ -244,7 +235,7 @@ namespace MinsPDFViewer
                 }
             }
         }
-        // [신규] 서명 검증 버튼 클릭 핸들러 (클래스 내부에 추가)
+
         private void BtnVerifySignature_Click(object sender, RoutedEventArgs e)
         {
             if (sender is FrameworkElement element && element.DataContext is PdfAnnotation ann)
@@ -252,9 +243,7 @@ namespace MinsPDFViewer
                 if (ann.Type == AnnotationType.SignatureField && ann.SignatureData is PdfSharp.Pdf.PdfDictionary sigDict)
                 {
                     var verifier = new SignatureVerificationService();
-                    // 현재 파일 경로 사용
                     var result = verifier.VerifySignature(SelectedDocument!.FilePath, sigDict);
-
                     var win = new SignatureResultWindow(result);
                     win.Owner = this;
                     win.ShowDialog();

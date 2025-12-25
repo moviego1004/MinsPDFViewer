@@ -8,7 +8,8 @@ using Docnet.Core.Models;
 using PdfSharp.Pdf;
 using PdfSharp.Pdf.IO;
 using PdfSharp.Pdf.Advanced;
-using PdfSharp.Pdf.Annotations; // [추가]
+using PdfSharp.Pdf.Annotations;
+using PdfSharp.Drawing; // [필수] ToXRect() 확장 메서드용
 
 namespace MinsPDFViewer
 {
@@ -54,7 +55,6 @@ namespace MinsPDFViewer
                 PdfDocument? sharpDoc = null;
                 try
                 {
-                    // [수정] ReadOnly -> Import 사용 (경고 해결)
                     sharpDoc = PdfReader.Open(model.FilePath, PdfDocumentOpenMode.Import);
                 }
                 catch { }
@@ -112,16 +112,15 @@ namespace MinsPDFViewer
         {
             if (page.Annotations == null) return;
 
-            // [수정] PdfAnnotation으로 안전하게 접근
             for (int k = 0; k < page.Annotations.Count; k++)
             {
-                var annot = page.Annotations[k]; // 여기서 annot은 PdfAnnotation 타입
+                var annot = page.Annotations[k];
                 
-                // Elements 속성 접근 가능해짐
                 if (annot.Elements.ContainsKey("/Subtype") && annot.Elements.GetString("/Subtype") == "/Widget" && 
                     annot.Elements.ContainsKey("/FT") && annot.Elements.GetString("/FT") == "/Sig")
                 {
-                    var rect = annot.Rectangle; 
+                    // [수정] .ToXRect() 사용하여 XRect로 변환해야 X, Y 접근 가능
+                    var rect = annot.Rectangle.ToXRect(); 
                     
                     double scaleX = renderPixelWidth / page.Width.Point;
                     double scaleY = renderPixelHeight / page.Height.Point;
@@ -131,7 +130,6 @@ namespace MinsPDFViewer
                     double finalW = rect.Width * scaleX;
                     double finalH = rect.Height * scaleY;
 
-                    // 검증용 딕셔너리 추출
                     var sigDict = annot.Elements.GetDictionary("/V");
                     
                     var sigAnnot = new PdfAnnotation

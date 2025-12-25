@@ -99,6 +99,7 @@ namespace MinsPDFViewer
                 string placeholder = new string(PlaceholderChar, EstimatedSignatureSize * 2);
                 sigDict.Elements["/Contents"] = new PdfString(placeholder);
 
+                // ByteRange 공간 확보 (충분히 길게 0으로 채움)
                 var byteRangePlaceholder = new PdfArray(doc);
                 byteRangePlaceholder.Elements.Add(new PdfInteger(0));
                 byteRangePlaceholder.Elements.Add(new PdfInteger(int.MaxValue));
@@ -114,8 +115,7 @@ namespace MinsPDFViewer
                     catalog.Elements["/AcroForm"] = acroForm;
                 }
 
-                // [수정] GenericPdfAnnotation -> PdfAnnotation (보통 이것으로 충분)
-                var sigField = new PdfAnnotation(doc);
+                var sigField = new GenericPdfAnnotation(doc);
                 sigField.Elements["/Type"] = new PdfName("/Annot");
                 sigField.Elements["/Subtype"] = new PdfName("/Widget");
                 sigField.Elements["/FT"] = new PdfName("/Sig");
@@ -142,10 +142,12 @@ namespace MinsPDFViewer
 
         private byte[] SignWithBouncyCastle(byte[] pdfBytes, SignatureConfig config)
         {
+            // 1. Placeholder 위치 찾기
             byte[] searchPattern = Encoding.ASCII.GetBytes(new string(PlaceholderChar, 50));
             int patternPos = FindBytes(pdfBytes, searchPattern, 0);
             if (patternPos == -1) throw new Exception("서명 공간(Placeholder)을 찾을 수 없습니다.");
 
+            // 2. Contents 괄호 범위 찾기
             int startOffset = -1;
             for (int i = patternPos; i >= Math.Max(0, patternPos - 20); i--)
             {
@@ -162,6 +164,8 @@ namespace MinsPDFViewer
             if (endOffset == -1) throw new Exception("서명 Placeholder의 끝을 찾을 수 없습니다.");
             
             int availableSpace = endOffset - startOffset;
+
+            // 3. ByteRange 위치 찾기
             byte[] byteRangeKey = Encoding.ASCII.GetBytes("/ByteRange");
             int byteRangePos = LastIndexOfBytes(pdfBytes, byteRangeKey, startOffset);
             
@@ -174,16 +178,35 @@ namespace MinsPDFViewer
 
             int byteRangeStart = -1;
             for(int i = byteRangePos; i < byteRangePos + 200; i++) { if(pdfBytes[i] == '[') { byteRangeStart = i; break; } }
-            
             int byteRangeEnd = -1;
             for(int i = byteRangeStart; i < byteRangeStart + 200; i++) { if(pdfBytes[i] == ']') { byteRangeEnd = i; break; } }
 
+            // 4. [핵심 수정] ByteRange 값을 먼저 계산하고, 원본 pdfBytes에 '미리' 덮어씌움
+            //    그래야 이 값을 포함해서 해시를 계산할 때, 최종 파일 내용과 일치하게 됨.
             int fileLen = pdfBytes.Length;
             int excludeStart = startOffset - 1; 
             int excludeEnd = endOffset + 1;    
 
+            string newByteRangeStr = $"[0 {excludeStart} {excludeEnd} {fileLen - excludeEnd}]";
+            byte[] newByteRangeBytes = Encoding.ASCII.GetBytes(newByteRangeStr);
+            int byteRangeAvailable = byteRangeEnd - byteRangeStart + 1;
+
+            if (newByteRangeBytes.Length > byteRangeAvailable)
+                throw new Exception($"ByteRange 예약 공간 부족 (필요: {newByteRangeBytes.Length}, 확보: {byteRangeAvailable})");
+
+            // (1) pdfBytes에 ByteRange 업데이트 (패치)
+            Array.Copy(newByteRangeBytes, 0, pdfBytes, byteRangeStart, newByteRangeBytes.Length);
+            // 남는 공간은 공백(0x20)으로 채움
+            for(int k = byteRangeStart + newByteRangeBytes.Length; k <= byteRangeEnd; k++) 
+            {
+                pdfBytes[k] = 32; 
+            }
+
+            // 5. 서명 데이터 생성 (이제 pdfBytes는 올바른 ByteRange 값을 포함하고 있음)
+            //    서명 제외 범위: Contents의 괄호 포함 영역
             byte[] range1 = new byte[excludeStart];
             Array.Copy(pdfBytes, 0, range1, 0, excludeStart);
+            
             byte[] range2 = new byte[fileLen - excludeEnd];
             Array.Copy(pdfBytes, excludeEnd, range2, 0, range2.Length);
 
@@ -197,24 +220,17 @@ namespace MinsPDFViewer
 
             if (sigBytes.Length > availableSpace) throw new Exception("서명 공간 부족");
 
+            // 6. 서명 값 주입 (Contents 업데이트)
+            //    참고: pdfBytes는 이미 위에서 ByteRange가 수정된 상태이므로 그대로 사용
             byte[] finalPdf = new byte[fileLen];
-            Array.Copy(pdfBytes, finalPdf, fileLen);
+            Array.Copy(pdfBytes, finalPdf, fileLen); // 복사해서 최종본 생성
 
             finalPdf[excludeStart] = (byte)'<'; 
             Array.Copy(sigBytes, 0, finalPdf, startOffset, sigBytes.Length);
             for (int k = startOffset + sigBytes.Length; k < endOffset; k++) finalPdf[k] = 0;
             finalPdf[endOffset] = (byte)'>';
 
-            string newByteRangeStr = $"[0 {excludeStart} {excludeEnd} {range2.Length}]";
-            byte[] newByteRangeBytes = Encoding.ASCII.GetBytes(newByteRangeStr);
-
-            int byteRangeAvailable = byteRangeEnd - byteRangeStart + 1;
-            if (newByteRangeBytes.Length <= byteRangeAvailable)
-            {
-                Array.Copy(newByteRangeBytes, 0, finalPdf, byteRangeStart, newByteRangeBytes.Length);
-                for(int k = byteRangeStart + newByteRangeBytes.Length; k <= byteRangeEnd; k++) finalPdf[k] = 32; 
-            }
-            else throw new Exception("ByteRange 공간 부족");
+            // (ByteRange는 이미 4번 단계에서 올바르게 수정되어 있음)
 
             return finalPdf;
         }
