@@ -87,6 +87,27 @@
             <Border Width="{Binding Width}" Height="{Binding Height}" Background="{Binding Background}"/>
         </DataTemplate>
 
+         <DataTemplate x:Key="SignatureFieldTemplate">
+            <Button Width="{Binding Width}" Height="{Binding Height}"
+                    Background="#2000FF00" 
+                    BorderBrush="Red" BorderThickness="1"
+                    Cursor="Hand"
+                    ToolTip="클릭하여 서명 검증"
+                    Click="BtnVerifySignature_Click">
+                <Button.Template>
+                    <ControlTemplate TargetType="Button">
+                        <Border Background="{TemplateBinding Background}" 
+                                BorderBrush="{TemplateBinding BorderBrush}" 
+                                BorderThickness="{TemplateBinding BorderThickness}">
+                             <TextBlock Text="🔒 서명" Foreground="Red" FontWeight="Bold" 
+                                        HorizontalAlignment="Left" VerticalAlignment="Top" 
+                                        FontSize="10" Margin="2"/>
+                        </Border>
+                    </ControlTemplate>
+                </Button.Template>
+            </Button>
+        </DataTemplate>
+
     </Window.Resources>
 
     <Grid>
@@ -232,6 +253,9 @@
                                                                     </DataTrigger>
                                                                     <DataTrigger Binding="{Binding Type}" Value="SearchHighlight">
                                                                         <Setter Property="ContentTemplate" Value="{StaticResource SearchHighlightTemplate}"/>
+                                                                    </DataTrigger>
+                                                                    <DataTrigger Binding="{Binding Type}" Value="SignatureField">
+                                                                        <Setter Property="ContentTemplate" Value="{StaticResource SignatureFieldTemplate}"/>
                                                                     </DataTrigger>
                                                                 </Style.Triggers>
                                                             </Style>

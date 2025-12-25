@@ -1,0 +1,57 @@
+<Window x:Class="MinsPDFViewer.SignatureResultWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="전자서명 검증 결과" Height="350" Width="450"
+        WindowStartupLocation="CenterOwner" ResizeMode="NoResize">
+    <Grid Margin="20">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="20"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <StackPanel Grid.Row="0" Orientation="Horizontal" HorizontalAlignment="Center">
+            <TextBlock Name="TxtIcon" Text="✅" FontSize="30" Margin="0,0,10,0"/>
+            <TextBlock Name="TxtTitle" Text="서명이 유효합니다" FontSize="20" FontWeight="Bold" VerticalAlignment="Center"/>
+        </StackPanel>
+
+        <Border Grid.Row="2" BorderBrush="Gray" BorderThickness="1" CornerRadius="5" Padding="15" Background="#FAFAFA">
+            <Grid>
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="10"/>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="10"/>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="10"/>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="10"/>
+                    <RowDefinition Height="Auto"/>
+                </Grid.RowDefinitions>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="80"/>
+                    <ColumnDefinition Width="*"/>
+                </Grid.ColumnDefinitions>
+
+                <TextBlock Grid.Row="0" Grid.Column="0" Text="서명자 :" FontWeight="Bold" Foreground="Gray"/>
+                <TextBlock Grid.Row="0" Grid.Column="1" Name="TxtSigner" Text="홍길동" FontWeight="Bold"/>
+
+                <TextBlock Grid.Row="2" Grid.Column="0" Text="서명일자 :" FontWeight="Bold" Foreground="Gray"/>
+                <TextBlock Grid.Row="2" Grid.Column="1" Name="TxtDate" Text="2024-01-01 12:00:00"/>
+
+                <TextBlock Grid.Row="4" Grid.Column="0" Text="서명위치 :" FontWeight="Bold" Foreground="Gray"/>
+                <TextBlock Grid.Row="4" Grid.Column="1" Name="TxtLocation" Text="Korea"/>
+
+                <TextBlock Grid.Row="6" Grid.Column="0" Text="서명사유 :" FontWeight="Bold" Foreground="Gray"/>
+                <TextBlock Grid.Row="6" Grid.Column="1" Name="TxtReason" Text="동의함" TextWrapping="Wrap"/>
+                
+                <TextBlock Grid.Row="8" Grid.Column="0" Text="무결성 :" FontWeight="Bold" Foreground="Gray"/>
+                <TextBlock Grid.Row="8" Grid.Column="1" Name="TxtIntegrity" Text="문서가 변조되지 않았습니다." Foreground="Green"/>
+            </Grid>
+        </Border>
+
+        <Button Grid.Row="4" Content="닫기" Width="100" Height="30" Click="BtnClose_Click"/>
+    </Grid>
+</Window>

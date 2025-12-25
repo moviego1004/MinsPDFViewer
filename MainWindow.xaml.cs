@@ -112,7 +112,25 @@ namespace MinsPDFViewer
         private void AnnotationDragHandle_PreviewMouseDown(object sender, MouseButtonEventArgs e) { var border = sender as FrameworkElement; if (border?.DataContext is PdfAnnotation ann) { if (_selectedAnnotation != null && _selectedAnnotation != ann) _selectedAnnotation.IsSelected = false; _selectedAnnotation = ann; _selectedAnnotation.IsSelected = true; UpdateToolbarFromAnnotation(ann); CheckToolbarVisibility(); _activePageIndex = -1; DependencyObject parent = border; Grid? parentGrid = null; while (parent != null) { if (parent is Grid g && g.Tag is int pageIndex) { _activePageIndex = pageIndex; parentGrid = g; break; } parent = VisualTreeHelper.GetParent(parent); } if (parentGrid != null) { _currentTool = "CURSOR"; _isDraggingAnnotation = true; var container = GetParentContentPresenter(border); _annotationDragStartOffset = container != null ? e.GetPosition(container) : e.GetPosition(border); parentGrid.CaptureMouse(); e.Handled = true; } } }
         private FrameworkElement? GetParentContentPresenter(DependencyObject child) { DependencyObject parent = child; while (parent != null) { if (parent is ContentPresenter cp) return cp; parent = VisualTreeHelper.GetParent(parent); } return null; }
         private void AnnotationTextBox_Loaded(object sender, RoutedEventArgs e) { if (sender is TextBox tb && tb.DataContext is PdfAnnotation ann) { tb.TextChanged -= AnnotationTextBox_TextChanged; tb.TextChanged += AnnotationTextBox_TextChanged; if (ann.IsSelected) tb.Focus(); } }
-        private void AnnotationTextBox_TextChanged(object sender, TextChangedEventArgs e) { if (sender is TextBox tb && tb.DataContext is PdfAnnotation ann) { var formattedText = new FormattedText(tb.Text, CultureInfo.CurrentCulture, FlowDirection.LeftToRight, new Typeface(ann.FontFamily), ann.FontSize, Brushes.Black, VisualTreeHelper.GetDpi(this).PixelsPerDip); double minWidth = 100; double minHeight = 50; ann.Width = Math.Max(minWidth, formattedText.Width + 25); ann.Height = Math.Max(minHeight, formattedText.Height + 20 + 10); } }
+        // [수정] string -> FontFamily 변환 오류 해결
+        private void AnnotationTextBox_TextChanged(object sender, TextChangedEventArgs e) 
+        { 
+            if (sender is TextBox tb && tb.DataContext is PdfAnnotation ann) 
+            { 
+                // ann.FontFamily는 이미 FontFamily 타입임
+                var formattedText = new FormattedText(tb.Text, CultureInfo.CurrentCulture, FlowDirection.LeftToRight, 
+                    new Typeface(ann.FontFamily, 
+                                 ann.IsBold ? FontStyles.Normal : FontStyles.Normal, // 예시: 간단화
+                                 ann.IsBold ? FontWeights.Bold : FontWeights.Normal, 
+                                 FontStretches.Normal), 
+                    ann.FontSize, Brushes.Black, VisualTreeHelper.GetDpi(this).PixelsPerDip); 
+                
+                double minWidth = 100; double minHeight = 50; 
+                ann.Width = Math.Max(minWidth, formattedText.Width + 25); 
+                ann.Height = Math.Max(minHeight, formattedText.Height + 20 + 10); 
+            }
+        }
+
         private void AnnotationTextBox_GotFocus(object sender, RoutedEventArgs e) { if (sender is TextBox tb && tb.DataContext is PdfAnnotation ann) { if (!_isDraggingAnnotation) { if (_selectedAnnotation != null && _selectedAnnotation != ann) _selectedAnnotation.IsSelected = false; _selectedAnnotation = ann; _selectedAnnotation.IsSelected = true; UpdateToolbarFromAnnotation(ann); CheckToolbarVisibility(); } } }
         private void Annotation_PreviewMouseDown(object sender, MouseButtonEventArgs e) { var element = sender as FrameworkElement; if (element?.DataContext is PdfAnnotation ann && ann.Type != AnnotationType.FreeText) { if (_currentTool != "CURSOR") { _currentTool = "CURSOR"; RbCursor.IsChecked = true; CheckToolbarVisibility(); } if (_selectedAnnotation != null) _selectedAnnotation.IsSelected = false; _selectedAnnotation = ann; _selectedAnnotation.IsSelected = true; UpdateToolbarFromAnnotation(ann); DependencyObject parent = element; Grid? parentGrid = null; while (parent != null) { if (parent is Grid g && g.Tag is int idx) { _activePageIndex = idx; parentGrid = g; break; } parent = VisualTreeHelper.GetParent(parent); } if (parentGrid != null) { _annotationDragStartOffset = e.GetPosition(element); _isDraggingAnnotation = true; parentGrid.CaptureMouse(); e.Handled = true; } } }
         
@@ -145,7 +163,28 @@ namespace MinsPDFViewer
         private void CheckToolbarVisibility() { bool shouldShow = (_currentTool == "TEXT") || (_selectedAnnotation != null); if (TextStyleToolbar != null) TextStyleToolbar.Visibility = shouldShow ? Visibility.Visible : Visibility.Collapsed; }
         private void ResizeThumb_DragDelta(object sender, DragDeltaEventArgs e) { var thumb = sender as Thumb; if (thumb?.DataContext is PdfAnnotation ann) { ann.Width = Math.Max(50, ann.Width + e.HorizontalChange); ann.Height = Math.Max(30, ann.Height + e.VerticalChange); } }
         private void UpdateToolbarFromAnnotation(PdfAnnotation ann) { _isUpdatingUiFromSelection = true; try { CbFont.SelectedItem = ann.FontFamily; CbSize.SelectedItem = ann.FontSize; BtnBold.IsChecked = ann.IsBold; if (ann.Foreground is SolidColorBrush brush) { foreach (ComboBoxItem item in CbColor.Items) { string cn = item.Tag?.ToString() ?? ""; Color c = Colors.Black; if (cn == "Red") c = Colors.Red; else if (cn == "Blue") c = Colors.Blue; else if (cn == "Green") c = Colors.Green; else if (cn == "Orange") c = Colors.Orange; if (brush.Color == c) { CbColor.SelectedItem = item; break; } } } } finally { _isUpdatingUiFromSelection = false; } }
-        private void StyleChanged(object sender, RoutedEventArgs e) { if (!IsLoaded || _isUpdatingUiFromSelection) return; if (CbFont.SelectedItem != null) _defaultFontFamily = CbFont.SelectedItem.ToString() ?? "Malgun Gothic"; if (CbSize.SelectedItem != null) _defaultFontSize = (double)CbSize.SelectedItem; _defaultIsBold = BtnBold.IsChecked == true; if (CbColor.SelectedItem is ComboBoxItem item && item.Tag != null) { string cn = item.Tag.ToString() ?? "Black"; if (cn == "Black") _defaultFontColor = Colors.Black; else if (cn == "Red") _defaultFontColor = Colors.Red; else if (cn == "Blue") _defaultFontColor = Colors.Blue; else if (cn == "Green") _defaultFontColor = Colors.Green; else if (cn == "Orange") _defaultFontColor = Colors.Orange; } if (_selectedAnnotation != null) { _selectedAnnotation.FontFamily = _defaultFontFamily; _selectedAnnotation.FontSize = _defaultFontSize; _selectedAnnotation.IsBold = _defaultIsBold; _selectedAnnotation.Foreground = new SolidColorBrush(_defaultFontColor); } }
+        private void StyleChanged(object sender, RoutedEventArgs e) 
+        { 
+            if (!IsLoaded || _isUpdatingUiFromSelection) return; 
+            
+            // 콤보박스 선택된 문자열 가져오기
+            string selectedFont = CbFont.SelectedItem?.ToString() ?? "Malgun Gothic";
+            _defaultFontFamily = selectedFont; 
+            
+            if (CbSize.SelectedItem != null) _defaultFontSize = (double)CbSize.SelectedItem; 
+            _defaultIsBold = BtnBold.IsChecked == true; 
+            // ... (Color 로직 유지)
+
+            if (_selectedAnnotation != null) 
+            { 
+                // [핵심] string -> new FontFamily()
+                _selectedAnnotation.FontFamily = new FontFamily(_defaultFontFamily); 
+                _selectedAnnotation.FontSize = _defaultFontSize; 
+                _selectedAnnotation.IsBold = _defaultIsBold; 
+                _selectedAnnotation.Foreground = new SolidColorBrush(_defaultFontColor); 
+            } 
+        }
+        
         private void Tool_Click(object sender, RoutedEventArgs e) { if (RbCursor.IsChecked == true) _currentTool = "CURSOR"; else if (RbHighlight.IsChecked == true) _currentTool = "HIGHLIGHT"; else if (RbText.IsChecked == true) _currentTool = "TEXT"; CheckToolbarVisibility(); }
         private void Window_KeyDown(object sender, KeyEventArgs e) { if (e.Key == Key.F && (Keyboard.Modifiers & ModifierKeys.Control) == ModifierKeys.Control) { TxtSearch.Focus(); TxtSearch.SelectAll(); e.Handled = true; } else if (e.Key == Key.Delete) BtnDeleteAnnotation_Click(this, new RoutedEventArgs()); else if (e.Key == Key.Escape && _selectedAnnotation != null) { _selectedAnnotation.IsSelected = false; _selectedAnnotation = null; CheckToolbarVisibility(); } }
         private static T? GetVisualChild<T>(DependencyObject parent) where T : Visual { if (parent == null) return null; T? child = default(T); int numVisuals = VisualTreeHelper.GetChildrenCount(parent); for (int i = 0; i < numVisuals; i++) { Visual v = (Visual)VisualTreeHelper.GetChild(parent, i); child = v as T; if (child == null) child = GetVisualChild<T>(v); if (child != null) break; } return child; }
@@ -202,6 +241,23 @@ namespace MinsPDFViewer
                     {
                         MessageBox.Show($"서명 실패: {ex.Message}");
                     }
+                }
+            }
+        }
+        // [신규] 서명 검증 버튼 클릭 핸들러 (클래스 내부에 추가)
+        private void BtnVerifySignature_Click(object sender, RoutedEventArgs e)
+        {
+            if (sender is FrameworkElement element && element.DataContext is PdfAnnotation ann)
+            {
+                if (ann.Type == AnnotationType.SignatureField && ann.SignatureData is PdfSharp.Pdf.PdfDictionary sigDict)
+                {
+                    var verifier = new SignatureVerificationService();
+                    // 현재 파일 경로 사용
+                    var result = verifier.VerifySignature(SelectedDocument!.FilePath, sigDict);
+
+                    var win = new SignatureResultWindow(result);
+                    win.Owner = this;
+                    win.ShowDialog();
                 }
             }
         }
