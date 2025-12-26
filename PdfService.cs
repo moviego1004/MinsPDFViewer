@@ -9,7 +9,7 @@ using PdfSharp.Pdf;
 using PdfSharp.Pdf.IO;
 using PdfSharp.Pdf.Advanced;
 using PdfSharp.Pdf.Annotations;
-using PdfSharp.Drawing; // [필수] ToXRect() 확장 메서드용
+using PdfSharp.Drawing; 
 
 namespace MinsPDFViewer
 {
@@ -55,6 +55,7 @@ namespace MinsPDFViewer
                 PdfDocument? sharpDoc = null;
                 try
                 {
+                    // 파일 잠금 방지를 위해 Import 모드로 열기
                     sharpDoc = PdfReader.Open(model.FilePath, PdfDocumentOpenMode.Import);
                 }
                 catch { }
@@ -65,7 +66,10 @@ namespace MinsPDFViewer
                     {
                         var width = pageReader.GetPageWidth();
                         var height = pageReader.GetPageHeight();
-                        var rawBytes = pageReader.GetImage();
+                        
+                        // [핵심 수정] 렌더링 시 주석(Annotation/Widget)도 포함하여 그리기
+                        // 이렇게 해야 전자서명 도장(Appearance Stream)이 화면에 보입니다.
+                        var rawBytes = pageReader.GetImage(RenderFlags.RenderAnnotations);
 
                         BitmapSource? source = null;
                         
@@ -116,10 +120,11 @@ namespace MinsPDFViewer
             {
                 var annot = page.Annotations[k];
                 
+                // 서명 필드(/Sig)인지 확인
                 if (annot.Elements.ContainsKey("/Subtype") && annot.Elements.GetString("/Subtype") == "/Widget" && 
                     annot.Elements.ContainsKey("/FT") && annot.Elements.GetString("/FT") == "/Sig")
                 {
-                    // [수정] .ToXRect() 사용하여 XRect로 변환해야 X, Y 접근 가능
+                    // PDF 좌표 -> WPF 화면 좌표 변환
                     var rect = annot.Rectangle.ToXRect(); 
                     
                     double scaleX = renderPixelWidth / page.Width.Point;
@@ -130,6 +135,7 @@ namespace MinsPDFViewer
                     double finalW = rect.Width * scaleX;
                     double finalH = rect.Height * scaleY;
 
+                    // 서명 데이터 추출 (검증용)
                     var sigDict = annot.Elements.GetDictionary("/V");
                     
                     var sigAnnot = new PdfAnnotation
@@ -153,6 +159,7 @@ namespace MinsPDFViewer
         public void SavePdf(PdfDocumentModel model, string outputPath)
         {
             if (model == null || string.IsNullOrEmpty(model.FilePath)) return;
+            // 현재는 단순 파일 복사 (편집 기능이 추가되면 별도 병합 로직 필요)
             File.Copy(model.FilePath, outputPath, true);
         }
     }

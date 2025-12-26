@@ -154,6 +154,7 @@ namespace MinsPDFViewer
             } 
         }
 
+        // [수정] 좌표 계산 로직을 'CropBox' 기준으로 변경하여 정확도 향상
         private void PerformSignatureProcess(PdfAnnotation ann)
         {
             if (SelectedDocument == null) return;
@@ -201,12 +202,30 @@ namespace MinsPDFViewer
                 {
                     try
                     {
-                        double scaleX = targetPage.PdfPageWidthPoint / targetPage.Width;
-                        double scaleY = targetPage.PdfPageHeightPoint / targetPage.Height;
+                        // [핵심 수정] 좌표계 기준을 MediaBox(전체)가 아닌 CropBox(보이는 영역)로 변경
+                        
+                        // 1. 유효 크기 결정 (CropBox가 0이면 MediaBox 사용)
+                        double effectivePdfWidth = (targetPage.CropWidthPoint > 0) ? targetPage.CropWidthPoint : targetPage.PdfPageWidthPoint;
+                        double effectivePdfHeight = (targetPage.CropHeightPoint > 0) ? targetPage.CropHeightPoint : targetPage.PdfPageHeightPoint;
+                        
+                        // 2. 시작점 오프셋 (잘라낸 영역의 시작점)
+                        double pdfOriginX = targetPage.CropX;
+                        double pdfOriginY = targetPage.CropY; 
 
-                        double pdfX = ann.X * scaleX;
-                        double pdfY = targetPage.PdfPageHeightPoint - (ann.Y * scaleY) - (ann.Height * scaleY);
+                        // 3. 스케일 비율 재계산 (보이는 PDF 크기 / 보이는 이미지 크기)
+                        double scaleX = effectivePdfWidth / targetPage.Width;
+                        double scaleY = effectivePdfHeight / targetPage.Height;
 
+                        // 4. 좌표 변환 (WPF -> PDF)
+                        // X: 오프셋 + (화면X * 비율)
+                        double pdfX = pdfOriginX + (ann.X * scaleX);
+                        
+                        // Y: (오프셋 + 높이) - (화면하단Y * 비율) 
+                        // PDF는 좌하단이 기준이므로, 상단(Top)에서 얼마나 내려왔는지를 계산해서 빼줘야 함
+                        // 화면상 서명 박스의 '바닥' 위치를 기준으로 PDF Y를 잡음 (Rect의 Bottom-Left)
+                        double pdfY = (pdfOriginY + effectivePdfHeight) - ((ann.Y + ann.Height) * scaleY);
+
+                        // 5. 최종 영역 생성
                         XRect pdfRect = new XRect(pdfX, pdfY, ann.Width * scaleX, ann.Height * scaleY);
 
                         string tempPath = Path.GetTempFileName();
@@ -366,17 +385,17 @@ namespace MinsPDFViewer
                 VisualStampPath = selectedImagePath 
             };
             
-            if (selectedImagePath != null)
+           if (selectedImagePath != null)
             {
                 try
                 {
-                    // [수정] 파일 잠금 방지를 위해 OnLoad 옵션 사용
+                    // [수정] 메모리에 로드해두고 파일 연결은 즉시 끊기 (OnLoad 옵션)
                     var bitmap = new BitmapImage();
                     bitmap.BeginInit();
-                    bitmap.CacheOption = BitmapCacheOption.OnLoad; // 메모리에 로드 후 파일 해제
+                    bitmap.CacheOption = BitmapCacheOption.OnLoad; 
                     bitmap.UriSource = new Uri(selectedImagePath);
                     bitmap.EndInit();
-                    bitmap.Freeze(); // 스레드 간 공유 가능하게 동결
+                    bitmap.Freeze(); // 다른 스레드에서도 접근 가능하게 동결
 
                     double ratio = (double)bitmap.PixelWidth / bitmap.PixelHeight;
                     placeholder.Width = 100;

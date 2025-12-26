@@ -22,18 +22,15 @@ namespace MinsPDFViewer
         private const int EstimatedSignatureSize = 8192; 
         private const char PlaceholderChar = 'A'; 
 
-        // [수정된 Appearance Stream 생성 로직]
         public void SignPdf(string sourcePath, string destPath, SignatureConfig config, int pageIndex, XRect? customRect)
         {
-            // ... (파일 열기 및 기본 설정 로직 기존 유지) ...
             if (config == null || config.PrivateKey == null || config.Certificate == null)
                 throw new ArgumentException("서명 설정이 올바르지 않습니다.");
 
             using (var doc = PdfReader.Open(sourcePath, PdfDocumentOpenMode.Modify))
             {
-                // ... (페이지 및 좌표 계산 로직 기존 유지) ...
                 if (pageIndex < 0 || pageIndex >= doc.PageCount) pageIndex = doc.PageCount - 1;
-                var page = doc.Pages[pageIndex];
+                var page = doc.Pages[pageIndex]; 
 
                 double stampWidth = 120;
                 double stampHeight = 60;
@@ -49,21 +46,25 @@ namespace MinsPDFViewer
                 {
                     double margin = 50;
                     double drawX = page.Width.Point - stampWidth - margin;
-                    double drawY = margin;
+                    double drawY = margin; 
                     targetRect = new XRect(drawX, drawY, stampWidth, stampHeight);
                 }
+
                 var sigRect = new PdfRectangle(targetRect);
 
-                // ... (서명 딕셔너리 생성 로직 기존 유지) ...
                 var sigDict = new PdfDictionary(doc);
-                // ... (딕셔너리 내용 채우기 생략 - 기존 코드 참조) ...
                 sigDict.Elements["/Type"] = new PdfName("/Sig");
                 sigDict.Elements["/Filter"] = new PdfName("/Adobe.PPKLite");
                 sigDict.Elements["/SubFilter"] = new PdfName("/adbe.pkcs7.detached");
                 sigDict.Elements["/M"] = new PdfDate(DateTime.Now);
                 sigDict.Elements["/Name"] = new PdfString(config.Certificate.Subject);
+                
+                if (!string.IsNullOrEmpty(config.Reason)) sigDict.Elements["/Reason"] = new PdfString(config.Reason);
+                if (!string.IsNullOrEmpty(config.Location)) sigDict.Elements["/Location"] = new PdfString(config.Location);
+
                 string placeholder = new string(PlaceholderChar, EstimatedSignatureSize * 2);
                 sigDict.Elements["/Contents"] = new PdfString(placeholder);
+
                 var byteRangePlaceholder = new PdfArray(doc);
                 byteRangePlaceholder.Elements.Add(new PdfInteger(0));
                 byteRangePlaceholder.Elements.Add(new PdfInteger(int.MaxValue));
@@ -71,12 +72,14 @@ namespace MinsPDFViewer
                 byteRangePlaceholder.Elements.Add(new PdfInteger(int.MaxValue));
                 sigDict.Elements["/ByteRange"] = byteRangePlaceholder;
 
-                // ... (AcroForm 처리 기존 유지) ...
                 var catalog = doc.Internals.Catalog;
                 var acroForm = catalog.Elements.GetDictionary("/AcroForm");
-                if (acroForm == null) { acroForm = new PdfDictionary(doc); catalog.Elements["/AcroForm"] = acroForm; }
+                if (acroForm == null)
+                {
+                    acroForm = new PdfDictionary(doc);
+                    catalog.Elements["/AcroForm"] = acroForm;
+                }
 
-                // ... (Widget 생성) ...
                 var sigField = new GenericPdfAnnotation(doc);
                 sigField.Elements["/Type"] = new PdfName("/Annot");
                 sigField.Elements["/Subtype"] = new PdfName("/Widget");
@@ -85,9 +88,9 @@ namespace MinsPDFViewer
                 sigField.Elements["/T"] = new PdfString($"Signature{Guid.NewGuid().ToString().Substring(0, 8)}");
                 sigField.Elements["/V"] = sigDict;
                 sigField.Elements["/P"] = page;
-                sigField.Elements["/F"] = new PdfInteger(132);
+                sigField.Elements["/F"] = new PdfInteger(132); 
 
-                // --- [여기서부터 수정] Appearance Stream 생성 ---
+                // --- Appearance Stream 생성 ---
                 if (config.UseVisualStamp)
                 {
                     var form = new XForm(doc, new XRect(0, 0, stampWidth, stampHeight));
@@ -95,15 +98,14 @@ namespace MinsPDFViewer
 
                     using (var gfx = XGraphics.FromForm(form))
                     {
-                        // 1. 배경 흰색 (공통)
-                        gfx.DrawRectangle(XBrushes.White, 0, 0, stampWidth, stampHeight);
+                        // [수정] 배경 흰색 칠하기 제거 -> 투명 배경
+                        // gfx.DrawRectangle(XBrushes.White, 0, 0, stampWidth, stampHeight);
 
-                        // 2. 이미지 그리기 시도
+                        // 1. 이미지 그리기 시도
                         if (!string.IsNullOrEmpty(config.VisualStampPath) && File.Exists(config.VisualStampPath))
                         {
                             try
                             {
-                                // 파일 잠금 방지를 위해 스트림으로 로드
                                 using (var fs = new FileStream(config.VisualStampPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
                                 using (var xImage = XImage.FromStream(fs))
                                 {
@@ -111,28 +113,22 @@ namespace MinsPDFViewer
                                     double imgW = stampWidth;
                                     double imgH = imgW / ratio;
                                     if (imgH > stampHeight) { imgH = stampHeight; imgW = imgH * ratio; }
-                                    
                                     double offsetX = (stampWidth - imgW) / 2;
                                     double offsetY = (stampHeight - imgH) / 2;
                                     gfx.DrawImage(xImage, offsetX, offsetY, imgW, imgH);
-                                    imageDrawn = true; // 성공 플래그
+                                    imageDrawn = true;
                                 }
                             }
-                            catch 
-                            { 
-                                // 이미지 실패 시 무시하고 아래 텍스트 로직으로 넘어감
-                                imageDrawn = false; 
-                            }
+                            catch { imageDrawn = false; }
                         }
 
-                        // 3. 이미지가 없거나 실패했으면 텍스트 도장 그리기
+                        // 2. 텍스트 도장 그리기 (이미지 실패 시 혹은 텍스트 모드)
                         if (!imageDrawn)
                         {
                             var pen = new XPen(XColors.Red, 2);
                             // 테두리
                             gfx.DrawRectangle(pen, 1, 1, stampWidth - 2, stampHeight - 2);
 
-                            // 폰트 (FontResolver가 'Malgun Gothic'을 'malgun.ttc'로 잘 연결해야 함)
                             var fontTitle = new XFont("Malgun Gothic", 10, XFontStyleEx.Bold);
                             var fontBody = new XFont("Malgun Gothic", 8, XFontStyleEx.Regular);
                             var brush = XBrushes.Red;
@@ -146,7 +142,6 @@ namespace MinsPDFViewer
                             gfx.DrawString("[ 전자서명 완료 ]", fontTitle, brush, new XPoint(centerX, centerY - lineHeight), format);
                             
                             string name = config.Certificate.Subject;
-                            // CN=... 파싱해서 이름만 보여주기 (간단 버전)
                             if(name.Contains("CN=")) 
                             {
                                 int start = name.IndexOf("CN=") + 3;
@@ -161,7 +156,6 @@ namespace MinsPDFViewer
                         }
                     }
 
-                    // AP 연결
                     var pdfFormProp = typeof(XForm).GetProperty("PdfForm", BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public);
                     if (pdfFormProp != null)
                     {
@@ -169,14 +163,14 @@ namespace MinsPDFViewer
                         if (obj is PdfFormXObject pdfForm)
                         {
                             var apDict = new PdfDictionary(doc);
-                            apDict.Elements["/N"] = pdfForm.Reference;
+                            apDict.Elements["/N"] = pdfForm.Reference; 
                             sigField.Elements["/AP"] = apDict;
                         }
                     }
                 }
 
-                // ... (나머지 페이지 추가 및 저장 로직 기존 유지) ...
                 page.Annotations.Add(sigField);
+
                 if (acroForm.Elements["/Fields"] is PdfArray fields) fields.Elements.Add(sigField.Reference!);
                 else { var newFields = new PdfArray(doc); newFields.Elements.Add(sigField.Reference!); acroForm.Elements["/Fields"] = newFields; }
 
@@ -189,7 +183,7 @@ namespace MinsPDFViewer
                 }
             }
         }
-        
+
         private byte[] SignWithBouncyCastle(byte[] pdfBytes, SignatureConfig config)
         {
             byte[] searchPattern = Encoding.ASCII.GetBytes(new string(PlaceholderChar, 50));

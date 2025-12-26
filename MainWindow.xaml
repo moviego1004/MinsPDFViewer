@@ -111,20 +111,18 @@
 
         <DataTemplate x:Key="SignatureFieldTemplate">
             <Button Width="{Binding Width}" Height="{Binding Height}"
-                    Background="#2000FF00" 
-                    BorderBrush="Red" BorderThickness="1"
+                    Background="Transparent" 
+                    BorderBrush="Transparent"
+                    BorderThickness="0"
                     Cursor="Hand"
                     ToolTip="클릭하여 서명 검증"
                     Click="BtnVerifySignature_Click">
                 <Button.Template>
                     <ControlTemplate TargetType="Button">
-                        <Border Background="{TemplateBinding Background}" 
-                                BorderBrush="{TemplateBinding BorderBrush}" 
-                                BorderThickness="{TemplateBinding BorderThickness}">
-                             <TextBlock Text="🔒 서명" Foreground="Red" FontWeight="Bold" 
-                                        HorizontalAlignment="Left" VerticalAlignment="Top" 
-                                        FontSize="10" Margin="2"/>
-                        </Border>
+                        <Border Background="Transparent" 
+                                BorderBrush="Transparent" 
+                                BorderThickness="0">
+                             </Border>
                     </ControlTemplate>
                 </Button.Template>
             </Button>

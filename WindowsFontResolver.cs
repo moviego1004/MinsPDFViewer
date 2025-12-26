@@ -33,7 +33,7 @@ namespace MinsPDFViewer
 
             if (lowerFaceName.Contains("malgun")) 
             {
-                // [수정] ttc 우선 확인
+                // [수정] ttc 파일 우선 확인
                 fontPath = Path.Combine(fontsFolder, "malgun.ttc");
                 if (!File.Exists(fontPath)) fontPath = Path.Combine(fontsFolder, "malgun.ttf");
             }
