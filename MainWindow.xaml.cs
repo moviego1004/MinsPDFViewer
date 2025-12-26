@@ -108,28 +108,18 @@ namespace MinsPDFViewer
         private async void BtnPrevSearch_Click(object sender, RoutedEventArgs e) { if (SelectedDocument == null) return; string query = TxtSearch.Text; if (string.IsNullOrWhiteSpace(query)) return; TxtStatus.Text = "이전 찾는 중..."; var foundAnnot = await _searchService.FindPrevAsync(SelectedDocument, query); if (foundAnnot != null) { PdfPageViewModel? targetPage = null; foreach(var p in SelectedDocument.Pages) { if(p.Annotations.Contains(foundAnnot)) { targetPage = p; break; } } if (targetPage != null) { var listView = GetVisualChild<ListView>(MainTabControl); if (listView != null) listView.ScrollIntoView(targetPage); TxtStatus.Text = $"발견: {targetPage.PageIndex + 1}페이지"; } } else { var result = MessageBox.Show("문서의 시작입니다. 끝에서부터 다시 찾으시겠습니까?", "검색 완료", MessageBoxButton.OKCancel, MessageBoxImage.Question); if (result == MessageBoxResult.OK) { _searchService.ResetSearch(); await _searchService.FindPrevAsync(SelectedDocument, query); } else { TxtStatus.Text = "검색 종료"; } } } 
         private async Task FindNextSearchResult() { if (SelectedDocument == null) return; string query = TxtSearch.Text; if (string.IsNullOrWhiteSpace(query)) return; TxtStatus.Text = "검색 중..."; var foundAnnot = await _searchService.FindNextAsync(SelectedDocument, query); if (foundAnnot != null) { PdfPageViewModel? targetPage = null; foreach(var p in SelectedDocument.Pages) { if(p.Annotations.Contains(foundAnnot)) { targetPage = p; break; } } if (targetPage != null) { var listView = GetVisualChild<ListView>(MainTabControl); if (listView != null) listView.ScrollIntoView(targetPage); TxtStatus.Text = $"발견: {targetPage.PageIndex + 1}페이지"; } } else { var result = MessageBox.Show("문서의 끝입니다. 처음부터 다시 찾으시겠습니까?", "검색 완료", MessageBoxButton.OKCancel, MessageBoxImage.Question); if (result == MessageBoxResult.OK) { _searchService.ResetSearch(); await FindNextSearchResult(); } else { TxtStatus.Text = "검색 종료"; } } }
 
-        // [수정] 페이지 마우스 다운: 주석 클릭 시 선택 해제 방지
+        // [수정] 잠금 로직 모두 삭제 (Page_MouseDown, AnnotationDragHandle_PreviewMouseDown 등 원래대로 복구)
         private void Page_MouseDown(object sender, MouseButtonEventArgs e) 
         { 
-            // 클릭한 대상이 주석이면 페이지 클릭 이벤트를 무시 (텍스트 박스 선택 유지)
             if (IsAnnotationObject(e.OriginalSource)) return;
-
-            if (_selectedAnnotation != null) 
-            { 
-                _selectedAnnotation.IsSelected = false; 
-                _selectedAnnotation = null; 
-                CheckToolbarVisibility(); 
-            } 
-
+            if (_selectedAnnotation != null) { _selectedAnnotation.IsSelected = false; _selectedAnnotation = null; CheckToolbarVisibility(); } 
             if (SelectedDocument == null) return; 
             
             var grid = sender as Grid; 
             if (grid == null) return; 
-            
             _activePageIndex = (int)grid.Tag; 
             _dragStartPoint = e.GetPosition(grid); 
             var pageVM = SelectedDocument.Pages[_activePageIndex]; 
-            
             if (_currentTool == "TEXT") 
             { 
                 var newAnnot = new PdfAnnotation { Type = AnnotationType.FreeText, X = _dragStartPoint.X, Y = _dragStartPoint.Y, Width = 150, Height = 50, FontSize = _defaultFontSize, FontFamily = _defaultFontFamily, Foreground = new SolidColorBrush(_defaultFontColor), IsBold = _defaultIsBold, TextContent = "", IsSelected = true }; 
@@ -182,18 +172,11 @@ namespace MinsPDFViewer
             var border = sender as FrameworkElement; 
             if (border?.DataContext is PdfAnnotation ann) 
             {
-                if (e.ClickCount == 2 && ann.Type == AnnotationType.SignaturePlaceholder)
-                {
-                    PerformSignatureProcess(ann);
-                    e.Handled = true;
-                    return; 
-                }
-
+                if (e.ClickCount == 2 && ann.Type == AnnotationType.SignaturePlaceholder) { PerformSignatureProcess(ann); e.Handled = true; return; }
                 if (_selectedAnnotation != null && _selectedAnnotation != ann) _selectedAnnotation.IsSelected = false; 
-                _selectedAnnotation = ann; 
-                _selectedAnnotation.IsSelected = true; 
-                UpdateToolbarFromAnnotation(ann); 
-                CheckToolbarVisibility(); 
+                _selectedAnnotation = ann; _selectedAnnotation.IsSelected = true; 
+                UpdateToolbarFromAnnotation(ann); CheckToolbarVisibility(); 
+                
                 _activePageIndex = -1; 
                 DependencyObject parent = border; 
                 Grid? parentGrid = null; 
@@ -348,7 +331,38 @@ namespace MinsPDFViewer
         }
 
         private void BtnSave_Click(object sender, RoutedEventArgs e) { if (SelectedDocument != null) _pdfService.SavePdf(SelectedDocument, SelectedDocument.FilePath); }
-        private void BtnSaveAs_Click(object sender, RoutedEventArgs e) { if (SelectedDocument == null) return; var dlg = new SaveFileDialog { Filter = "PDF Files|*.pdf", FileName = Path.GetFileNameWithoutExtension(SelectedDocument.FilePath) + "_annotated" }; if (dlg.ShowDialog() == true) _pdfService.SavePdf(SelectedDocument, dlg.FileName); }
+        // [수정] 다른 이름으로 저장 시 현재 문서 정보 갱신
+        private void BtnSaveAs_Click(object sender, RoutedEventArgs e) 
+        { 
+            if (SelectedDocument == null) return; 
+            
+            var dlg = new SaveFileDialog 
+            { 
+                Filter = "PDF Files|*.pdf", 
+                FileName = Path.GetFileNameWithoutExtension(SelectedDocument.FilePath) + "_annotated" 
+            }; 
+            
+            if (dlg.ShowDialog() == true) 
+            { 
+                try
+                {
+                    _pdfService.SavePdf(SelectedDocument, dlg.FileName);
+                    
+                    // [중요] 저장 성공 시 현재 보고 있는 문서의 경로를 새 파일로 변경
+                    SelectedDocument.FilePath = dlg.FileName;
+                    SelectedDocument.FileName = Path.GetFileName(dlg.FileName);
+                    
+                    // 탭 이름 갱신을 위해 PropertyChanged 알림이 필요할 수 있음 
+                    // (PdfDocumentModel이 INotifyPropertyChanged 구현되어 있으므로 자동 반영됨)
+                    
+                    MessageBox.Show("저장되었습니다.");
+                }
+                catch (Exception ex)
+                {
+                    MessageBox.Show($"저장 실패: {ex.Message}");
+                }
+            } 
+        }
         
         private void CheckTextInSelection(int pageIndex, Rect uiRect) { _selectedTextBuffer = ""; if (SelectedDocument?.DocReader == null) return; var sb = new StringBuilder(); using (var reader = SelectedDocument.DocReader.GetPageReader(pageIndex)) { var chars = reader.GetCharacters().ToList(); foreach (var c in chars) { var r = new Rect(Math.Min(c.Box.Left, c.Box.Right), Math.Min(c.Box.Top, c.Box.Bottom), Math.Abs(c.Box.Right - c.Box.Left), Math.Abs(c.Box.Bottom - c.Box.Top)); if (uiRect.IntersectsWith(r)) sb.Append(c.Char); } } var pageVM = SelectedDocument.Pages[pageIndex]; if (pageVM.OcrWords != null) { foreach (var word in pageVM.OcrWords) if (uiRect.IntersectsWith(word.BoundingBox)) sb.Append(word.Text + " "); } _selectedTextBuffer = sb.ToString(); }
         private void BtnPopupCopy_Click(object sender, RoutedEventArgs e) { Clipboard.SetText(_selectedTextBuffer); SelectionPopup.IsOpen = false; }
@@ -459,17 +473,66 @@ namespace MinsPDFViewer
             TxtStatus.Text = "서명 도장을 원하는 위치로 드래그하고 더블 클릭하세요.";
         }
 
+        // [핵심 수정] 서명 검증 버튼 클릭 핸들러
         private void BtnVerifySignature_Click(object sender, RoutedEventArgs e)
         {
+            if (SelectedDocument == null) return;
+
             if (sender is FrameworkElement element && element.DataContext is PdfAnnotation ann)
             {
-                if (ann.Type == AnnotationType.SignatureField && ann.SignatureData is PdfSharp.Pdf.PdfDictionary sigDict)
+                if (ann.Type == AnnotationType.SignatureField)
                 {
-                    var verifier = new SignatureVerificationService();
-                    var result = verifier.VerifySignature(SelectedDocument!.FilePath, sigDict);
-                    var win = new SignatureResultWindow(result);
-                    win.Owner = this;
-                    win.ShowDialog();
+                    try
+                    {
+                        // 1. 현재 파일 경로에서 문서를 새로 엽니다 (읽기 전용)
+                        //    그래야 메모리 해제된 객체 문제없이 최신 데이터를 읽을 수 있습니다.
+                        using (var doc = PdfReader.Open(SelectedDocument.FilePath, PdfDocumentOpenMode.Import))
+                        {
+                            // 2. 전체 페이지를 뒤져서 FieldName이 일치하는 서명 위젯을 찾습니다.
+                            PdfDictionary? targetWidget = null;
+
+                            foreach (var page in doc.Pages)
+                            {
+                                if (page.Annotations != null)
+                                {
+                                    foreach (var pdfAnnot in page.Annotations)
+                                    {
+                                        if (pdfAnnot.Elements.GetString("/Subtype") == "/Widget" &&
+                                            pdfAnnot.Elements.GetString("/FT") == "/Sig")
+                                        {
+                                            // 이름(/T) 비교
+                                            string t = pdfAnnot.Elements.GetString("/T");
+                                            if (t == ann.FieldName)
+                                            {
+                                                targetWidget = pdfAnnot.Elements.GetDictionary("/V");
+                                                break;
+                                            }
+                                        }
+                                    }
+                                }
+                                if (targetWidget != null) break;
+                            }
+
+                            if (targetWidget != null)
+                            {
+                                // 3. 검증 서비스 호출
+                                var verifier = new SignatureVerificationService();
+                                var result = verifier.VerifySignature(SelectedDocument.FilePath, targetWidget);
+                                
+                                var win = new SignatureResultWindow(result);
+                                win.Owner = this;
+                                win.ShowDialog();
+                            }
+                            else
+                            {
+                                MessageBox.Show("서명 데이터를 찾을 수 없습니다.");
+                            }
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        MessageBox.Show($"검증 중 오류 발생: {ex.Message}");
+                    }
                 }
             }
         }

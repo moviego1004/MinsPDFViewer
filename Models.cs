@@ -70,6 +70,9 @@ namespace MinsPDFViewer
         public double SelectionHeight { get => _selectionHeight; set { _selectionHeight = value; OnPropertyChanged(nameof(SelectionHeight)); } }
 
         public List<OcrWordInfo>? OcrWords { get; set; }
+        
+        // 서명 여부는 UI 표시에만 쓰고 잠금 로직엔 안 씀
+        public bool HasSignature { get; set; }
 
         public event PropertyChangedEventHandler? PropertyChanged;
         protected void OnPropertyChanged(string name) => PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));
@@ -87,15 +90,47 @@ namespace MinsPDFViewer
         public Color AnnotationColor { get; set; } = Colors.Yellow; 
         public Brush Background { get; set; } = Brushes.Transparent;
 
-        public string TextContent { get; set; } = "";
-        public double FontSize { get; set; } = 12;
-        public string FontFamily { get; set; } = "Malgun Gothic"; 
-        public Brush Foreground { get; set; } = Brushes.Black;
-        public bool IsBold { get; set; } = false;
+        private string _textContent = "";
+        public string TextContent 
+        { 
+            get => _textContent; 
+            set { _textContent = value; OnPropertyChanged(nameof(TextContent)); } 
+        }
 
+        private double _fontSize = 12;
+        public double FontSize 
+        { 
+            get => _fontSize; 
+            set { _fontSize = value; OnPropertyChanged(nameof(FontSize)); } 
+        }
+
+        private string _fontFamily = "Malgun Gothic";
+        public string FontFamily 
+        { 
+            get => _fontFamily; 
+            set { _fontFamily = value; OnPropertyChanged(nameof(FontFamily)); } 
+        }
+
+        private Brush _foreground = Brushes.Black;
+        public Brush Foreground 
+        { 
+            get => _foreground; 
+            set { _foreground = value; OnPropertyChanged(nameof(Foreground)); } 
+        }
+
+        private bool _isBold = false;
+        public bool IsBold 
+        { 
+            get => _isBold; 
+            set { _isBold = value; OnPropertyChanged(nameof(IsBold)); } 
+        }
+
+        // [신규] 서명 필드 이름 (검증 시 파일에서 다시 찾기 위함)
+        public string FieldName { get; set; } = "";
+        
+        // [삭제] IsLocked 제거 (편집 허용)
         public object? SignatureData { get; set; } 
 
-        // [신규] 스탬프 이미지 경로 저장 속성
         private string? _visualStampPath;
         public string? VisualStampPath 
         { 
