@@ -9,44 +9,44 @@ namespace MinsPDFViewer
     {
         public FontResolverInfo? ResolveTypeface(string familyName, bool isBold, bool isItalic)
         {
-            // 간단한 구현: 윈도우 폰트 폴더에서 해당 폰트를 찾거나 기본 폰트로 매핑
             string fontName = familyName.ToLower();
 
-            // 한글 폰트 매핑 (필요 시 추가)
+            // 한글 폰트 매핑
             if (fontName.Contains("malgun") || fontName.Contains("맑은"))
-                return new FontResolverInfo("Malgun Gothic");
+                return new FontResolverInfo("Malgun Gothic", isBold, isItalic);
             if (fontName.Contains("gulim") || fontName.Contains("굴림"))
-                return new FontResolverInfo("Gulim");
+                return new FontResolverInfo("Gulim", isBold, isItalic);
             if (fontName.Contains("dotum") || fontName.Contains("돋움"))
-                return new FontResolverInfo("Dotum");
+                return new FontResolverInfo("Dotum", isBold, isItalic);
             if (fontName.Contains("batang") || fontName.Contains("바탕"))
-                return new FontResolverInfo("Batang");
+                return new FontResolverInfo("Batang", isBold, isItalic);
 
-            // 기본 폰트 처리
-            if (isBold && isItalic) return new FontResolverInfo("Arial", true, true);
-            if (isBold) return new FontResolverInfo("Arial", true, false);
-            if (isItalic) return new FontResolverInfo("Arial", false, true);
-
-            return new FontResolverInfo("Arial");
+            // 기본 폰트
+            return new FontResolverInfo("Arial", isBold, isItalic);
         }
 
         public byte[]? GetFont(string faceName)
         {
             string fontPath = "";
             string lowerFaceName = faceName.ToLower();
+            string fontsFolder = Environment.GetFolderPath(Environment.SpecialFolder.Fonts);
 
-            // 실제 파일 경로 매핑
-            if (lowerFaceName.Contains("malgun")) fontPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Fonts), "malgun.ttf");
-            else if (lowerFaceName.Contains("gulim")) fontPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Fonts), "gulim.ttc");
-            else if (lowerFaceName.Contains("dotum")) fontPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Fonts), "gulim.ttc"); // 굴림/돋움 같은 파일
-            else if (lowerFaceName.Contains("batang")) fontPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Fonts), "batang.ttc");
-            else fontPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Fonts), "arial.ttf");
+            if (lowerFaceName.Contains("malgun")) 
+            {
+                // [수정] ttc 우선 확인
+                fontPath = Path.Combine(fontsFolder, "malgun.ttc");
+                if (!File.Exists(fontPath)) fontPath = Path.Combine(fontsFolder, "malgun.ttf");
+            }
+            else if (lowerFaceName.Contains("gulim")) fontPath = Path.Combine(fontsFolder, "gulim.ttc");
+            else if (lowerFaceName.Contains("dotum")) fontPath = Path.Combine(fontsFolder, "gulim.ttc");
+            else if (lowerFaceName.Contains("batang")) fontPath = Path.Combine(fontsFolder, "batang.ttc");
+            else fontPath = Path.Combine(fontsFolder, "arial.ttf");
 
             if (File.Exists(fontPath))
             {
                 return File.ReadAllBytes(fontPath);
             }
-            return null; // 폰트 찾기 실패
+            return null; 
         }
     }
 }

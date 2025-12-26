@@ -13,6 +13,28 @@
         
         <local:BoolToFontWeightConverter x:Key="BoolToFontWeightConverter"/>
 
+        <DataTemplate x:Key="SignaturePlaceholderTemplate">
+            <Grid Width="{Binding Width}" Height="{Binding Height}"
+                  Cursor="SizeAll"
+                  PreviewMouseDown="AnnotationDragHandle_PreviewMouseDown">
+                
+                <Rectangle Stroke="Red" StrokeThickness="2" StrokeDashArray="4 2" Fill="#10FF0000"/>
+                <TextBlock Text="더블 클릭하여&#x0a;서명 수행" 
+                           HorizontalAlignment="Center" VerticalAlignment="Center" 
+                           TextAlignment="Center" Foreground="Red" FontWeight="Bold"/>
+
+                <Image Source="{Binding VisualStampPath}" Stretch="Fill" Opacity="0.9"/>
+                
+                <Rectangle Stroke="Blue" StrokeThickness="1" StrokeDashArray="2 2" 
+                           Visibility="{Binding IsSelected, Converter={StaticResource BooleanToVisibilityConverter}}"/>
+
+                <Thumb HorizontalAlignment="Right" VerticalAlignment="Bottom"
+                       Width="10" Height="10" Cursor="SizeNWSE"
+                       DragDelta="ResizeThumb_DragDelta"
+                       Background="Red" Opacity="0.5"/>
+            </Grid>
+        </DataTemplate>
+
         <DataTemplate x:Key="FreeTextTemplate">
             <Grid Width="{Binding Width}" Height="{Binding Height}">
                 <Grid.RowDefinitions>
@@ -87,7 +109,7 @@
             <Border Width="{Binding Width}" Height="{Binding Height}" Background="{Binding Background}"/>
         </DataTemplate>
 
-         <DataTemplate x:Key="SignatureFieldTemplate">
+        <DataTemplate x:Key="SignatureFieldTemplate">
             <Button Width="{Binding Width}" Height="{Binding Height}"
                     Background="#2000FF00" 
                     BorderBrush="Red" BorderThickness="1"
@@ -256,6 +278,9 @@
                                                                     </DataTrigger>
                                                                     <DataTrigger Binding="{Binding Type}" Value="SignatureField">
                                                                         <Setter Property="ContentTemplate" Value="{StaticResource SignatureFieldTemplate}"/>
+                                                                    </DataTrigger>
+                                                                    <DataTrigger Binding="{Binding Type}" Value="SignaturePlaceholder">
+                                                                        <Setter Property="ContentTemplate" Value="{StaticResource SignaturePlaceholderTemplate}"/>
                                                                     </DataTrigger>
                                                                 </Style.Triggers>
                                                             </Style>

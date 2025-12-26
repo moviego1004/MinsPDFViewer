@@ -14,6 +14,8 @@ using Windows.Graphics.Imaging;
 using Windows.Media.Ocr;
 using Windows.Globalization;
 using Microsoft.Win32;
+using PdfSharp.Drawing; 
+using System.Windows.Media.Imaging; // [필수] BitmapImage
 
 namespace MinsPDFViewer
 {
@@ -87,17 +89,10 @@ namespace MinsPDFViewer
         {
             var listView = sender as ListView;
             if (listView == null) return;
-            
             listView.DataContextChanged -= PdfListView_DataContextChanged;
             listView.DataContextChanged += PdfListView_DataContextChanged;
             if (listView.DataContext is PdfDocumentModel doc) UpdateScrollViewerState(listView, null, doc);
-
-            if (listView.ItemContainerStyle == null)
-            {
-                var style = new Style(typeof(ListViewItem));
-                style.Setters.Add(new Setter(UIElement.FocusableProperty, false));
-                listView.ItemContainerStyle = style;
-            }
+            if (listView.ItemContainerStyle == null) { var style = new Style(typeof(ListViewItem)); style.Setters.Add(new Setter(UIElement.FocusableProperty, false)); listView.ItemContainerStyle = style; }
         }
 
         private void PdfListView_Unloaded(object sender, RoutedEventArgs e) { var listView = sender as ListView; if (listView == null) return; listView.DataContextChanged -= PdfListView_DataContextChanged; var scrollViewer = GetVisualChild<ScrollViewer>(listView); if (scrollViewer != null) scrollViewer.ScrollChanged -= ScrollViewer_ScrollChanged; }
@@ -117,7 +112,122 @@ namespace MinsPDFViewer
         private void Page_MouseMove(object sender, MouseEventArgs e) { if (_activePageIndex == -1 || SelectedDocument == null) return; var grid = sender as Grid; if (grid == null) return; var pageVM = SelectedDocument.Pages[_activePageIndex]; if (_currentTool == "CURSOR" && _isDraggingAnnotation && _selectedAnnotation != null) { var currentPoint = e.GetPosition(grid); double newX = currentPoint.X - _annotationDragStartOffset.X; double newY = currentPoint.Y - _annotationDragStartOffset.Y; if (newX < 0) newX = 0; if (newY < 0) newY = 0; _selectedAnnotation.X = newX; _selectedAnnotation.Y = newY; e.Handled = true; return; } if ((_currentTool == "CURSOR" || _currentTool == "HIGHLIGHT") && pageVM.IsSelecting) { var pt = e.GetPosition(grid); double x = Math.Min(_dragStartPoint.X, pt.X); double y = Math.Min(_dragStartPoint.Y, pt.Y); double w = Math.Abs(pt.X - _dragStartPoint.X); double h = Math.Abs(pt.Y - _dragStartPoint.Y); pageVM.SelectionX = x; pageVM.SelectionY = y; pageVM.SelectionWidth = w; pageVM.SelectionHeight = h; } }
         private void Page_MouseUp(object sender, MouseButtonEventArgs e) { var grid = sender as Grid; if (grid == null || _activePageIndex == -1 || SelectedDocument == null) return; grid.ReleaseMouseCapture(); var p = SelectedDocument.Pages[_activePageIndex]; if (_currentTool == "HIGHLIGHT" && p.IsSelecting) { if (p.SelectionWidth > 5 && p.SelectionHeight > 5) { _selectedPageIndex = _activePageIndex; AddAnnotation(Colors.Yellow, AnnotationType.Highlight); } p.IsSelecting = false; } else if (p.IsSelecting && _currentTool == "CURSOR") { if (p.SelectionWidth > 5 && p.SelectionHeight > 5) { var rect = new Rect(p.SelectionX, p.SelectionY, p.SelectionWidth, p.SelectionHeight); CheckTextInSelection(_activePageIndex, rect); SelectionPopup.PlacementTarget = grid; SelectionPopup.PlacementRectangle = new Rect(e.GetPosition(grid).X, e.GetPosition(grid).Y + 10, 0, 0); SelectionPopup.IsOpen = true; _selectedPageIndex = _activePageIndex; TxtStatus.Text = string.IsNullOrEmpty(_selectedTextBuffer) ? "영역 선택됨" : "텍스트 선택됨"; } else { p.IsSelecting = false; TxtStatus.Text = "준비"; } } _activePageIndex = -1; _isDraggingAnnotation = false; e.Handled = true; CheckToolbarVisibility(); }
         
-        private void AnnotationDragHandle_PreviewMouseDown(object sender, MouseButtonEventArgs e) { var border = sender as FrameworkElement; if (border?.DataContext is PdfAnnotation ann) { if (_selectedAnnotation != null && _selectedAnnotation != ann) _selectedAnnotation.IsSelected = false; _selectedAnnotation = ann; _selectedAnnotation.IsSelected = true; UpdateToolbarFromAnnotation(ann); CheckToolbarVisibility(); _activePageIndex = -1; DependencyObject parent = border; Grid? parentGrid = null; while (parent != null) { if (parent is Grid g && g.Tag is int pageIndex) { _activePageIndex = pageIndex; parentGrid = g; break; } parent = VisualTreeHelper.GetParent(parent); } if (parentGrid != null) { _currentTool = "CURSOR"; _isDraggingAnnotation = true; var container = GetParentContentPresenter(border); _annotationDragStartOffset = container != null ? e.GetPosition(container) : e.GetPosition(border); parentGrid.CaptureMouse(); e.Handled = true; } } }
+        private void AnnotationDragHandle_PreviewMouseDown(object sender, MouseButtonEventArgs e) 
+        { 
+            var border = sender as FrameworkElement; 
+            if (border?.DataContext is PdfAnnotation ann) 
+            {
+                if (e.ClickCount == 2 && ann.Type == AnnotationType.SignaturePlaceholder)
+                {
+                    PerformSignatureProcess(ann);
+                    e.Handled = true;
+                    return; 
+                }
+
+                if (_selectedAnnotation != null && _selectedAnnotation != ann) _selectedAnnotation.IsSelected = false; 
+                _selectedAnnotation = ann; 
+                _selectedAnnotation.IsSelected = true; 
+                UpdateToolbarFromAnnotation(ann); 
+                CheckToolbarVisibility(); 
+                _activePageIndex = -1; 
+                DependencyObject parent = border; 
+                Grid? parentGrid = null; 
+                while (parent != null) 
+                { 
+                    if (parent is Grid g && g.Tag is int pageIndex) 
+                    { 
+                        _activePageIndex = pageIndex; 
+                        parentGrid = g; 
+                        break; 
+                    } 
+                    parent = VisualTreeHelper.GetParent(parent); 
+                } 
+                if (parentGrid != null) 
+                { 
+                    _currentTool = "CURSOR"; 
+                    _isDraggingAnnotation = true; 
+                    var container = GetParentContentPresenter(border); 
+                    _annotationDragStartOffset = container != null ? e.GetPosition(container) : e.GetPosition(border); 
+                    parentGrid.CaptureMouse(); 
+                    e.Handled = true; 
+                } 
+            } 
+        }
+
+        private void PerformSignatureProcess(PdfAnnotation ann)
+        {
+            if (SelectedDocument == null) return;
+
+            int pageIndex = -1;
+            PdfPageViewModel? targetPage = null;
+            for(int i=0; i<SelectedDocument.Pages.Count; i++)
+            {
+                if(SelectedDocument.Pages[i].Annotations.Contains(ann))
+                {
+                    pageIndex = i;
+                    targetPage = SelectedDocument.Pages[i];
+                    break;
+                }
+            }
+
+            if (pageIndex == -1 || targetPage == null) return;
+
+            var dlg = new CertificateWindow();
+            dlg.Owner = this;
+            
+            if (dlg.ShowDialog() == true && dlg.ResultConfig != null)
+            {
+                var config = dlg.ResultConfig;
+                
+                if (!string.IsNullOrEmpty(ann.VisualStampPath))
+                {
+                    config.VisualStampPath = ann.VisualStampPath;
+                    config.UseVisualStamp = true;
+                }
+                else
+                {
+                    config.VisualStampPath = null;
+                    config.UseVisualStamp = true;
+                }
+
+                var saveDlg = new SaveFileDialog
+                {
+                    Filter = "PDF Files|*.pdf",
+                    FileName = Path.GetFileNameWithoutExtension(SelectedDocument.FilePath) + "_signed.pdf",
+                    Title = "서명된 파일 저장"
+                };
+
+                if (saveDlg.ShowDialog() == true)
+                {
+                    try
+                    {
+                        double scaleX = targetPage.PdfPageWidthPoint / targetPage.Width;
+                        double scaleY = targetPage.PdfPageHeightPoint / targetPage.Height;
+
+                        double pdfX = ann.X * scaleX;
+                        double pdfY = targetPage.PdfPageHeightPoint - (ann.Y * scaleY) - (ann.Height * scaleY);
+
+                        XRect pdfRect = new XRect(pdfX, pdfY, ann.Width * scaleX, ann.Height * scaleY);
+
+                        string tempPath = Path.GetTempFileName();
+                        _pdfService.SavePdf(SelectedDocument, tempPath);
+
+                        _signatureService.SignPdf(tempPath, saveDlg.FileName, config, pageIndex, pdfRect);
+
+                        if (File.Exists(tempPath)) File.Delete(tempPath);
+                        
+                        targetPage.Annotations.Remove(ann);
+                        
+                        MessageBox.Show($"전자서명 완료!\n저장됨: {saveDlg.FileName}");
+                    }
+                    catch (Exception ex)
+                    {
+                        MessageBox.Show($"서명 실패: {ex.Message}");
+                    }
+                }
+            }
+        }
+
         private FrameworkElement? GetParentContentPresenter(DependencyObject child) { DependencyObject parent = child; while (parent != null) { if (parent is ContentPresenter cp) return cp; parent = VisualTreeHelper.GetParent(parent); } return null; }
         private void AnnotationTextBox_Loaded(object sender, RoutedEventArgs e) { if (sender is TextBox tb && tb.DataContext is PdfAnnotation ann) { tb.TextChanged -= AnnotationTextBox_TextChanged; tb.TextChanged += AnnotationTextBox_TextChanged; if (ann.IsSelected) tb.Focus(); } }
         
@@ -126,7 +236,7 @@ namespace MinsPDFViewer
             if (sender is TextBox tb && tb.DataContext is PdfAnnotation ann) 
             { 
                 var formattedText = new FormattedText(tb.Text, CultureInfo.CurrentCulture, FlowDirection.LeftToRight, 
-                    new Typeface(new FontFamily(ann.FontFamily), 
+                    new Typeface(new System.Windows.Media.FontFamily(ann.FontFamily), 
                                  ann.IsBold ? FontStyles.Normal : FontStyles.Normal, 
                                  ann.IsBold ? FontWeights.Bold : FontWeights.Normal, 
                                  FontStretches.Normal), 
@@ -139,7 +249,22 @@ namespace MinsPDFViewer
         }
 
         private void AnnotationTextBox_GotFocus(object sender, RoutedEventArgs e) { if (sender is TextBox tb && tb.DataContext is PdfAnnotation ann) { if (!_isDraggingAnnotation) { if (_selectedAnnotation != null && _selectedAnnotation != ann) _selectedAnnotation.IsSelected = false; _selectedAnnotation = ann; _selectedAnnotation.IsSelected = true; UpdateToolbarFromAnnotation(ann); CheckToolbarVisibility(); } } }
-        private void Annotation_PreviewMouseDown(object sender, MouseButtonEventArgs e) { var element = sender as FrameworkElement; if (element?.DataContext is PdfAnnotation ann && ann.Type != AnnotationType.FreeText) { if (_currentTool != "CURSOR") { _currentTool = "CURSOR"; RbCursor.IsChecked = true; CheckToolbarVisibility(); } if (_selectedAnnotation != null) _selectedAnnotation.IsSelected = false; _selectedAnnotation = ann; _selectedAnnotation.IsSelected = true; UpdateToolbarFromAnnotation(ann); DependencyObject parent = element; Grid? parentGrid = null; while (parent != null) { if (parent is Grid g && g.Tag is int idx) { _activePageIndex = idx; parentGrid = g; break; } parent = VisualTreeHelper.GetParent(parent); } if (parentGrid != null) { _annotationDragStartOffset = e.GetPosition(element); _isDraggingAnnotation = true; parentGrid.CaptureMouse(); e.Handled = true; } } }
+        
+        private void Annotation_PreviewMouseDown(object sender, MouseButtonEventArgs e) 
+        { 
+            var element = sender as FrameworkElement; 
+            if (element?.DataContext is PdfAnnotation ann && ann.Type != AnnotationType.FreeText && ann.Type != AnnotationType.SignaturePlaceholder) 
+            { 
+                if (_currentTool != "CURSOR") { _currentTool = "CURSOR"; RbCursor.IsChecked = true; CheckToolbarVisibility(); } 
+                if (_selectedAnnotation != null) _selectedAnnotation.IsSelected = false; 
+                _selectedAnnotation = ann; _selectedAnnotation.IsSelected = true; 
+                UpdateToolbarFromAnnotation(ann); 
+                DependencyObject parent = element; 
+                Grid? parentGrid = null; 
+                while (parent != null) { if (parent is Grid g && g.Tag is int idx) { _activePageIndex = idx; parentGrid = g; break; } parent = VisualTreeHelper.GetParent(parent); } 
+                if (parentGrid != null) { _annotationDragStartOffset = e.GetPosition(element); _isDraggingAnnotation = true; parentGrid.CaptureMouse(); e.Handled = true; } 
+            } 
+        }
         
         private async void BtnOCR_Click(object sender, RoutedEventArgs e)
         {
@@ -201,39 +326,67 @@ namespace MinsPDFViewer
         private void BtnSign_Click(object sender, RoutedEventArgs e)
         {
             if (SelectedDocument == null) { MessageBox.Show("서명할 문서가 없습니다."); return; }
-
-            var dlg = new CertificateWindow();
-            dlg.Owner = this;
             
-            if (dlg.ShowDialog() == true && dlg.ResultConfig != null)
+            var result = MessageBox.Show("이미지 도장을 사용하시겠습니까?\n(아니오를 누르면 텍스트 도장이 생성됩니다.)", 
+                                         "서명 방식 선택", MessageBoxButton.YesNoCancel, MessageBoxImage.Question);
+            
+            if (result == MessageBoxResult.Cancel) return;
+
+            string? selectedImagePath = null;
+
+            if (result == MessageBoxResult.Yes)
             {
-                var config = dlg.ResultConfig;
-                string defaultStampPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "stamp.png");
-                if (File.Exists(defaultStampPath)) config.VisualStampPath = defaultStampPath;
-
-                var saveDlg = new SaveFileDialog
-                {
-                    Filter = "PDF Files|*.pdf",
-                    FileName = Path.GetFileNameWithoutExtension(SelectedDocument.FilePath) + "_signed.pdf",
-                    Title = "서명된 파일 저장"
+                var fd = new OpenFileDialog 
+                { 
+                    Title = "도장 이미지 선택",
+                    Filter = "Image Files|*.png;*.jpg;*.jpeg;*.bmp" 
                 };
-
-                if (saveDlg.ShowDialog() == true)
+                
+                if (fd.ShowDialog() == true)
                 {
-                    try
-                    {
-                        string tempPath = Path.GetTempFileName();
-                        _pdfService.SavePdf(SelectedDocument, tempPath);
-                        _signatureService.SignPdf(tempPath, saveDlg.FileName, config);
-                        if (File.Exists(tempPath)) File.Delete(tempPath);
-                        MessageBox.Show($"전자서명 완료!\n저장됨: {saveDlg.FileName}");
-                    }
-                    catch (Exception ex)
-                    {
-                        MessageBox.Show($"서명 실패: {ex.Message}");
-                    }
+                    selectedImagePath = fd.FileName;
+                }
+                else
+                {
+                    return; 
                 }
             }
+
+            if (SelectedDocument.Pages.Count == 0) return;
+            var pageVM = SelectedDocument.Pages[0]; 
+
+            var placeholder = new PdfAnnotation
+            {
+                Type = AnnotationType.SignaturePlaceholder,
+                Width = 120,
+                Height = 60,
+                X = (pageVM.Width - 120) / 2, 
+                Y = (pageVM.Height - 60) / 2,
+                IsSelected = true,
+                VisualStampPath = selectedImagePath 
+            };
+            
+            if (selectedImagePath != null)
+            {
+                try
+                {
+                    // [수정] 파일 잠금 방지를 위해 OnLoad 옵션 사용
+                    var bitmap = new BitmapImage();
+                    bitmap.BeginInit();
+                    bitmap.CacheOption = BitmapCacheOption.OnLoad; // 메모리에 로드 후 파일 해제
+                    bitmap.UriSource = new Uri(selectedImagePath);
+                    bitmap.EndInit();
+                    bitmap.Freeze(); // 스레드 간 공유 가능하게 동결
+
+                    double ratio = (double)bitmap.PixelWidth / bitmap.PixelHeight;
+                    placeholder.Width = 100;
+                    placeholder.Height = 100 / ratio;
+                }
+                catch { }
+            }
+            
+            pageVM.Annotations.Add(placeholder);
+            TxtStatus.Text = "서명 도장을 원하는 위치로 드래그하고 더블 클릭하세요.";
         }
 
         private void BtnVerifySignature_Click(object sender, RoutedEventArgs e)
