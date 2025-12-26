@@ -6,9 +6,8 @@
         xmlns:local="clr-namespace:MinsPDFViewer"
         mc:Ignorable="d"
         Title="Mins PDF Viewer (Advanced)" Height="800" Width="1200"
-        KeyDown="Window_KeyDown">
-
-    <Window.Resources>
+        KeyDown="Window_KeyDown"
+        UseLayoutRounding="True"> <Window.Resources>
         <BooleanToVisibilityConverter x:Key="BooleanToVisibilityConverter"/>
         
         <local:BoolToFontWeightConverter x:Key="BoolToFontWeightConverter"/>
@@ -122,7 +121,7 @@
                         <Border Background="Transparent" 
                                 BorderBrush="Transparent" 
                                 BorderThickness="0">
-                             </Border>
+                        </Border>
                     </ControlTemplate>
                 </Button.Template>
             </Button>
@@ -233,7 +232,9 @@
                                                             ScaleY="{Binding DataContext.Zoom, RelativeSource={RelativeSource AncestorType=ListView}}"/>
                                         </Grid.LayoutTransform>
                                           
-                                        <Image Source="{Binding ImageSource}" Stretch="Fill"/>
+                                        <Image Source="{Binding ImageSource}" Stretch="Fill" 
+                                               RenderOptions.BitmapScalingMode="HighQuality"
+                                               SnapsToDevicePixels="True"/>
                                         
                                         <Canvas Background="Transparent">
                                             <Border Canvas.Left="{Binding SelectionX}" Canvas.Top="{Binding SelectionY}"

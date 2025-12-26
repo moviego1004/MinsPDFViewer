@@ -15,7 +15,7 @@ using Windows.Media.Ocr;
 using Windows.Globalization;
 using Microsoft.Win32;
 using PdfSharp.Drawing; 
-using System.Windows.Media.Imaging; // [필수] BitmapImage
+using System.Windows.Media.Imaging; 
 
 namespace MinsPDFViewer
 {
@@ -108,7 +108,72 @@ namespace MinsPDFViewer
         private async void BtnPrevSearch_Click(object sender, RoutedEventArgs e) { if (SelectedDocument == null) return; string query = TxtSearch.Text; if (string.IsNullOrWhiteSpace(query)) return; TxtStatus.Text = "이전 찾는 중..."; var foundAnnot = await _searchService.FindPrevAsync(SelectedDocument, query); if (foundAnnot != null) { PdfPageViewModel? targetPage = null; foreach(var p in SelectedDocument.Pages) { if(p.Annotations.Contains(foundAnnot)) { targetPage = p; break; } } if (targetPage != null) { var listView = GetVisualChild<ListView>(MainTabControl); if (listView != null) listView.ScrollIntoView(targetPage); TxtStatus.Text = $"발견: {targetPage.PageIndex + 1}페이지"; } } else { var result = MessageBox.Show("문서의 시작입니다. 끝에서부터 다시 찾으시겠습니까?", "검색 완료", MessageBoxButton.OKCancel, MessageBoxImage.Question); if (result == MessageBoxResult.OK) { _searchService.ResetSearch(); await _searchService.FindPrevAsync(SelectedDocument, query); } else { TxtStatus.Text = "검색 종료"; } } } 
         private async Task FindNextSearchResult() { if (SelectedDocument == null) return; string query = TxtSearch.Text; if (string.IsNullOrWhiteSpace(query)) return; TxtStatus.Text = "검색 중..."; var foundAnnot = await _searchService.FindNextAsync(SelectedDocument, query); if (foundAnnot != null) { PdfPageViewModel? targetPage = null; foreach(var p in SelectedDocument.Pages) { if(p.Annotations.Contains(foundAnnot)) { targetPage = p; break; } } if (targetPage != null) { var listView = GetVisualChild<ListView>(MainTabControl); if (listView != null) listView.ScrollIntoView(targetPage); TxtStatus.Text = $"발견: {targetPage.PageIndex + 1}페이지"; } } else { var result = MessageBox.Show("문서의 끝입니다. 처음부터 다시 찾으시겠습니까?", "검색 완료", MessageBoxButton.OKCancel, MessageBoxImage.Question); if (result == MessageBoxResult.OK) { _searchService.ResetSearch(); await FindNextSearchResult(); } else { TxtStatus.Text = "검색 종료"; } } }
 
-        private void Page_MouseDown(object sender, MouseButtonEventArgs e) { if (_selectedAnnotation != null) { _selectedAnnotation.IsSelected = false; _selectedAnnotation = null; CheckToolbarVisibility(); } if (SelectedDocument == null) return; var grid = sender as Grid; if (grid == null) return; _activePageIndex = (int)grid.Tag; _dragStartPoint = e.GetPosition(grid); var pageVM = SelectedDocument.Pages[_activePageIndex]; if (_currentTool == "TEXT") { var newAnnot = new PdfAnnotation { Type = AnnotationType.FreeText, X = _dragStartPoint.X, Y = _dragStartPoint.Y, Width = 150, Height = 50, FontSize = _defaultFontSize, FontFamily = _defaultFontFamily, Foreground = new SolidColorBrush(_defaultFontColor), IsBold = _defaultIsBold, TextContent = "", IsSelected = true }; pageVM.Annotations.Add(newAnnot); _selectedAnnotation = newAnnot; _currentTool = "CURSOR"; RbCursor.IsChecked = true; UpdateToolbarFromAnnotation(_selectedAnnotation); CheckToolbarVisibility(); e.Handled = true; return; } if (_currentTool == "CURSOR" || _currentTool == "HIGHLIGHT") { foreach (var p in SelectedDocument.Pages) { p.IsSelecting = false; p.SelectionWidth = 0; p.SelectionHeight = 0; } SelectionPopup.IsOpen = false; pageVM.IsSelecting = true; pageVM.SelectionX = _dragStartPoint.X; pageVM.SelectionY = _dragStartPoint.Y; pageVM.SelectionWidth = 0; pageVM.SelectionHeight = 0; grid.CaptureMouse(); e.Handled = true; } CheckToolbarVisibility(); }
+        // [수정] 페이지 마우스 다운: 주석 클릭 시 선택 해제 방지
+        private void Page_MouseDown(object sender, MouseButtonEventArgs e) 
+        { 
+            // 클릭한 대상이 주석이면 페이지 클릭 이벤트를 무시 (텍스트 박스 선택 유지)
+            if (IsAnnotationObject(e.OriginalSource)) return;
+
+            if (_selectedAnnotation != null) 
+            { 
+                _selectedAnnotation.IsSelected = false; 
+                _selectedAnnotation = null; 
+                CheckToolbarVisibility(); 
+            } 
+
+            if (SelectedDocument == null) return; 
+            
+            var grid = sender as Grid; 
+            if (grid == null) return; 
+            
+            _activePageIndex = (int)grid.Tag; 
+            _dragStartPoint = e.GetPosition(grid); 
+            var pageVM = SelectedDocument.Pages[_activePageIndex]; 
+            
+            if (_currentTool == "TEXT") 
+            { 
+                var newAnnot = new PdfAnnotation { Type = AnnotationType.FreeText, X = _dragStartPoint.X, Y = _dragStartPoint.Y, Width = 150, Height = 50, FontSize = _defaultFontSize, FontFamily = _defaultFontFamily, Foreground = new SolidColorBrush(_defaultFontColor), IsBold = _defaultIsBold, TextContent = "", IsSelected = true }; 
+                pageVM.Annotations.Add(newAnnot); 
+                _selectedAnnotation = newAnnot; 
+                _currentTool = "CURSOR"; 
+                RbCursor.IsChecked = true; 
+                UpdateToolbarFromAnnotation(_selectedAnnotation); 
+                CheckToolbarVisibility(); 
+                e.Handled = true; 
+                return; 
+            } 
+            
+            if (_currentTool == "CURSOR" || _currentTool == "HIGHLIGHT") 
+            { 
+                foreach (var p in SelectedDocument.Pages) { p.IsSelecting = false; p.SelectionWidth = 0; p.SelectionHeight = 0; } 
+                SelectionPopup.IsOpen = false; 
+                pageVM.IsSelecting = true; 
+                pageVM.SelectionX = _dragStartPoint.X; 
+                pageVM.SelectionY = _dragStartPoint.Y; 
+                pageVM.SelectionWidth = 0; 
+                pageVM.SelectionHeight = 0; 
+                grid.CaptureMouse(); 
+                e.Handled = true; 
+            } 
+            CheckToolbarVisibility(); 
+        }
+
+        // [수정] 주석 판별 헬퍼 메서드
+        private bool IsAnnotationObject(object source)
+        {
+            if (source is DependencyObject dep)
+            {
+                DependencyObject current = dep;
+                while (current != null)
+                {
+                    if (current is FrameworkElement fe && fe.DataContext is PdfAnnotation) return true;
+                    if (current is Grid g && g.DataContext is PdfPageViewModel) break; 
+                    current = VisualTreeHelper.GetParent(current);
+                }
+            }
+            return false;
+        }
+
         private void Page_MouseMove(object sender, MouseEventArgs e) { if (_activePageIndex == -1 || SelectedDocument == null) return; var grid = sender as Grid; if (grid == null) return; var pageVM = SelectedDocument.Pages[_activePageIndex]; if (_currentTool == "CURSOR" && _isDraggingAnnotation && _selectedAnnotation != null) { var currentPoint = e.GetPosition(grid); double newX = currentPoint.X - _annotationDragStartOffset.X; double newY = currentPoint.Y - _annotationDragStartOffset.Y; if (newX < 0) newX = 0; if (newY < 0) newY = 0; _selectedAnnotation.X = newX; _selectedAnnotation.Y = newY; e.Handled = true; return; } if ((_currentTool == "CURSOR" || _currentTool == "HIGHLIGHT") && pageVM.IsSelecting) { var pt = e.GetPosition(grid); double x = Math.Min(_dragStartPoint.X, pt.X); double y = Math.Min(_dragStartPoint.Y, pt.Y); double w = Math.Abs(pt.X - _dragStartPoint.X); double h = Math.Abs(pt.Y - _dragStartPoint.Y); pageVM.SelectionX = x; pageVM.SelectionY = y; pageVM.SelectionWidth = w; pageVM.SelectionHeight = h; } }
         private void Page_MouseUp(object sender, MouseButtonEventArgs e) { var grid = sender as Grid; if (grid == null || _activePageIndex == -1 || SelectedDocument == null) return; grid.ReleaseMouseCapture(); var p = SelectedDocument.Pages[_activePageIndex]; if (_currentTool == "HIGHLIGHT" && p.IsSelecting) { if (p.SelectionWidth > 5 && p.SelectionHeight > 5) { _selectedPageIndex = _activePageIndex; AddAnnotation(Colors.Yellow, AnnotationType.Highlight); } p.IsSelecting = false; } else if (p.IsSelecting && _currentTool == "CURSOR") { if (p.SelectionWidth > 5 && p.SelectionHeight > 5) { var rect = new Rect(p.SelectionX, p.SelectionY, p.SelectionWidth, p.SelectionHeight); CheckTextInSelection(_activePageIndex, rect); SelectionPopup.PlacementTarget = grid; SelectionPopup.PlacementRectangle = new Rect(e.GetPosition(grid).X, e.GetPosition(grid).Y + 10, 0, 0); SelectionPopup.IsOpen = true; _selectedPageIndex = _activePageIndex; TxtStatus.Text = string.IsNullOrEmpty(_selectedTextBuffer) ? "영역 선택됨" : "텍스트 선택됨"; } else { p.IsSelecting = false; TxtStatus.Text = "준비"; } } _activePageIndex = -1; _isDraggingAnnotation = false; e.Handled = true; CheckToolbarVisibility(); }
         
@@ -154,7 +219,6 @@ namespace MinsPDFViewer
             } 
         }
 
-        // [수정] 좌표 계산 로직을 'CropBox' 기준으로 변경하여 정확도 향상
         private void PerformSignatureProcess(PdfAnnotation ann)
         {
             if (SelectedDocument == null) return;
@@ -202,30 +266,18 @@ namespace MinsPDFViewer
                 {
                     try
                     {
-                        // [핵심 수정] 좌표계 기준을 MediaBox(전체)가 아닌 CropBox(보이는 영역)로 변경
-                        
-                        // 1. 유효 크기 결정 (CropBox가 0이면 MediaBox 사용)
                         double effectivePdfWidth = (targetPage.CropWidthPoint > 0) ? targetPage.CropWidthPoint : targetPage.PdfPageWidthPoint;
                         double effectivePdfHeight = (targetPage.CropHeightPoint > 0) ? targetPage.CropHeightPoint : targetPage.PdfPageHeightPoint;
                         
-                        // 2. 시작점 오프셋 (잘라낸 영역의 시작점)
                         double pdfOriginX = targetPage.CropX;
                         double pdfOriginY = targetPage.CropY; 
 
-                        // 3. 스케일 비율 재계산 (보이는 PDF 크기 / 보이는 이미지 크기)
                         double scaleX = effectivePdfWidth / targetPage.Width;
                         double scaleY = effectivePdfHeight / targetPage.Height;
 
-                        // 4. 좌표 변환 (WPF -> PDF)
-                        // X: 오프셋 + (화면X * 비율)
                         double pdfX = pdfOriginX + (ann.X * scaleX);
-                        
-                        // Y: (오프셋 + 높이) - (화면하단Y * 비율) 
-                        // PDF는 좌하단이 기준이므로, 상단(Top)에서 얼마나 내려왔는지를 계산해서 빼줘야 함
-                        // 화면상 서명 박스의 '바닥' 위치를 기준으로 PDF Y를 잡음 (Rect의 Bottom-Left)
                         double pdfY = (pdfOriginY + effectivePdfHeight) - ((ann.Y + ann.Height) * scaleY);
 
-                        // 5. 최종 영역 생성
                         XRect pdfRect = new XRect(pdfX, pdfY, ann.Width * scaleX, ann.Height * scaleY);
 
                         string tempPath = Path.GetTempFileName();
@@ -385,17 +437,16 @@ namespace MinsPDFViewer
                 VisualStampPath = selectedImagePath 
             };
             
-           if (selectedImagePath != null)
+            if (selectedImagePath != null)
             {
                 try
                 {
-                    // [수정] 메모리에 로드해두고 파일 연결은 즉시 끊기 (OnLoad 옵션)
                     var bitmap = new BitmapImage();
                     bitmap.BeginInit();
                     bitmap.CacheOption = BitmapCacheOption.OnLoad; 
                     bitmap.UriSource = new Uri(selectedImagePath);
                     bitmap.EndInit();
-                    bitmap.Freeze(); // 다른 스레드에서도 접근 가능하게 동결
+                    bitmap.Freeze(); 
 
                     double ratio = (double)bitmap.PixelWidth / bitmap.PixelHeight;
                     placeholder.Width = 100;
