@@ -11,6 +11,7 @@
         <BooleanToVisibilityConverter x:Key="BooleanToVisibilityConverter"/>
         
         <local:BoolToFontWeightConverter x:Key="BoolToFontWeightConverter"/>
+        <local:BindingProxy x:Key="ZoomProxy" Data="{Binding SelectedDocument.Zoom}"/>
 
         <DataTemplate x:Key="SignaturePlaceholderTemplate">
             <Grid Width="{Binding Width}" Height="{Binding Height}"

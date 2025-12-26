@@ -71,7 +71,6 @@ namespace MinsPDFViewer
 
         public List<OcrWordInfo>? OcrWords { get; set; }
         
-        // 서명 여부는 UI 표시에만 쓰고 잠금 로직엔 안 씀
         public bool HasSignature { get; set; }
 
         public event PropertyChangedEventHandler? PropertyChanged;
@@ -125,10 +124,9 @@ namespace MinsPDFViewer
             set { _isBold = value; OnPropertyChanged(nameof(IsBold)); } 
         }
 
-        // [신규] 서명 필드 이름 (검증 시 파일에서 다시 찾기 위함)
+        // [필수 추가] 서명 필드 이름
         public string FieldName { get; set; } = "";
         
-        // [삭제] IsLocked 제거 (편집 허용)
         public object? SignatureData { get; set; } 
 
         private string? _visualStampPath;
