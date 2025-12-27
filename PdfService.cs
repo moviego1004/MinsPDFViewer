@@ -28,7 +28,8 @@ namespace MinsPDFViewer
 
         public PdfDocumentModel? LoadPdf(string filePath)
         {
-            if (!File.Exists(filePath)) return null;
+            if (!File.Exists(filePath))
+                return null;
 
             try
             {
@@ -54,14 +55,19 @@ namespace MinsPDFViewer
 
         public async Task RenderPagesAsync(PdfDocumentModel model)
         {
-            if (model.DocReader == null) return;
+            if (model.DocReader == null)
+                return;
 
             double renderScale = 3.0;
 
             await Task.Run(() =>
             {
                 byte[]? originalBytes = null;
-                try { originalBytes = File.ReadAllBytes(model.FilePath); } catch { return; }
+                try
+                {
+                    originalBytes = File.ReadAllBytes(model.FilePath);
+                }
+                catch { return; }
 
                 // [Step 1] Clean PDF 생성 (주석 제거 버전)
                 byte[]? cleanPdfBytes = null;
@@ -78,7 +84,8 @@ namespace MinsPDFViewer
                                 for (int k = page.Annotations.Count - 1; k >= 0; k--)
                                 {
                                     var annot = page.Annotations[k];
-                                    if (annot == null) continue;
+                                    if (annot == null)
+                                        continue;
 
                                     var subtype = annot.Elements.GetString("/Subtype");
                                     if (subtype == "/FreeText" || subtype == "/Highlight" || subtype == "/Underline")
@@ -168,7 +175,8 @@ namespace MinsPDFViewer
                                                 ann.X = finalX;
                                                 ann.Y = finalY;
                                                 ann.Width = finalW;
-                                                if (ann.Type != AnnotationType.Underline) ann.Height = finalH;
+                                                if (ann.Type != AnnotationType.Underline)
+                                                    ann.Height = finalH;
 
                                                 pageVM.Annotations.Add(ann);
                                             }
@@ -194,11 +202,13 @@ namespace MinsPDFViewer
 
         private bool CheckIfPageHasSignature(PdfPage page)
         {
-            if (page.Annotations == null) return false;
+            if (page.Annotations == null)
+                return false;
             for (int k = 0; k < page.Annotations.Count; k++)
             {
                 var annot = page.Annotations[k];
-                if (annot == null) continue;
+                if (annot == null)
+                    continue;
                 if (annot.Elements.GetString("/Subtype") == "/Widget" && annot.Elements.GetString("/FT") == "/Sig")
                     return true;
             }
@@ -208,12 +218,14 @@ namespace MinsPDFViewer
         private List<PdfAnnotation> ExtractAnnotationsFromPage(PdfPage page)
         {
             var list = new List<PdfAnnotation>();
-            if (page.Annotations == null) return list;
+            if (page.Annotations == null)
+                return list;
 
             for (int k = 0; k < page.Annotations.Count; k++)
             {
                 var annot = page.Annotations[k];
-                if (annot == null) continue;
+                if (annot == null)
+                    continue;
 
                 var subtype = annot.Elements.GetString("/Subtype") ?? "";
                 var rect = annot.Rectangle.ToXRect();
@@ -282,7 +294,8 @@ namespace MinsPDFViewer
                     newAnnot.X = finalX;
                     newAnnot.Y = finalY;
                     newAnnot.Width = finalW;
-                    if (newAnnot.Type != AnnotationType.Underline) newAnnot.Height = finalH;
+                    if (newAnnot.Type != AnnotationType.Underline)
+                        newAnnot.Height = finalH;
                     list.Add(newAnnot);
                 }
             }
@@ -293,7 +306,8 @@ namespace MinsPDFViewer
         {
             double size = 12;
             bool bold = false;
-            if (string.IsNullOrEmpty(da)) return (size, bold);
+            if (string.IsNullOrEmpty(da))
+                return (size, bold);
             try
             {
                 var parts = da.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
@@ -301,8 +315,10 @@ namespace MinsPDFViewer
                 {
                     if (parts[i] == "Tf" && i >= 2)
                     {
-                        if (double.TryParse(parts[i - 1], NumberStyles.Any, CultureInfo.InvariantCulture, out double parsedSize)) size = parsedSize;
-                        if (parts[i - 2].IndexOf("Bold", StringComparison.OrdinalIgnoreCase) >= 0) bold = true;
+                        if (double.TryParse(parts[i - 1], NumberStyles.Any, CultureInfo.InvariantCulture, out double parsedSize))
+                            size = parsedSize;
+                        if (parts[i - 2].IndexOf("Bold", StringComparison.OrdinalIgnoreCase) >= 0)
+                            bold = true;
                     }
                 }
             }
@@ -312,7 +328,8 @@ namespace MinsPDFViewer
 
         private Brush ParseAnnotationColor(string? da)
         {
-            if (string.IsNullOrEmpty(da)) return Brushes.Black;
+            if (string.IsNullOrEmpty(da))
+                return Brushes.Black;
             try
             {
                 var parts = da.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
@@ -339,7 +356,8 @@ namespace MinsPDFViewer
 
         public void SavePdf(PdfDocumentModel model, string outputPath)
         {
-            if (model == null || string.IsNullOrEmpty(model.FilePath)) return;
+            if (model == null || string.IsNullOrEmpty(model.FilePath))
+                return;
 
             string tempOutputPath = Path.GetTempFileName();
 
@@ -349,7 +367,8 @@ namespace MinsPDFViewer
                 {
                     foreach (var pageVM in model.Pages)
                     {
-                        if (pageVM.PageIndex >= doc.PageCount) continue;
+                        if (pageVM.PageIndex >= doc.PageCount)
+                            continue;
                         var pdfPage = doc.Pages[pageVM.PageIndex];
 
                         if (pdfPage.Annotations != null)
@@ -357,7 +376,8 @@ namespace MinsPDFViewer
                             for (int i = pdfPage.Annotations.Count - 1; i >= 0; i--)
                             {
                                 var annot = pdfPage.Annotations[i];
-                                if (annot == null) continue;
+                                if (annot == null)
+                                    continue;
 
                                 var subtype = annot.Elements.GetString("/Subtype");
                                 if (subtype == "/FreeText" || subtype == "/Highlight" || subtype == "/Underline")
@@ -369,7 +389,8 @@ namespace MinsPDFViewer
 
                         foreach (var ann in pageVM.Annotations)
                         {
-                            if (ann.Type == AnnotationType.SignatureField || ann.Type == AnnotationType.SignaturePlaceholder) continue;
+                            if (ann.Type == AnnotationType.SignatureField || ann.Type == AnnotationType.SignaturePlaceholder)
+                                continue;
 
                             double effectivePdfWidth = (pageVM.CropWidthPoint > 0) ? pageVM.CropWidthPoint : pageVM.PdfPageWidthPoint;
                             double effectivePdfHeight = (pageVM.CropHeightPoint > 0) ? pageVM.CropHeightPoint : pageVM.PdfPageHeightPoint;
@@ -422,12 +443,14 @@ namespace MinsPDFViewer
                     doc.Save(tempOutputPath);
                 }
 
-                if (File.Exists(outputPath)) File.Delete(outputPath);
+                if (File.Exists(outputPath))
+                    File.Delete(outputPath);
                 File.Move(tempOutputPath, outputPath);
             }
             catch
             {
-                if (File.Exists(tempOutputPath)) File.Delete(tempOutputPath);
+                if (File.Exists(tempOutputPath))
+                    File.Delete(tempOutputPath);
                 throw;
             }
         }

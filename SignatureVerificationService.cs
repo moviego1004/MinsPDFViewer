@@ -1,10 +1,10 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Linq;
-using System.Collections.Generic;
+using Org.BouncyCastle.Asn1.Pkcs;
 using Org.BouncyCastle.Cms;
 using Org.BouncyCastle.X509;
-using Org.BouncyCastle.Asn1.Pkcs; 
 using PdfSharp.Pdf;
 using PdfSharp.Pdf.Advanced;
 
@@ -30,7 +30,7 @@ namespace MinsPDFViewer
                     ranges[i] = ((PdfInteger)byteRangeArray.Elements[i]).Value;
 
                 byte[] fileBytes = File.ReadAllBytes(filePath);
-                
+
                 int len1 = ranges[1];
                 int len2 = ranges[3];
                 int totalLen = len1 + len2;
@@ -40,19 +40,21 @@ namespace MinsPDFViewer
                 Array.Copy(fileBytes, ranges[2], signedContent, len1, len2);
 
                 var processable = new CmsProcessableByteArray(signedContent);
-                var cmsMsg = new CmsSignedData(processable, sigBytes); 
+                var cmsMsg = new CmsSignedData(processable, sigBytes);
 
                 var signerStore = cmsMsg.GetSignerInfos();
                 var signers = signerStore.GetSigners();
 
-                if (signers.Count == 0) throw new Exception("서명자 정보가 없습니다.");
+                if (signers.Count == 0)
+                    throw new Exception("서명자 정보가 없습니다.");
 
                 foreach (SignerInformation signer in signers)
                 {
                     var certStore = cmsMsg.GetCertificates("Collection");
                     var matches = certStore.GetMatches(signer.SignerID);
-                    if (matches.Count == 0) throw new Exception("서명자 인증서를 찾을 수 없습니다.");
-                    
+                    if (matches.Count == 0)
+                        throw new Exception("서명자 인증서를 찾을 수 없습니다.");
+
                     X509Certificate cert = matches.Cast<X509Certificate>().First();
 
                     if (signer.Verify(cert))
@@ -69,21 +71,21 @@ namespace MinsPDFViewer
                     }
 
                     result.SignerName = ParseCnFromDn(cert.SubjectDN.ToString());
-                    
+
                     if (signer.SignedAttributes != null)
                     {
                         var signingTimeAttr = signer.SignedAttributes[PkcsObjectIdentifiers.Pkcs9AtSigningTime];
                         if (signingTimeAttr != null && signingTimeAttr.AttrValues.Count > 0)
                         {
-                            try 
+                            try
                             {
                                 var timeObj = (Org.BouncyCastle.Asn1.Asn1Object)signingTimeAttr.AttrValues[0];
                                 // [수정] Null 안전 처리
                                 string? timeStr = timeObj?.ToString();
                                 if (!string.IsNullOrEmpty(timeStr))
                                 {
-                                    result.SigningTime = DateTime.ParseExact(timeStr, 
-                                        new[] { "yyMMddHHmmss'Z'", "yyyyMMddHHmmss'Z'" }, 
+                                    result.SigningTime = DateTime.ParseExact(timeStr,
+                                        new[] { "yyMMddHHmmss'Z'", "yyyyMMddHHmmss'Z'" },
                                         null, System.Globalization.DateTimeStyles.AssumeUniversal);
                                 }
                             }
@@ -91,15 +93,19 @@ namespace MinsPDFViewer
                         }
                     }
                 }
-                
+
                 if (result.SigningTime == default)
                 {
-                    if (sigDict.Elements["/M"] is PdfDate date) result.SigningTime = date.Value;
+                    if (sigDict.Elements["/M"] is PdfDate date)
+                        result.SigningTime = date.Value;
                 }
-                if (sigDict.Elements["/Reason"] is PdfString reason) result.Reason = reason.Value;
-                if (sigDict.Elements["/Location"] is PdfString location) result.Location = location.Value;
-                
-                if (string.IsNullOrEmpty(result.SignerName)) result.SignerName = "서명자 정보 없음";
+                if (sigDict.Elements["/Reason"] is PdfString reason)
+                    result.Reason = reason.Value;
+                if (sigDict.Elements["/Location"] is PdfString location)
+                    result.Location = location.Value;
+
+                if (string.IsNullOrEmpty(result.SignerName))
+                    result.SignerName = "서명자 정보 없음";
             }
             catch (Exception ex)
             {
@@ -123,7 +129,7 @@ namespace MinsPDFViewer
                         return kv[1].Trim();
                     }
                 }
-                return dn; 
+                return dn;
             }
             catch { return dn; }
         }

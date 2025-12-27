@@ -3,12 +3,12 @@ using System.Collections.Generic;
 using System.IO;
 using System.Threading.Tasks;
 using System.Windows;
+using Docnet.Core;
+using Docnet.Core.Models;
 using Windows.Globalization;
 using Windows.Graphics.Imaging;
 using Windows.Media.Ocr;
 using Windows.Security.Cryptography;
-using Docnet.Core;
-using Docnet.Core.Models;
 
 namespace MinsPDFViewer
 {
@@ -26,7 +26,7 @@ namespace MinsPDFViewer
             try
             {
                 // 한국어 우선 시도, 실패 시 사용자 프로필 언어 사용
-                _ocrEngine = OcrEngine.TryCreateFromLanguage(new Language("ko-KR")) 
+                _ocrEngine = OcrEngine.TryCreateFromLanguage(new Language("ko-KR"))
                              ?? OcrEngine.TryCreateFromLanguage(new Language("ko"))
                              ?? OcrEngine.TryCreateFromUserProfileLanguages();
             }
@@ -45,7 +45,8 @@ namespace MinsPDFViewer
         /// </summary>
         public async Task RunOcrAsync(PdfDocumentModel document, IProgress<int> progress)
         {
-            if (_ocrEngine == null || document == null) return;
+            if (_ocrEngine == null || document == null)
+                return;
 
             string filePath = document.FilePath;
 
@@ -132,8 +133,8 @@ namespace MinsPDFViewer
                     // 공식: Output = Source + (1 - Alpha) * Background(White=255)
                     // (Docnet/PDFium은 보통 Pre-multiplied alpha를 반환하므로 단순히 더해주면 흰색과 합성됨)
                     var alphaFactor = 255 - a;
-                    
-                    data[i]     = (byte)Math.Min(255, b + alphaFactor);
+
+                    data[i] = (byte)Math.Min(255, b + alphaFactor);
                     data[i + 1] = (byte)Math.Min(255, g + alphaFactor);
                     data[i + 2] = (byte)Math.Min(255, r + alphaFactor);
                     data[i + 3] = 255; // 알파를 100%로 강제

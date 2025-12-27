@@ -31,22 +31,27 @@ namespace MinsPDFViewer
             string lowerFaceName = faceName.ToLower();
             string fontsFolder = Environment.GetFolderPath(Environment.SpecialFolder.Fonts);
 
-            if (lowerFaceName.Contains("malgun")) 
+            if (lowerFaceName.Contains("malgun"))
             {
                 // [수정] ttc 파일 우선 확인
                 fontPath = Path.Combine(fontsFolder, "malgun.ttc");
-                if (!File.Exists(fontPath)) fontPath = Path.Combine(fontsFolder, "malgun.ttf");
+                if (!File.Exists(fontPath))
+                    fontPath = Path.Combine(fontsFolder, "malgun.ttf");
             }
-            else if (lowerFaceName.Contains("gulim")) fontPath = Path.Combine(fontsFolder, "gulim.ttc");
-            else if (lowerFaceName.Contains("dotum")) fontPath = Path.Combine(fontsFolder, "gulim.ttc");
-            else if (lowerFaceName.Contains("batang")) fontPath = Path.Combine(fontsFolder, "batang.ttc");
-            else fontPath = Path.Combine(fontsFolder, "arial.ttf");
+            else if (lowerFaceName.Contains("gulim"))
+                fontPath = Path.Combine(fontsFolder, "gulim.ttc");
+            else if (lowerFaceName.Contains("dotum"))
+                fontPath = Path.Combine(fontsFolder, "gulim.ttc");
+            else if (lowerFaceName.Contains("batang"))
+                fontPath = Path.Combine(fontsFolder, "batang.ttc");
+            else
+                fontPath = Path.Combine(fontsFolder, "arial.ttf");
 
             if (File.Exists(fontPath))
             {
                 return File.ReadAllBytes(fontPath);
             }
-            return null; 
+            return null;
         }
     }
 }
