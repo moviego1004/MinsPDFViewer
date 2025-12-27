@@ -73,6 +73,14 @@ namespace MinsPDFViewer
 
     public class PdfPageViewModel : INotifyPropertyChanged
     {
+
+        // [추가] 디버깅용 회전 및 원본 크기 정보
+        public int Rotation
+        {
+            get; set;
+        }
+        public string MediaBoxInfo { get; set; } = "";
+
         // ... (기존 속성들: PageIndex, Width, Height 등 유지) ...
         public int PageIndex
         {

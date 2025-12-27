@@ -15,7 +15,6 @@ namespace MinsPDFViewer
         private string _lastQuery = "";
 
         private PdfDocumentModel? _lastDocument = null;
-
         private bool _cancelSearch = false;
 
         private readonly SolidColorBrush _brushContext = new SolidColorBrush(Color.FromArgb(60, 0, 255, 0));
@@ -60,18 +59,20 @@ namespace MinsPDFViewer
                     string pageText = "";
                     List<Character> pageChars = null;
 
+                    // 충돌 방지 Lock
                     lock (PdfService.PdfiumLock)
                     {
                         if (document.DocReader == null)
                             return null;
-
                         using (var pageReader = document.DocReader.GetPageReader(i))
                         {
-                            // [수정] Null 경고 해결 (?? "")
                             pageText = pageReader.GetText() ?? "";
                             pageChars = pageReader.GetCharacters().ToList();
                         }
                     }
+
+                    // [좌표계 자동 감지] 이 페이지가 뒤집혔는지 스스로 판단
+                    bool needsFlip = DetectFlipNeed(pageChars);
 
                     int startIndex = (i == _lastPageIndex) ? _lastCharIndex : 0;
                     int findIndex = pageText.IndexOf(query, startIndex, StringComparison.OrdinalIgnoreCase);
@@ -82,7 +83,7 @@ namespace MinsPDFViewer
                         _lastCharIndex = findIndex + 1;
 
                         return Application.Current.Dispatcher.Invoke(() =>
-                            RenderPageSearchResults(pageVM, pageText, pageChars!, query, findIndex));
+                            RenderPageSearchResults(pageVM, pageText, pageChars!, query, findIndex, needsFlip));
                     }
 
                     if (i == _lastPageIndex)
@@ -114,18 +115,20 @@ namespace MinsPDFViewer
                     string pageText = "";
                     List<Character> pageChars = null;
 
+                    // 충돌 방지 Lock
                     lock (PdfService.PdfiumLock)
                     {
                         if (document.DocReader == null)
                             return null;
-
                         using (var pageReader = document.DocReader.GetPageReader(i))
                         {
-                            // [수정] Null 경고 해결 (?? "")
                             pageText = pageReader.GetText() ?? "";
                             pageChars = pageReader.GetCharacters().ToList();
                         }
                     }
+
+                    // [좌표계 자동 감지]
+                    bool needsFlip = DetectFlipNeed(pageChars);
 
                     int startIndex = (i == _lastPageIndex) ? ((_lastCharIndex == -1 || _lastCharIndex == 0) ? pageText.Length - 1 : Math.Max(0, _lastCharIndex - 2)) : pageText.Length - 1;
                     if (startIndex < 0)
@@ -140,11 +143,33 @@ namespace MinsPDFViewer
                         _lastPageIndex = i;
                         _lastCharIndex = findIndex;
                         return Application.Current.Dispatcher.Invoke(() =>
-                            RenderPageSearchResults(pageVM, pageText, pageChars!, query, findIndex));
+                            RenderPageSearchResults(pageVM, pageText, pageChars!, query, findIndex, needsFlip));
                     }
                 }
                 return null;
             });
+        }
+
+        // [핵심 로직] 글자의 흐름을 보고 좌표계를 자동 판단
+        private bool DetectFlipNeed(List<Character> chars)
+        {
+            // 글자가 너무 적으면 판단 불가 -> 기본값(표준)으로 가정
+            if (chars == null || chars.Count < 5)
+                return true;
+
+            // 문서의 맨 앞 글자와 맨 뒤 글자의 Y좌표 비교
+            var firstChar = chars[0];
+            var lastChar = chars[chars.Count - 1];
+
+            double firstY = (firstChar.Box.Top + firstChar.Box.Bottom) / 2.0;
+            double lastY = (lastChar.Box.Top + lastChar.Box.Bottom) / 2.0;
+
+            // 앞쪽 글자의 Y값이 더 크면? (아래로 갈수록 작아짐) -> 표준 좌표계(Bottom-Left) -> 뒤집기 필요(True)
+            if (firstY > lastY)
+                return true;
+
+            // 앞쪽 글자의 Y값이 더 작으면? (아래로 갈수록 커짐) -> 이미지 좌표계(Top-Left) -> 뒤집기 불필요(False)
+            return false;
         }
 
         private void ClearAllSearchHighlights(PdfDocumentModel document)
@@ -160,7 +185,7 @@ namespace MinsPDFViewer
             }
         }
 
-        private PdfAnnotation? RenderPageSearchResults(PdfPageViewModel pageVM, string pageText, List<Character> chars, string query, int activeIndex)
+        private PdfAnnotation? RenderPageSearchResults(PdfPageViewModel pageVM, string pageText, List<Character> chars, string query, int activeIndex, bool needsFlip)
         {
             var toRemove = pageVM.Annotations.Where(a => a.Type == AnnotationType.SearchHighlight).ToList();
             foreach (var r in toRemove)
@@ -175,7 +200,7 @@ namespace MinsPDFViewer
                 if (index == -1)
                     break;
 
-                bool isFound = GetWordRect(pageVM, chars, index, query.Length, out Rect rect);
+                bool isFound = GetWordRect(pageVM, chars, index, query.Length, needsFlip, out Rect rect);
 
                 if (isFound)
                 {
@@ -196,7 +221,7 @@ namespace MinsPDFViewer
             return activeAnnotation;
         }
 
-        private bool GetWordRect(PdfPageViewModel pageVM, List<Character> chars, int startIndex, int length, out Rect result)
+        private bool GetWordRect(PdfPageViewModel pageVM, List<Character> chars, int startIndex, int length, bool needsFlip, out Rect result)
         {
             result = new Rect();
             if (chars == null)
@@ -222,39 +247,49 @@ namespace MinsPDFViewer
             if (!found)
                 return false;
 
+            // CropBox 0 방지 처리가 PdfService에서 되었으므로 안전하게 계산
             double scaleX = (pageVM.CropWidthPoint > 0) ? pageVM.CropWidthPoint / pageVM.Width : 1.0;
             double scaleY = (pageVM.CropHeightPoint > 0) ? pageVM.CropHeightPoint / pageVM.Height : 1.0;
 
-            double topMargin = pageVM.PdfPageHeightPoint - (pageVM.CropY + pageVM.CropHeightPoint);
-            double leftMargin = pageVM.CropX;
+            double finalX, finalY, finalW, finalH;
 
-            double finalX, finalY;
+            // X축: 좌측 기준 (공통)
+            finalX = (minX - pageVM.CropX) / scaleX;
+            finalW = (maxX - minX) / scaleX;
+            finalH = (maxY - minY) / scaleY;
 
-            if (topMargin > 20)
+            // Y축: 자동 감지된 결과에 따라 분기
+            if (needsFlip)
             {
-                finalY = (minY + (topMargin / 2)) / scaleY;
+                // 표준 PDF (Bottom-Left)인 경우 -> 뒤집어서 계산
+                double pdfTopFromPageTop = pageVM.PdfPageHeightPoint - maxY;
+                finalY = (pdfTopFromPageTop - pageVM.CropY) / scaleY;
             }
             else
             {
-                finalY = (minY - topMargin) / scaleY;
+                // 이미지형 PDF (Top-Left)인 경우 -> 그대로 사용
+                finalY = (minY - pageVM.CropY) / scaleY;
             }
-
-            if (leftMargin > 20)
-            {
-                finalX = (minX - (leftMargin / 3)) / scaleX;
-            }
-            else
-            {
-                finalX = (minX - leftMargin) / scaleX;
-            }
-
-            double finalW = (maxX - minX) / scaleX;
-            double finalH = (maxY - minY) / scaleY;
 
             if (finalX < 0)
                 finalX = 0;
             if (finalY < 0)
                 finalY = 0;
+
+
+
+            System.Diagnostics.Debug.WriteLine("========================================");
+            System.Diagnostics.Debug.WriteLine($"[Page {pageVM.PageIndex}] Debug Info");
+            System.Diagnostics.Debug.WriteLine($" - Rotation : {pageVM.Rotation}");
+            System.Diagnostics.Debug.WriteLine($" - MediaBox : {pageVM.MediaBoxInfo}");
+            System.Diagnostics.Debug.WriteLine($" - CropBox  : {pageVM.CropX}, {pageVM.CropY}, {pageVM.CropWidthPoint}, {pageVM.CropHeightPoint}");
+            System.Diagnostics.Debug.WriteLine($" - UI Size  : {pageVM.Width} x {pageVM.Height}");
+            System.Diagnostics.Debug.WriteLine($" - Raw Char Box (First) : {minX}, {minY}, {maxX}, {maxY}");
+            System.Diagnostics.Debug.WriteLine($" - Final Result Rect    : {finalX}, {finalY}, {finalW}, {finalH}");
+            System.Diagnostics.Debug.WriteLine("========================================");
+
+
+
 
             result = new Rect(finalX, finalY, finalW, finalH);
             return true;

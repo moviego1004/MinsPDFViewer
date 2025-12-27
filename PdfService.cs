@@ -165,6 +165,15 @@ namespace MinsPDFViewer
                             pageVM.CropWidthPoint = p.CropBox.Width;
                             pageVM.CropHeightPoint = p.CropBox.Height;
 
+                            // [필수 추가] CropBox가 비어있으면(0,0,0,0) 전체 크기로 설정 (안전장치)
+                            if (pageVM.CropWidthPoint <= 0 || pageVM.CropHeightPoint <= 0)
+                            {
+                                pageVM.CropX = 0;
+                                pageVM.CropY = 0;
+                                pageVM.CropWidthPoint = pageVM.PdfPageWidthPoint;
+                                pageVM.CropHeightPoint = pageVM.PdfPageHeightPoint;
+                            }
+
                             bool hasSignature = CheckIfPageHasSignature(p);
                             pageVM.HasSignature = hasSignature;
 
@@ -188,6 +197,10 @@ namespace MinsPDFViewer
                                     pageVM.Annotations.Add(ann);
                                 }
                             });
+
+                            // [추가] 회전 및 미디어 박스 정보 저장
+                            pageVM.Rotation = p.Rotate;
+                            pageVM.MediaBoxInfo = $"{p.MediaBox.X1},{p.MediaBox.Y1},{p.MediaBox.Width},{p.MediaBox.Height}";
                         }
 
                         System.Windows.Application.Current.Dispatcher.Invoke(() =>
