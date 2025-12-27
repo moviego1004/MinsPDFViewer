@@ -4,6 +4,7 @@ using System.Linq;
 using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Media;
+using Docnet.Core.Models;
 
 namespace MinsPDFViewer
 {
@@ -12,6 +13,8 @@ namespace MinsPDFViewer
         private int _lastPageIndex = 0;
         private int _lastCharIndex = 0;
         private string _lastQuery = "";
+
+        private PdfDocumentModel? _lastDocument = null;
 
         private bool _cancelSearch = false;
 
@@ -34,17 +37,17 @@ namespace MinsPDFViewer
         {
             if (string.IsNullOrWhiteSpace(query) || document == null || document.DocReader == null)
                 return null;
-            if (query != _lastQuery)
+
+            if (query != _lastQuery || document != _lastDocument)
             {
+                _lastDocument = document;
                 _lastQuery = query;
                 ResetSearch();
                 ClearAllSearchHighlights(document);
             }
 
-            // [수정] Task.Run으로 감싸서 UI 프리징 방지 및 비동기 경고 해결
             return await Task.Run(() =>
             {
-                // [안전 장치] 검색 중 문서가 닫혔는지 확인
                 if (document.DocReader == null)
                     return null;
 
@@ -53,35 +56,35 @@ namespace MinsPDFViewer
                     if (_cancelSearch)
                         break;
 
-
                     var pageVM = document.Pages[i];
-                    using (var pageReader = document.DocReader.GetPageReader(i))
+                    string pageText = "";
+                    List<Character> pageChars = null;
+
+                    lock (PdfService.PdfiumLock)
                     {
-                        // [핵심 수정] 자물쇠를 잠그고(lock) 텍스트를 읽어옴
-                        lock (document.SyncRoot)
+                        if (document.DocReader == null)
+                            return null;
+
+                        using (var pageReader = document.DocReader.GetPageReader(i))
                         {
-                            // 락 안에서 문서가 유효한지 다시 확인
-                            if (document.DocReader == null)
-                                return null;
-
-                            string pageText = pageReader.GetText();
-                        }
-
-                        int startIndex = (i == _lastPageIndex) ? _lastCharIndex : 0;
-                        int findIndex = pageText.IndexOf(query, startIndex, StringComparison.OrdinalIgnoreCase);
-
-                        if (findIndex != -1)
-                        {
-                            _lastPageIndex = i;
-                            _lastCharIndex = findIndex + 1;
-                            // 렌더링 관련 객체 생성은 UI 스레드에서 해야 할 수 있으나, 
-                            // 여기서는 ViewModel 데이터만 조작하고 View 바인딩이 처리하므로 Task 내에서도 가능
-                            // 단, Collection 변경 알림이 발생하므로 Application.Current.Dispatcher 사용 권장될 수 있음
-                            // 우선 기존 로직 유지하되 계산을 백그라운드에서 수행
-                            return Application.Current.Dispatcher.Invoke(() =>
-                                RenderPageSearchResults(pageVM, pageReader, query, findIndex));
+                            // [수정] Null 경고 해결 (?? "")
+                            pageText = pageReader.GetText() ?? "";
+                            pageChars = pageReader.GetCharacters().ToList();
                         }
                     }
+
+                    int startIndex = (i == _lastPageIndex) ? _lastCharIndex : 0;
+                    int findIndex = pageText.IndexOf(query, startIndex, StringComparison.OrdinalIgnoreCase);
+
+                    if (findIndex != -1)
+                    {
+                        _lastPageIndex = i;
+                        _lastCharIndex = findIndex + 1;
+
+                        return Application.Current.Dispatcher.Invoke(() =>
+                            RenderPageSearchResults(pageVM, pageText, pageChars!, query, findIndex));
+                    }
+
                     if (i == _lastPageIndex)
                         _lastCharIndex = 0;
                 }
@@ -93,8 +96,10 @@ namespace MinsPDFViewer
         {
             if (string.IsNullOrWhiteSpace(query) || document == null || document.DocReader == null)
                 return null;
-            if (query != _lastQuery)
+
+            if (query != _lastQuery || document != _lastDocument)
             {
+                _lastDocument = document;
                 _lastQuery = query;
                 _lastPageIndex = document.Pages.Count - 1;
                 _lastCharIndex = -1;
@@ -106,24 +111,36 @@ namespace MinsPDFViewer
                 for (int i = _lastPageIndex; i >= 0; i--)
                 {
                     var pageVM = document.Pages[i];
-                    using (var pageReader = document.DocReader.GetPageReader(i))
+                    string pageText = "";
+                    List<Character> pageChars = null;
+
+                    lock (PdfService.PdfiumLock)
                     {
-                        string pageText = pageReader.GetText();
-                        int startIndex = (i == _lastPageIndex) ? ((_lastCharIndex == -1 || _lastCharIndex == 0) ? pageText.Length - 1 : Math.Max(0, _lastCharIndex - 2)) : pageText.Length - 1;
-                        if (startIndex < 0)
-                            continue;
-                        if (startIndex >= pageText.Length)
-                            startIndex = pageText.Length - 1;
+                        if (document.DocReader == null)
+                            return null;
 
-                        int findIndex = pageText.LastIndexOf(query, startIndex, StringComparison.OrdinalIgnoreCase);
-
-                        if (findIndex != -1)
+                        using (var pageReader = document.DocReader.GetPageReader(i))
                         {
-                            _lastPageIndex = i;
-                            _lastCharIndex = findIndex;
-                            return Application.Current.Dispatcher.Invoke(() =>
-                                RenderPageSearchResults(pageVM, pageReader, query, findIndex));
+                            // [수정] Null 경고 해결 (?? "")
+                            pageText = pageReader.GetText() ?? "";
+                            pageChars = pageReader.GetCharacters().ToList();
                         }
+                    }
+
+                    int startIndex = (i == _lastPageIndex) ? ((_lastCharIndex == -1 || _lastCharIndex == 0) ? pageText.Length - 1 : Math.Max(0, _lastCharIndex - 2)) : pageText.Length - 1;
+                    if (startIndex < 0)
+                        continue;
+                    if (startIndex >= pageText.Length)
+                        startIndex = pageText.Length - 1;
+
+                    int findIndex = pageText.LastIndexOf(query, startIndex, StringComparison.OrdinalIgnoreCase);
+
+                    if (findIndex != -1)
+                    {
+                        _lastPageIndex = i;
+                        _lastCharIndex = findIndex;
+                        return Application.Current.Dispatcher.Invoke(() =>
+                            RenderPageSearchResults(pageVM, pageText, pageChars!, query, findIndex));
                     }
                 }
                 return null;
@@ -134,7 +151,6 @@ namespace MinsPDFViewer
         {
             foreach (var p in document.Pages)
             {
-                // UI 스레드에서 안전하게 컬렉션 수정
                 Application.Current.Dispatcher.Invoke(() =>
                 {
                     var toRemove = p.Annotations.Where(a => a.Type == AnnotationType.SearchHighlight).ToList();
@@ -144,14 +160,11 @@ namespace MinsPDFViewer
             }
         }
 
-        private PdfAnnotation? RenderPageSearchResults(PdfPageViewModel pageVM, Docnet.Core.Readers.IPageReader pageReader, string query, int activeIndex)
+        private PdfAnnotation? RenderPageSearchResults(PdfPageViewModel pageVM, string pageText, List<Character> chars, string query, int activeIndex)
         {
             var toRemove = pageVM.Annotations.Where(a => a.Type == AnnotationType.SearchHighlight).ToList();
             foreach (var r in toRemove)
                 pageVM.Annotations.Remove(r);
-
-            string pageText = pageReader.GetText();
-            var chars = pageReader.GetCharacters().ToList();
 
             PdfAnnotation? activeAnnotation = null;
             int currentIndex = 0;
@@ -183,9 +196,12 @@ namespace MinsPDFViewer
             return activeAnnotation;
         }
 
-        private bool GetWordRect(PdfPageViewModel pageVM, List<Docnet.Core.Models.Character> chars, int startIndex, int length, out Rect result)
+        private bool GetWordRect(PdfPageViewModel pageVM, List<Character> chars, int startIndex, int length, out Rect result)
         {
             result = new Rect();
+            if (chars == null)
+                return false;
+
             double minX = double.MaxValue, minY = double.MaxValue;
             double maxX = double.MinValue, maxY = double.MinValue;
             bool found = false;

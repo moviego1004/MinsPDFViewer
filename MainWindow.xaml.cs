@@ -161,30 +161,58 @@ namespace MinsPDFViewer
             }
         }
 
-        private void BtnOpen_Click(object sender, RoutedEventArgs e)
+        // [수정] async void 적용 및 LoadPdfAsync 호출
+        private async void BtnOpen_Click(object sender, RoutedEventArgs e)
         {
             var dlg = new OpenFileDialog { Filter = "PDF Files|*.pdf" };
             if (dlg.ShowDialog() == true)
             {
-                var docModel = _pdfService.LoadPdf(dlg.FileName);
+                // UI 스레드에서 락을 기다리지 않고, 작업이 끝날 때까지 부드럽게 대기(await)
+                var docModel = await _pdfService.LoadPdfAsync(dlg.FileName);
+
                 if (docModel != null)
                 {
                     Documents.Add(docModel);
                     SelectedDocument = docModel;
-                    _ = _pdfService.RenderPagesAsync(docModel);
+                    // 초기화(렌더링 준비) 시작
+                    _ = _pdfService.InitializeDocumentAsync(docModel);
                 }
             }
         }
+
         private void BtnCloseTab_Click(object sender, RoutedEventArgs e)
         {
             if (sender is Button btn && btn.Tag is PdfDocumentModel doc)
             {
-                doc.DocReader?.Dispose();
+                doc.Dispose(); // [수정] CleanDocReader도 같이 정리됨
                 Documents.Remove(doc);
                 if (Documents.Count == 0)
                     SelectedDocument = null;
             }
         }
+
+        // [신규] 페이지가 화면에 보일 때 -> 이미지 렌더링
+        private void PageGrid_Loaded(object sender, RoutedEventArgs e)
+        {
+            if (sender is FrameworkElement elem && elem.DataContext is PdfPageViewModel pageVM)
+            {
+                if (SelectedDocument != null)
+                {
+                    // 비동기로 렌더링 요청 (UI 프리징 방지)
+                    Task.Run(() => _pdfService.RenderPageImage(SelectedDocument, pageVM));
+                }
+            }
+        }
+
+        // [신규] 페이지가 화면에서 사라질 때 -> 이미지 메모리 해제
+        private void PageGrid_Unloaded(object sender, RoutedEventArgs e)
+        {
+            if (sender is FrameworkElement elem && elem.DataContext is PdfPageViewModel pageVM)
+            {
+                pageVM.Unload(); // 이미지 null 처리
+            }
+        }
+
 
         private async void BtnSearch_Click(object sender, RoutedEventArgs e) => await FindNextSearchResult();
         private async void BtnNextSearch_Click(object sender, RoutedEventArgs e) => await FindNextSearchResult();
@@ -708,41 +736,80 @@ namespace MinsPDFViewer
             }
         }
 
-        private void CheckTextInSelection(int pageIndex, Rect uiRect)
+        // [수정] 비동기(async)로 변경하여 UI 멈춤 방지
+        // [수정] async 키워드 추가 (비동기 메서드로 변경)
+        private async void CheckTextInSelection(int pageIndex, Rect uiRect)
         {
             _selectedTextBuffer = "";
             if (SelectedDocument?.DocReader == null)
                 return;
 
-            var sb = new StringBuilder();
+            // UI 스레드에서 필요한 값 미리 캡처 (스레드 안전성 확보)
+            var doc = SelectedDocument;
 
-            // [핵심 수정] 텍스트 선택 시에도 Lock을 걸어 검색 기능과 충돌 방지
-            lock (SelectedDocument.SyncRoot)
+            // [핵심] 락을 거는 무거운 작업은 백그라운드(Task.Run)로 보냄 -> UI 멈춤 방지
+            string extractedText = await Task.Run(() =>
             {
-                if (SelectedDocument?.DocReader == null)
-                    return;
-
-                using (var reader = SelectedDocument.DocReader.GetPageReader(pageIndex))
+                var sb = new StringBuilder();
+                try
                 {
-                    var chars = reader.GetCharacters().ToList();
-                    foreach (var c in chars)
+                    // 백그라운드 스레드에서 안전하게 대기하다가 락 획득
+                    lock (PdfService.PdfiumLock)
                     {
-                        var r = new Rect(Math.Min(c.Box.Left, c.Box.Right), Math.Min(c.Box.Top, c.Box.Bottom), Math.Abs(c.Box.Right - c.Box.Left), Math.Abs(c.Box.Bottom - c.Box.Top));
-                        if (uiRect.IntersectsWith(r))
-                            sb.Append(c.Char);
+                        // 락 안에서 문서가 닫혔는지 다시 확인
+                        if (doc.DocReader == null)
+                            return "";
+
+                        using (var reader = doc.DocReader.GetPageReader(pageIndex))
+                        {
+                            var chars = reader.GetCharacters().ToList();
+                            foreach (var c in chars)
+                            {
+                                var r = new Rect(
+                                    Math.Min(c.Box.Left, c.Box.Right),
+                                    Math.Min(c.Box.Top, c.Box.Bottom),
+                                    Math.Abs(c.Box.Right - c.Box.Left),
+                                    Math.Abs(c.Box.Bottom - c.Box.Top));
+
+                                if (uiRect.IntersectsWith(r))
+                                    sb.Append(c.Char);
+                            }
+                        }
                     }
                 }
-            }
+                catch
+                {
+                    return "";
+                }
 
-            var pageVM = SelectedDocument.Pages[pageIndex];
-            if (pageVM.OcrWords != null)
+                // OCR 단어 처리 (메모리에 있는 데이터라 락 불필요하지만 편의상 여기서 처리)
+                // 주의: ObservableCollection이 아닌 일반 List<OcrWordInfo>라면 여기서 접근해도 안전
+                if (doc.Pages.Count > pageIndex)
+                {
+                    var pageVM = doc.Pages[pageIndex];
+                    if (pageVM.OcrWords != null)
+                    {
+                        foreach (var word in pageVM.OcrWords)
+                        {
+                            if (uiRect.IntersectsWith(word.BoundingBox))
+                                sb.Append(word.Text + " ");
+                        }
+                    }
+                }
+
+                return sb.ToString();
+            });
+
+            // 작업이 끝나면 UI 스레드로 돌아와서 결과 반영
+            _selectedTextBuffer = extractedText;
+
+            // (선택사항) 상태 표시줄 업데이트
+            if (!string.IsNullOrEmpty(_selectedTextBuffer))
             {
-                foreach (var word in pageVM.OcrWords)
-                    if (uiRect.IntersectsWith(word.BoundingBox))
-                        sb.Append(word.Text + " ");
+                TxtStatus.Text = "텍스트 선택됨";
             }
-            _selectedTextBuffer = sb.ToString();
         }
+
         private void BtnPopupCopy_Click(object sender, RoutedEventArgs e)
         {
             Clipboard.SetText(_selectedTextBuffer);

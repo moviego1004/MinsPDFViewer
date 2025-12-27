@@ -27,7 +27,8 @@ namespace MinsPDFViewer
             LogException(e.ExceptionObject as Exception, "Non-UI Thread Error (Critical)");
         }
 
-        private void TaskScheduler_UnobservedTaskException(object sender, System.Threading.Tasks.UnobservedTaskExceptionEventArgs e)
+        // [수정] object? sender 로 변경 (Nullable 경고 해결)
+        private void TaskScheduler_UnobservedTaskException(object? sender, System.Threading.Tasks.UnobservedTaskExceptionEventArgs e)
         {
             LogException(e.Exception, "Background Task Error");
             e.SetObserved();
