@@ -2,6 +2,9 @@
 ; MinsPDFViewer Installer Script (Final)
 ;--------------------------------
 
+!define MUI_ICON "MinsPDFViewer_ICO_32x32.ico"   ; 설치 파일 아이콘
+!define MUI_UNICON "MinsPDFViewer_ICO_32x32.ico" ; 언인스톨러 아이콘 (선택사항)
+
 !include "MUI2.nsh"
 
 ; 애플리케이션 정보
@@ -11,7 +14,7 @@
 !define APP_EXE "MinsPDFViewer.exe"
 
 ; 빌드 경로 (본인의 실제 경로로 확인!)
-!define BUILD_DIR "bin\Release\net8.0-windows10.0.19041.0\win-x64\publish"
+!define BUILD_DIR "bin\Release\net8.0-windows10.0.19041.0\win-x64"
 
 Name "${APP_NAME}"
 OutFile "MinsPDFViewer_Setup_v${APP_VERSION}.exe"
@@ -24,8 +27,8 @@ SetCompressor /SOLID lzma
 ; UI 설정
 ;--------------------------------
 !define MUI_ABORTWARNING
-!define MUI_ICON "${NSISDIR}\Contrib\Graphics\Icons\modern-install.ico"
-!define MUI_UNICON "${NSISDIR}\Contrib\Graphics\Icons\modern-uninstall.ico"
+!define MUI_ICON "MinsPDFViewer_ICO_32x32.ico"
+!define MUI_UNICON "MinsPDFViewer_ICO_32x32.ico" ; 언인스톨러 아이콘 (선택사항)
 
 !insertmacro MUI_PAGE_WELCOME
 !insertmacro MUI_PAGE_DIRECTORY
@@ -51,7 +54,12 @@ Section "Install"
     
     ; 2. 필수 DLL 복사 (pdfium.dll 등)
     ; pdfium.dll은 Docnet.Core가 사용하는 핵심 엔진이므로 필수입니다.
-    File "${BUILD_DIR}\pdfium.dll"
+   ; File "${BUILD_DIR}\pdfium.dll"
+
+    ; [추가] 단일 파일이 아닐 경우, 나머지 DLL들도 모두 복사
+    File "${BUILD_DIR}\*.dll" 
+    ;File "${BUILD_DIR}\*.json" 
+    ;File "${BUILD_DIR}\*.config"
     
     ; [수정] tessdata 복사 부분 삭제함 (Windows OCR 사용 시 불필요)
 

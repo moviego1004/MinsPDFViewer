@@ -738,52 +738,86 @@ namespace MinsPDFViewer
 
         // [수정] 비동기(async)로 변경하여 UI 멈춤 방지
         // [수정] async 키워드 추가 (비동기 메서드로 변경)
+        // MainWindow.xaml.cs
+
+        // [수정] 검색 기능과 동일한 "좌표계 자동 감지" 로직 적용
         private async void CheckTextInSelection(int pageIndex, Rect uiRect)
         {
             _selectedTextBuffer = "";
             if (SelectedDocument?.DocReader == null)
                 return;
 
-            // UI 스레드에서 필요한 값 미리 캡처 (스레드 안전성 확보)
             var doc = SelectedDocument;
 
-            // [핵심] 락을 거는 무거운 작업은 백그라운드(Task.Run)로 보냄 -> UI 멈춤 방지
             string extractedText = await Task.Run(() =>
             {
                 var sb = new StringBuilder();
                 try
                 {
-                    // 백그라운드 스레드에서 안전하게 대기하다가 락 획득
                     lock (PdfService.PdfiumLock)
                     {
-                        // 락 안에서 문서가 닫혔는지 다시 확인
                         if (doc.DocReader == null)
                             return "";
 
                         using (var reader = doc.DocReader.GetPageReader(pageIndex))
                         {
                             var chars = reader.GetCharacters().ToList();
+                            if (chars.Count == 0)
+                                return "";
+
+                            // 1. 좌표계 자동 감지 (SearchService와 동일 로직)
+                            bool needsFlip = false;
+                            if (chars.Count > 5)
+                            {
+                                double firstY = (chars[0].Box.Top + chars[0].Box.Bottom) / 2.0;
+                                double lastY = (chars.Last().Box.Top + chars.Last().Box.Bottom) / 2.0;
+                                if (firstY > lastY)
+                                    needsFlip = true; // 표준 PDF (뒤집어야 함)
+                            }
+
+                            // 2. 페이지 정보 가져오기
+                            var pageVM = doc.Pages[pageIndex];
+                            double scaleX = (pageVM.CropWidthPoint > 0) ? pageVM.Width / pageVM.CropWidthPoint : 1.0;
+                            double scaleY = (pageVM.CropHeightPoint > 0) ? pageVM.Height / pageVM.CropHeightPoint : 1.0;
+
                             foreach (var c in chars)
                             {
-                                var r = new Rect(
-                                    Math.Min(c.Box.Left, c.Box.Right),
-                                    Math.Min(c.Box.Top, c.Box.Bottom),
-                                    Math.Abs(c.Box.Right - c.Box.Left),
-                                    Math.Abs(c.Box.Bottom - c.Box.Top));
+                                // 3. PDF 좌표 -> UI 좌표로 변환 (검색 로직 역이용)
+                                double charMinX = Math.Min(c.Box.Left, c.Box.Right);
+                                double charMaxX = Math.Max(c.Box.Left, c.Box.Right);
+                                double charMinY = Math.Min(c.Box.Top, c.Box.Bottom);
+                                double charMaxY = Math.Max(c.Box.Top, c.Box.Bottom);
 
-                                if (uiRect.IntersectsWith(r))
+                                double finalX = (charMinX - pageVM.CropX) * scaleX;
+                                double finalY = 0;
+                                double finalW = (charMaxX - charMinX) * scaleX;
+                                double finalH = (charMaxY - charMinY) * scaleY;
+
+                                if (needsFlip)
+                                {
+                                    // 표준 PDF: (PageHeight - MaxY)가 Top이 됨
+                                    double pdfTopFromPageTop = pageVM.PdfPageHeightPoint - charMaxY;
+                                    finalY = (pdfTopFromPageTop - pageVM.CropY) * scaleY;
+                                }
+                                else
+                                {
+                                    // 이미지형 PDF: MinY가 Top이 됨
+                                    finalY = (charMinY - pageVM.CropY) * scaleY;
+                                }
+
+                                // 4. 변환된 글자 박스와 마우스 선택 영역(uiRect)이 겹치는지 확인
+                                var charRect = new Rect(finalX, finalY, finalW, finalH);
+                                if (uiRect.IntersectsWith(charRect))
+                                {
                                     sb.Append(c.Char);
+                                }
                             }
                         }
                     }
                 }
-                catch
-                {
-                    return "";
-                }
+                catch { return ""; }
 
-                // OCR 단어 처리 (메모리에 있는 데이터라 락 불필요하지만 편의상 여기서 처리)
-                // 주의: ObservableCollection이 아닌 일반 List<OcrWordInfo>라면 여기서 접근해도 안전
+                // OCR 단어 처리 (단순 좌표 비교)
                 if (doc.Pages.Count > pageIndex)
                 {
                     var pageVM = doc.Pages[pageIndex];
@@ -800,13 +834,11 @@ namespace MinsPDFViewer
                 return sb.ToString();
             });
 
-            // 작업이 끝나면 UI 스레드로 돌아와서 결과 반영
             _selectedTextBuffer = extractedText;
 
-            // (선택사항) 상태 표시줄 업데이트
             if (!string.IsNullOrEmpty(_selectedTextBuffer))
             {
-                TxtStatus.Text = "텍스트 선택됨";
+                TxtStatus.Text = "텍스트 선택됨"; // 상태바 메시지
             }
         }
 

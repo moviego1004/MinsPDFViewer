@@ -69,6 +69,61 @@ namespace MinsPDFViewer
             DocReader?.Dispose();
             CleanDocReader?.Dispose();
         }
+
+        private bool _isSelecting;
+        public bool IsSelecting
+        {
+            get => _isSelecting;
+            set
+            {
+                _isSelecting = value;
+                OnPropertyChanged(nameof(IsSelecting));
+            }
+        }
+
+        private double _selectionX;
+        public double SelectionX
+        {
+            get => _selectionX;
+            set
+            {
+                _selectionX = value;
+                OnPropertyChanged(nameof(SelectionX));
+            }
+        }
+
+        private double _selectionY;
+        public double SelectionY
+        {
+            get => _selectionY;
+            set
+            {
+                _selectionY = value;
+                OnPropertyChanged(nameof(SelectionY));
+            }
+        }
+
+        private double _selectionWidth;
+        public double SelectionWidth
+        {
+            get => _selectionWidth;
+            set
+            {
+                _selectionWidth = value;
+                OnPropertyChanged(nameof(SelectionWidth));
+            }
+        }
+
+        private double _selectionHeight;
+        public double SelectionHeight
+        {
+            get => _selectionHeight;
+            set
+            {
+                _selectionHeight = value;
+                OnPropertyChanged(nameof(SelectionHeight));
+            }
+        }
     }
 
     public class PdfPageViewModel : INotifyPropertyChanged
