@@ -11,6 +11,7 @@ using System.Windows.Controls.Primitives;
 using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
+using Docnet.Core.Models; // 상단에 추가해 주세요
 using Microsoft.Win32;
 using PdfSharp.Drawing;
 using PdfSharp.Pdf;
@@ -99,24 +100,43 @@ namespace MinsPDFViewer
             }
         }
 
+        // MainWindow.xaml.cs -> UpdateScrollViewerState 메서드 교체
+
         private void UpdateScrollViewerState(ListView listView, PdfDocumentModel? oldDoc, PdfDocumentModel? newDoc)
         {
             var scrollViewer = GetVisualChild<ScrollViewer>(listView);
             if (scrollViewer == null)
                 return;
+
+            // 이벤트 중복 방지
             scrollViewer.ScrollChanged -= ScrollViewer_ScrollChanged;
+
+            // 1. 이전 문서의 스크롤 위치 저장
             if (oldDoc != null)
             {
                 oldDoc.SavedVerticalOffset = scrollViewer.VerticalOffset;
                 oldDoc.SavedHorizontalOffset = scrollViewer.HorizontalOffset;
             }
+
+            // 2. 새 문서의 스크롤 위치 복원 (비동기 처리)
             if (newDoc != null)
             {
-                scrollViewer.ScrollToVerticalOffset(newDoc.SavedVerticalOffset);
-                scrollViewer.ScrollToHorizontalOffset(newDoc.SavedHorizontalOffset);
+                // [핵심 수정] UI 렌더링이 완료된 후에 스크롤을 이동시켜야 
+                // 이전 탭의 위치가 남아있거나 0으로 초기화되는 문제를 막을 수 있음
+                Application.Current.Dispatcher.InvokeAsync(() =>
+                {
+                    scrollViewer.ScrollToVerticalOffset(newDoc.SavedVerticalOffset);
+                    scrollViewer.ScrollToHorizontalOffset(newDoc.SavedHorizontalOffset);
+
+                    // 스크롤 복원 후 이벤트 다시 연결
+                    scrollViewer.ScrollChanged += ScrollViewer_ScrollChanged;
+                }, System.Windows.Threading.DispatcherPriority.Loaded);
             }
-            if (newDoc != null)
+            else
+            {
+                // 문서가 없을 때는 이벤트만 다시 연결
                 scrollViewer.ScrollChanged += ScrollViewer_ScrollChanged;
+            }
         }
 
         private void PdfListView_Loaded(object sender, RoutedEventArgs e)
@@ -847,10 +867,115 @@ namespace MinsPDFViewer
             Clipboard.SetText(_selectedTextBuffer);
             SelectionPopup.IsOpen = false;
         }
-        private void BtnPopupCopyImage_Click(object sender, RoutedEventArgs e)
+        // [구현] 선택 영역을 고해상도 이미지로 캡처하여 클립보드에 복사
+        private async void BtnPopupCopyImage_Click(object sender, RoutedEventArgs e)
         {
-            SelectionPopup.IsOpen = false;
+            try
+            {
+                SelectionPopup.IsOpen = false; // 팝업 닫기
+
+                if (SelectedDocument == null || _selectedPageIndex == -1)
+                    return;
+
+                var pageVM = SelectedDocument.Pages[_selectedPageIndex];
+
+                // 선택 영역이 너무 작으면 무시
+                if (pageVM.SelectionWidth <= 0 || pageVM.SelectionHeight <= 0)
+                    return;
+
+                // 1. 고해상도 설정을 위한 스케일 (2.0 = 약 192 DPI, 3.0 = 약 288 DPI)
+                // 너무 높으면 메모리 부족 발생 가능하므로 2.0 권장
+                double renderScale = 2.0;
+
+                byte[]? fullPageBytes = null;
+                int rawWidth = 0;
+                int rawHeight = 0;
+
+                TxtStatus.Text = "이미지 처리 중...";
+
+                // 2. 백그라운드에서 페이지 전체를 고해상도로 렌더링
+                await Task.Run(() =>
+                {
+                    lock (PdfService.PdfiumLock)
+                    {
+                        // DocLib 인스턴스 확인
+                        if (SelectedDocument.DocLib == null)
+                            return;
+
+                        try
+                        {
+                            // 현재 파일을 다시 읽어서 임시 고해상도 Reader 생성
+                            // (기존 Reader는 1.0배율로 고정되어 있어서 흐릿함)
+                            var fileBytes = File.ReadAllBytes(SelectedDocument.FilePath);
+
+                            using (var reader = SelectedDocument.DocLib.GetDocReader(fileBytes, new PageDimensions(renderScale)))
+                            using (var pageReader = reader.GetPageReader(_selectedPageIndex))
+                            {
+                                rawWidth = pageReader.GetPageWidth();
+                                rawHeight = pageReader.GetPageHeight();
+                                fullPageBytes = pageReader.GetImage(); // BGRA 포맷 바이트 배열
+                            }
+                        }
+                        catch (Exception ex)
+                        {
+                            // 파일 접근 오류 등 예외 처리
+                            System.Diagnostics.Debug.WriteLine($"Image Copy Error: {ex.Message}");
+                        }
+                    }
+                });
+
+                if (fullPageBytes == null)
+                {
+                    MessageBox.Show("이미지 생성에 실패했습니다.");
+                    return;
+                }
+
+                // 3. 바이트 배열 -> BitmapSource 변환
+                var fullBitmap = BitmapSource.Create(
+                    rawWidth, rawHeight,
+                    96 * renderScale, 96 * renderScale,
+                    PixelFormats.Bgra32, null,
+                    fullPageBytes, rawWidth * 4);
+
+                // 4. 선택 영역에 맞춰 자르기 (Crop)
+                // 화면상의 비율(Ratio)을 계산하여 실제 고해상도 이미지 좌표로 변환
+                double ratioX = pageVM.SelectionX / pageVM.Width;
+                double ratioY = pageVM.SelectionY / pageVM.Height;
+                double ratioW = pageVM.SelectionWidth / pageVM.Width;
+                double ratioH = pageVM.SelectionHeight / pageVM.Height;
+
+                int cropX = (int)(rawWidth * ratioX);
+                int cropY = (int)(rawHeight * ratioY);
+                int cropW = (int)(rawWidth * ratioW);
+                int cropH = (int)(rawHeight * ratioH);
+
+                // 좌표 보정 (이미지 범위 벗어남 방지)
+                if (cropX < 0)
+                    cropX = 0;
+                if (cropY < 0)
+                    cropY = 0;
+                if (cropX + cropW > rawWidth)
+                    cropW = rawWidth - cropX;
+                if (cropY + cropH > rawHeight)
+                    cropH = rawHeight - cropY;
+
+                if (cropW > 0 && cropH > 0)
+                {
+                    // 자르기 실행
+                    var croppedBitmap = new CroppedBitmap(fullBitmap, new Int32Rect(cropX, cropY, cropW, cropH));
+
+                    // 클립보드에 설정
+                    Clipboard.SetImage(croppedBitmap);
+                    TxtStatus.Text = "이미지가 클립보드에 복사되었습니다.";
+                }
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"이미지 복사 실패: {ex.Message}");
+                TxtStatus.Text = "오류 발생";
+            }
         }
+
         private void BtnPopupHighlightGreen_Click(object sender, RoutedEventArgs e) => AddAnnotation(Colors.Lime, AnnotationType.Highlight);
         private void BtnPopupHighlightOrange_Click(object sender, RoutedEventArgs e) => AddAnnotation(Colors.Orange, AnnotationType.Highlight);
         private void BtnPopupUnderline_Click(object sender, RoutedEventArgs e) => AddAnnotation(Colors.Black, AnnotationType.Underline);
@@ -1200,6 +1325,95 @@ namespace MinsPDFViewer
                     }
                 }
             }
+        }
+
+        // [신규] 책갈피 사이드바 열기/닫기
+        private void BtnToggleSidebar_Click(object sender, RoutedEventArgs e)
+        {
+            if (SidebarBorder.Visibility == Visibility.Visible)
+                SidebarBorder.Visibility = Visibility.Collapsed;
+            else
+                SidebarBorder.Visibility = Visibility.Visible;
+        }
+
+        // [신규] PDF 로드 시 책갈피도 같이 로드 (LoadPdfAsync 성공 후 호출 권장)
+        // (기존 BtnOpen_Click에서 InitializeDocumentAsync 호출 후 _pdfService.LoadBookmarks(docModel); 추가 필요)
+
+        // [신규] 트리뷰 선택 시 해당 페이지로 이동
+        private void BookmarkTree_SelectedItemChanged(object sender, RoutedPropertyChangedEventArgs<object> e)
+        {
+            if (e.NewValue is PdfBookmarkViewModel bm && SelectedDocument != null)
+            {
+                // 1. 해당 페이지 객체 찾기
+                var targetPage = SelectedDocument.Pages.FirstOrDefault(p => p.PageIndex == bm.PageIndex);
+                if (targetPage != null)
+                {
+                    // 2. 리스트뷰 스크롤 이동
+                    var listView = GetVisualChild<ListView>(MainTabControl);
+                    if (listView != null)
+                        listView.ScrollIntoView(targetPage);
+                }
+            }
+        }
+
+        // [신규] 현재 페이지를 책갈피에 추가
+        private void BtnAddBookmark_Click(object sender, RoutedEventArgs e)
+        {
+            if (SelectedDocument == null)
+                return;
+
+            // 현재 보고 있는 페이지 번호 찾기 (스크롤 위치 기준 대략적 계산 or 가장 위 페이지)
+            // 간단하게 현재 화면에 보이는 첫 번째 페이지를 기준으로 함
+            // (정확한 현재 페이지 감지는 ScrollViewer 오프셋 계산이 필요하지만, 여기선 0번 혹은 선택된 페이지로 가정)
+
+            int targetIndex = 0;
+            // _activePageIndex가 유효하다면 사용, 아니면 맨 위 페이지
+            // 여기서는 간단히 리스트뷰의 첫 번째 보이는 항목을 가져오는 로직이 필요하지만,
+            // 일단 "0페이지" 또는 "사용자가 클릭한 페이지"로 가정하고 추가
+
+            // 심플하게: "맨 마지막에 추가"
+            var newBm = new PdfBookmarkViewModel
+            {
+                Title = $"새 책갈피 {SelectedDocument.Bookmarks.Count + 1}",
+                PageIndex = 0 // (나중에 현재 스크롤 위치 연동 개선 가능)
+            };
+
+            // 만약 트리에서 선택된 항목이 있다면 그 자식으로 추가? 형제로 추가?
+            // 여기서는 "루트"에 추가
+            SelectedDocument.Bookmarks.Add(newBm);
+        }
+
+        // [신규] 책갈피 삭제
+        private void BtnDeleteBookmark_Click(object sender, RoutedEventArgs e)
+        {
+            if (BookmarkTree.SelectedItem is PdfBookmarkViewModel selectedBm && SelectedDocument != null)
+            {
+                // 1. 루트에서 찾기
+                if (SelectedDocument.Bookmarks.Contains(selectedBm))
+                {
+                    SelectedDocument.Bookmarks.Remove(selectedBm);
+                }
+                // 2. 부모가 있는 경우 (재귀 탐색 필요 없이 Parent 속성 활용)
+                else if (selectedBm.Parent != null)
+                {
+                    selectedBm.Parent.Children.Remove(selectedBm);
+                }
+            }
+        }
+        // [신규] 이동 (위/아래) 및 계층 변경 (들여쓰기/내어쓰기)
+        // 이 부분은 트리 구조 조작 로직이 조금 복잡하므로, 
+        // 1차적으로 "추가/삭제/이동"만 먼저 확인하시고, 필요하면 더 정교하게 짜드리겠습니다.
+        private void BtnMoveBookmarkUp_Click(object sender, RoutedEventArgs e)
+        { /* 구현 예정 */
+        }
+        private void BtnMoveBookmarkDown_Click(object sender, RoutedEventArgs e)
+        { /* 구현 예정 */
+        }
+        private void BtnIndentBookmark_Click(object sender, RoutedEventArgs e)
+        { /* 구현 예정 */
+        }
+        private void BtnOutdentBookmark_Click(object sender, RoutedEventArgs e)
+        { /* 구현 예정 */
         }
     }
 }

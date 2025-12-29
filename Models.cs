@@ -124,6 +124,10 @@ namespace MinsPDFViewer
                 OnPropertyChanged(nameof(SelectionHeight));
             }
         }
+
+        // [추가] 책갈피 목록 (트리 구조의 최상위 노드들)
+        public ObservableCollection<PdfBookmarkViewModel> Bookmarks { get; set; } = new ObservableCollection<PdfBookmarkViewModel>();
+
     }
 
     public class PdfPageViewModel : INotifyPropertyChanged
@@ -187,26 +191,61 @@ namespace MinsPDFViewer
         {
             get; set;
         }
+        private bool _isSelecting;
         public bool IsSelecting
         {
-            get; set;
-        } // Notify 구현 생략 (기존 유지)
+            get => _isSelecting;
+            set
+            {
+                _isSelecting = value;
+                OnPropertyChanged(nameof(IsSelecting));
+            }
+        }
+
+        private double _selectionX;
         public double SelectionX
         {
-            get; set;
-        } // Notify 구현 생략
+            get => _selectionX;
+            set
+            {
+                _selectionX = value;
+                OnPropertyChanged(nameof(SelectionX));
+            }
+        }
+
+        private double _selectionY;
         public double SelectionY
         {
-            get; set;
-        } // Notify 구현 생략
+            get => _selectionY;
+            set
+            {
+                _selectionY = value;
+                OnPropertyChanged(nameof(SelectionY));
+            }
+        }
+
+        private double _selectionWidth;
         public double SelectionWidth
         {
-            get; set;
-        } // Notify 구현 생략
+            get => _selectionWidth;
+            set
+            {
+                _selectionWidth = value;
+                OnPropertyChanged(nameof(SelectionWidth));
+            }
+        }
+
+        private double _selectionHeight;
         public double SelectionHeight
         {
-            get; set;
-        } // Notify 구현 생략
+            get => _selectionHeight;
+            set
+            {
+                _selectionHeight = value;
+                OnPropertyChanged(nameof(SelectionHeight));
+            }
+        }
+
         public List<OcrWordInfo>? OcrWords
         {
             get; set;
@@ -227,9 +266,10 @@ namespace MinsPDFViewer
     }
 
     // ... (PdfAnnotation, OcrWordInfo, GenericPdfAnnotation 클래스는 기존과 동일 유지) ...
+    // Models.cs -> PdfAnnotation 클래스 (전체 교체)
+
     public class PdfAnnotation : INotifyPropertyChanged
     {
-        // 기존 내용 유지 (FieldName 포함)
         private double _x, _y, _width, _height;
         public double X
         {
@@ -263,33 +303,91 @@ namespace MinsPDFViewer
                 OnPropertyChanged(nameof(Height));
             }
         }
+
         public AnnotationType Type
         {
             get; set;
         }
         public Color AnnotationColor { get; set; } = Colors.Yellow;
         public Brush Background { get; set; } = Brushes.Transparent;
-        public string TextContent { get; set; } = ""; // Notify 생략
-        public double FontSize { get; set; } = 12; // Notify 생략
-        public string FontFamily { get; set; } = "Malgun Gothic"; // Notify 생략
-        public Brush Foreground { get; set; } = Brushes.Black; // Notify 생략
+
+        // [수정] 아래 속성들도 화면 갱신을 위해 OnPropertyChanged 추가
+        private string _textContent = "";
+        public string TextContent
+        {
+            get => _textContent; set
+            {
+                _textContent = value;
+                OnPropertyChanged(nameof(TextContent));
+            }
+        }
+
+        private double _fontSize = 12;
+        public double FontSize
+        {
+            get => _fontSize; set
+            {
+                _fontSize = value;
+                OnPropertyChanged(nameof(FontSize));
+            }
+        }
+
+        private string _fontFamily = "Malgun Gothic";
+        public string FontFamily
+        {
+            get => _fontFamily; set
+            {
+                _fontFamily = value;
+                OnPropertyChanged(nameof(FontFamily));
+            }
+        }
+
+        private Brush _foreground = Brushes.Black;
+        public Brush Foreground
+        {
+            get => _foreground; set
+            {
+                _foreground = value;
+                OnPropertyChanged(nameof(Foreground));
+            }
+        }
+
+        private bool _isBold;
         public bool IsBold
         {
-            get; set;
+            get => _isBold; set
+            {
+                _isBold = value;
+                OnPropertyChanged(nameof(IsBold));
+            }
         }
+
         public string FieldName { get; set; } = "";
         public object? SignatureData
         {
             get; set;
         }
+
+        private string? _visualStampPath;
         public string? VisualStampPath
         {
-            get; set;
-        } // Notify 생략
+            get => _visualStampPath; set
+            {
+                _visualStampPath = value;
+                OnPropertyChanged(nameof(VisualStampPath));
+            }
+        }
+
+        // [중요] 선택 상태 알림 복구 (서명/텍스트 이동 핸들 표시에 필수)
+        private bool _isSelected;
         public bool IsSelected
         {
-            get; set;
-        } // Notify 생략
+            get => _isSelected; set
+            {
+                _isSelected = value;
+                OnPropertyChanged(nameof(IsSelected));
+            }
+        }
 
         public event PropertyChangedEventHandler? PropertyChanged;
         protected void OnPropertyChanged(string name) => PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));
@@ -306,4 +404,64 @@ namespace MinsPDFViewer
     {
         public GenericPdfAnnotation(PdfDocument document) : base(document) { }
     }
+}
+
+// [신규 클래스] 책갈피 뷰모델 (파일 맨 아래에 추가)
+public class PdfBookmarkViewModel : INotifyPropertyChanged
+{
+    private string _title = "";
+    public string Title
+    {
+        get => _title;
+        set
+        {
+            _title = value;
+            OnPropertyChanged(nameof(Title));
+        }
+    }
+
+    private int _pageIndex;
+    public int PageIndex
+    {
+        get => _pageIndex;
+        set
+        {
+            _pageIndex = value;
+            OnPropertyChanged(nameof(PageIndex));
+        }
+    }
+
+    private bool _isExpanded = true; // 기본적으로 펼침
+    public bool IsExpanded
+    {
+        get => _isExpanded;
+        set
+        {
+            _isExpanded = value;
+            OnPropertyChanged(nameof(IsExpanded));
+        }
+    }
+
+    private bool _isSelected;
+    public bool IsSelected
+    {
+        get => _isSelected;
+        set
+        {
+            _isSelected = value;
+            OnPropertyChanged(nameof(IsSelected));
+        }
+    }
+
+    // 하위 책갈피 (계층 구조)
+    public ObservableCollection<PdfBookmarkViewModel> Children { get; set; } = new ObservableCollection<PdfBookmarkViewModel>();
+
+    // 부모 참조 (트리 이동/삭제 시 필요)
+    public PdfBookmarkViewModel? Parent
+    {
+        get; set;
+    }
+
+    public event PropertyChangedEventHandler? PropertyChanged;
+    protected void OnPropertyChanged(string name) => PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));
 }

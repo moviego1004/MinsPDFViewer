@@ -27,8 +27,8 @@ SetCompressor /SOLID lzma
 ; UI 설정
 ;--------------------------------
 !define MUI_ABORTWARNING
-!define MUI_ICON "MinsPDFViewer_ICO_32x32.ico"
-!define MUI_UNICON "MinsPDFViewer_ICO_32x32.ico" ; 언인스톨러 아이콘 (선택사항)
+;!define MUI_ICON "MinsPDFViewer_ICO_32x32.ico"
+;define MUI_UNICON "MinsPDFViewer_ICO_32x32.ico" ; 언인스톨러 아이콘 (선택사항)
 
 !insertmacro MUI_PAGE_WELCOME
 !insertmacro MUI_PAGE_DIRECTORY

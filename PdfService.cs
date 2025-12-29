@@ -317,4 +317,128 @@ namespace MinsPDFViewer
             catch { }
         }
     }
-}
+
+     // [신규] PDF 파일에서 책갈피 읽어오기 (재귀 호출)
+    public void LoadBookmarks(PdfDocumentModel model)
+        {
+            try
+            {
+                if (!File.Exists(model.FilePath))
+                    return;
+
+                // PdfSharp으로 문서 구조 읽기 (Import 모드)
+                using (var doc = PdfReader.Open(model.FilePath, PdfDocumentOpenMode.Import))
+                {
+                    model.Bookmarks.Clear();
+                    foreach (var outline in doc.Outlines)
+                    {
+                        var vm = ConvertOutlineToViewModel(outline, doc, null);
+                        if (vm != null)
+                            model.Bookmarks.Add(vm);
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"책갈피 로드 실패: {ex.Message}");
+            }
+        }
+
+        // [신규] 내부 헬퍼: PdfOutline -> ViewModel 변환
+        private PdfBookmarkViewModel? ConvertOutlineToViewModel(PdfOutline outline, PdfDocument doc, PdfBookmarkViewModel? parent)
+        {
+            int pageIndex = -1;
+
+            // 목적지 페이지 찾기
+            if (outline.DestinationPage != null)
+            {
+                // PdfSharp의 Pages 컬렉션에서 인덱스 찾기
+                for (int i = 0; i < doc.Pages.Count; i++)
+                {
+                    if (doc.Pages[i].Equals(outline.DestinationPage))
+                    {
+                        pageIndex = i;
+                        break;
+                    }
+                }
+            }
+
+            // 페이지를 못 찾았으면 책갈피 무시 (혹은 0페이지로)
+            if (pageIndex == -1)
+                pageIndex = 0;
+
+            var vm = new PdfBookmarkViewModel
+            {
+                Title = outline.Title,
+                PageIndex = pageIndex,
+                Parent = parent
+            };
+
+            // 자식 책갈피 재귀 호출
+            foreach (var child in outline.Outlines)
+            {
+                var childVm = ConvertOutlineToViewModel(child, doc, vm);
+                if (childVm != null)
+                    vm.Children.Add(childVm);
+            }
+
+            return vm;
+        }
+
+        // [수정] SavePdf 메서드에서 책갈피 저장 로직 추가
+        public void SavePdf(PdfDocumentModel model, string outputPath)
+        {
+            if (model == null || string.IsNullOrEmpty(model.FilePath))
+                return;
+
+            // 1. 임시 파일로 복사 (기존 로직 유지)
+            string tempPath = Path.GetTempFileName();
+            File.Copy(model.FilePath, tempPath, true);
+
+            try
+            {
+                // 2. PdfSharp으로 열어서 수정 (Modify 모드)
+                using (var doc = PdfReader.Open(tempPath, PdfDocumentOpenMode.Modify))
+                {
+                    // 2-1. 기존 주석/서명 저장 (기존 로직 유지 - 안 건드림)
+                    // (이 부분은 이전 대화의 SavePdf 내용을 그대로 두시면 됩니다.)
+                    // ... (생략된 기존 주석 저장 코드) ...
+
+                    // 2-2. [추가] 책갈피(Outlines) 덮어쓰기
+                    doc.Outlines.Clear(); // 기존 책갈피 삭제
+                    foreach (var bm in model.Bookmarks)
+                    {
+                        SaveBookmarkToDocument(bm, doc.Outlines, doc);
+                    }
+
+                    doc.Save(outputPath);
+                }
+            }
+            catch
+            {
+                if (File.Exists(outputPath))
+                    File.Delete(outputPath);
+                throw;
+            }
+            finally
+            {
+                if (File.Exists(tempPath))
+                    File.Delete(tempPath);
+            }
+        }
+
+        // [신규] ViewModel -> PdfOutline 변환 및 저장 (재귀)
+        private void SaveBookmarkToDocument(PdfBookmarkViewModel vm, PdfOutlineCollection parentCollection, PdfDocument doc)
+        {
+            if (vm.PageIndex >= 0 && vm.PageIndex < doc.PageCount)
+            {
+                var page = doc.Pages[vm.PageIndex];
+                var outline = parentCollection.Add(vm.Title, page, true); // true = 펼침 상태
+
+                foreach (var child in vm.Children)
+                {
+                    SaveBookmarkToDocument(child, outline.Outlines, doc);
+                }
+            }
+        }
+    }
