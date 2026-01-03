@@ -1,15 +1,18 @@
 using System;
 using System.Collections.Generic;
-using System.Collections.ObjectModel;
 using System.IO;
 using System.Linq;
+using System.Text.RegularExpressions;
 using System.Threading.Tasks;
+using System.Windows;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using Docnet.Core;
 using Docnet.Core.Models;
 using Docnet.Core.Readers;
+using PdfSharp.Drawing;
 using PdfSharp.Pdf;
+using PdfSharp.Pdf.Annotations;
 using PdfSharp.Pdf.IO;
 
 namespace MinsPDFViewer
@@ -24,7 +27,9 @@ namespace MinsPDFViewer
             _docLib = DocLib.Instance;
         }
 
-        // [수정] LoadPdf를 비동기(Async)로 변경하여 UI 스레드 차단 방지
+        // =========================================================
+        // 1. PDF 로드
+        // =========================================================
         public async Task<PdfDocumentModel?> LoadPdfAsync(string filePath)
         {
             if (!File.Exists(filePath))
@@ -35,11 +40,10 @@ namespace MinsPDFViewer
                 try
                 {
                     var bytes = File.ReadAllBytes(filePath);
-
                     IDocReader docReader;
-                    // 여기서 락을 대기하더라도 백그라운드 스레드이므로 UI는 멈추지 않음
                     lock (PdfiumLock)
                     {
+                        // 메타데이터용 (1.0배)
                         docReader = _docLib.GetDocReader(bytes, new PageDimensions(1.0));
                     }
 
@@ -51,24 +55,28 @@ namespace MinsPDFViewer
                         DocReader = docReader
                     };
 
+                    LoadBookmarks(model);
                     return model;
                 }
                 catch (Exception ex)
                 {
-                    System.Windows.MessageBox.Show($"PDF 로드 실패: {ex.Message}");
+                    MessageBox.Show($"PDF 로드 실패: {ex.Message}");
                     return null;
                 }
             });
         }
 
-        // [이름 변경] 전체 렌더링 -> 초기화 (이미지 생성 X)
+        // =========================================================
+        // 2. 초기화 (렌더링 품질 대폭 향상)
+        // =========================================================
         public async Task InitializeDocumentAsync(PdfDocumentModel model)
         {
             if (model.DocReader == null)
                 return;
 
-            // 203MB 파일 대응: 렌더링 스케일을 1.5로 줄임 (3.0은 메모리 폭발 원인)
-            double renderScale = 1.5;
+            // [화질 개선 핵심] 1.5 -> 3.0 (300% 확대 렌더링)
+            // Adobe/Foxit 수준의 선명함을 위해 3.0 권장 (FHD~4K 대응)
+            double renderScale = 3.0;
 
             await Task.Run(() =>
             {
@@ -79,7 +87,7 @@ namespace MinsPDFViewer
                 }
                 catch { return; }
 
-                // 1. Clean PDF 생성
+                // 2-1. Clean PDF 생성
                 byte[] cleanPdfBytes = originalBytes;
                 try
                 {
@@ -97,6 +105,7 @@ namespace MinsPDFViewer
                                     var annot = page.Annotations[k];
                                     if (annot == null)
                                         continue;
+
                                     var subtype = annot.Elements.GetString("/Subtype");
                                     if (subtype == "/FreeText" || subtype == "/Highlight" || subtype == "/Underline")
                                     {
@@ -118,7 +127,7 @@ namespace MinsPDFViewer
                 }
                 catch { }
 
-                // 2. 렌더링용 CleanDocReader 생성 및 보관
+                // 2-2. Clean Reader (고해상도 설정)
                 IDocReader cleanReader;
                 lock (PdfiumLock)
                 {
@@ -126,12 +135,12 @@ namespace MinsPDFViewer
                 }
                 model.CleanDocReader = cleanReader;
 
-                // 3. 페이지 껍데기(ViewModel) 생성 (이미지는 비워둠)
-                // 원본 Reader를 사용하여 메타데이터 추출
+                // 2-3. ViewModel 생성
                 using (var msOriginal = new MemoryStream(originalBytes))
                 using (var sharpDocOriginal = PdfReader.Open(msOriginal, PdfDocumentOpenMode.Import))
                 {
-                    for (int i = 0; i < cleanReader.GetPageCount(); i++)
+                    int pageCount = cleanReader.GetPageCount();
+                    for (int i = 0; i < pageCount; i++)
                     {
                         double rawWidth = 0, rawHeight = 0;
                         lock (PdfiumLock)
@@ -143,6 +152,8 @@ namespace MinsPDFViewer
                             }
                         }
 
+                        // UI 표시용 크기는 다시 원래대로(1.0 기준) 돌려서 계산
+                        // (이미지는 3배 크지만, 화면 공간은 1배로 잡아야 3배 밀도로 선명하게 보임)
                         double uiWidth = rawWidth / renderScale;
                         double uiHeight = rawHeight / renderScale;
 
@@ -151,147 +162,336 @@ namespace MinsPDFViewer
                             PageIndex = i,
                             Width = uiWidth,
                             Height = uiHeight,
-                            ImageSource = null // [핵심] 여기서 이미지를 만들지 않음!
+                            ImageSource = null
                         };
 
-                        // 주석 및 추가 정보 추출
                         if (i < sharpDocOriginal.PageCount)
                         {
                             var p = sharpDocOriginal.Pages[i];
                             pageVM.PdfPageWidthPoint = p.Width.Point;
                             pageVM.PdfPageHeightPoint = p.Height.Point;
-                            pageVM.CropX = p.CropBox.X1;
-                            pageVM.CropY = p.CropBox.Y1;
-                            pageVM.CropWidthPoint = p.CropBox.Width;
-                            pageVM.CropHeightPoint = p.CropBox.Height;
 
-                            // [필수 추가] CropBox가 비어있으면(0,0,0,0) 전체 크기로 설정 (안전장치)
-                            if (pageVM.CropWidthPoint <= 0 || pageVM.CropHeightPoint <= 0)
+                            if (p.CropBox.Width > 0 && p.CropBox.Height > 0)
+                            {
+                                pageVM.CropX = p.CropBox.X1;
+                                pageVM.CropY = p.CropBox.Y1;
+                                pageVM.CropWidthPoint = p.CropBox.Width;
+                                pageVM.CropHeightPoint = p.CropBox.Height;
+                            }
+                            else
                             {
                                 pageVM.CropX = 0;
                                 pageVM.CropY = 0;
-                                pageVM.CropWidthPoint = pageVM.PdfPageWidthPoint;
-                                pageVM.CropHeightPoint = pageVM.PdfPageHeightPoint;
+                                pageVM.CropWidthPoint = p.Width.Point;
+                                pageVM.CropHeightPoint = p.Height.Point;
                             }
 
-                            bool hasSignature = CheckIfPageHasSignature(p);
-                            pageVM.HasSignature = hasSignature;
-
-                            var extractedAnns = ExtractAnnotationsFromPage(p);
-
-                            System.Windows.Application.Current.Dispatcher.Invoke(() =>
-                            {
-                                foreach (var ann in extractedAnns)
-                                {
-                                    double finalX = ann.X * (uiWidth / p.Width.Point);
-                                    double finalY = ann.Y * (uiHeight / p.Height.Point);
-                                    double finalW = ann.Width * (uiWidth / p.Width.Point);
-                                    double finalH = ann.Height * (uiHeight / p.Height.Point);
-
-                                    ann.X = finalX;
-                                    ann.Y = finalY;
-                                    ann.Width = finalW;
-                                    if (ann.Type != AnnotationType.Underline)
-                                        ann.Height = finalH;
-
-                                    pageVM.Annotations.Add(ann);
-                                }
-                            });
-
-                            // [추가] 회전 및 미디어 박스 정보 저장
+                            pageVM.HasSignature = CheckIfPageHasSignature(p);
                             pageVM.Rotation = p.Rotate;
-                            pageVM.MediaBoxInfo = $"{p.MediaBox.X1},{p.MediaBox.Y1},{p.MediaBox.Width},{p.MediaBox.Height}";
                         }
 
-                        System.Windows.Application.Current.Dispatcher.Invoke(() =>
-                        {
-                            model.Pages.Add(pageVM);
-                        });
+                        Application.Current.Dispatcher.Invoke(() => model.Pages.Add(pageVM));
                     }
                 }
             });
         }
 
-        // [신규] 한 페이지만 렌더링하는 메서드 (스크롤 될 때 호출)
+        // =========================================================
+        // 3. 렌더링 & 지연 로딩
+        // =========================================================
         public void RenderPageImage(PdfDocumentModel model, PdfPageViewModel pageVM)
         {
-            if (pageVM.ImageSource != null)
-                return; // 이미 있으면 패스
-            if (model.CleanDocReader == null)
-                return;
-
-            lock (PdfiumLock)
+            if (pageVM.ImageSource == null && model.CleanDocReader != null)
             {
-                using (var pageReader = model.CleanDocReader.GetPageReader(pageVM.PageIndex))
+                lock (PdfiumLock)
                 {
-                    var rawWidth = pageReader.GetPageWidth();
-                    var rawHeight = pageReader.GetPageHeight();
-                    var rawBytes = pageReader.GetImage(RenderFlags.RenderAnnotations);
-
-                    System.Windows.Application.Current.Dispatcher.Invoke(() =>
+                    using (var pageReader = model.CleanDocReader.GetPageReader(pageVM.PageIndex))
                     {
-                        var source = BitmapSource.Create(rawWidth, rawHeight, 96, 96,
-                            PixelFormats.Bgra32, null, rawBytes, rawWidth * 4);
-                        source.Freeze();
-                        pageVM.ImageSource = source;
-                    });
+                        var w = pageReader.GetPageWidth();
+                        var h = pageReader.GetPageHeight();
+
+                        // [화질 개선] 
+                        // 네온사인 현상(Color Fringing) 방지를 위해 LCD 텍스트 플래그 제거
+                        // 오직 RenderAnnotations만 사용하여 순수 안티앨리어싱 적용
+                        var bytes = pageReader.GetImage(RenderFlags.RenderAnnotations);
+
+                        Application.Current.Dispatcher.Invoke(() =>
+                        {
+                            var bmp = BitmapSource.Create(w, h, 96, 96, PixelFormats.Bgra32, null, bytes, w * 4);
+                            bmp.Freeze();
+                            pageVM.ImageSource = bmp;
+                        });
+                    }
                 }
             }
-        }
 
-        // ... (CheckIfPageHasSignature, ExtractAnnotationsFromPage, SavePdf 등 기존 메서드 그대로 유지)
-        // (지면 관계상 생략하지만 기존 코드를 꼭 유지해주세요!)
-        // (ExtractAnnotationsFromPage, ParseAnnotationColor, ParseAnnotationFont, SavePdf, CheckIfPageHasSignature)
-
-        private bool CheckIfPageHasSignature(PdfPage page)
-        {
-            if (page.Annotations == null)
-                return false;
-            for (int k = 0; k < page.Annotations.Count; k++)
+            // [주석 지연 로딩]
+            if (pageVM.Annotations.Count == 0)
             {
-                var annot = page.Annotations[k];
-                if (annot == null)
-                    continue;
-                if (annot.Elements.GetString("/Subtype") == "/Widget" && annot.Elements.GetString("/FT") == "/Sig")
-                    return true;
+                Task.Run(() =>
+                {
+                    try
+                    {
+                        using (var doc = PdfReader.Open(model.FilePath, PdfDocumentOpenMode.Import))
+                        {
+                            if (pageVM.PageIndex < doc.PageCount)
+                            {
+                                var p = doc.Pages[pageVM.PageIndex];
+                                var extractedAnns = ExtractAnnotationsFromPage(p);
+
+                                if (extractedAnns.Count > 0)
+                                {
+                                    Application.Current.Dispatcher.Invoke(() =>
+                                    {
+                                        if (pageVM.Annotations.Count > 0)
+                                            return;
+                                        foreach (var ann in extractedAnns)
+                                        {
+                                            double scaleX = pageVM.Width / pageVM.PdfPageWidthPoint;
+                                            double scaleY = pageVM.Height / pageVM.PdfPageHeightPoint;
+
+                                            ann.X *= scaleX;
+                                            ann.Y *= scaleY;
+                                            ann.Width *= scaleX;
+                                            if (ann.Type != AnnotationType.Underline)
+                                                ann.Height *= scaleY;
+
+                                            pageVM.Annotations.Add(ann);
+                                        }
+                                    });
+                                }
+                            }
+                        }
+                    }
+                    catch { }
+                });
             }
-            return false;
         }
 
-        private List<PdfAnnotation> ExtractAnnotationsFromPage(PdfPage page)
+        // =========================================================
+        // 4. 저장 (좌표 변환 수정됨)
+        // =========================================================
+        public void SavePdf(PdfDocumentModel model, string outputPath)
         {
-            var list = new List<PdfAnnotation>();
+            if (model == null || string.IsNullOrEmpty(model.FilePath))
+                return;
+
+            string tempPath = Path.GetTempFileName();
+            File.Copy(model.FilePath, tempPath, true);
+
+            try
+            {
+                using (var doc = PdfReader.Open(tempPath, PdfDocumentOpenMode.Modify))
+                {
+                    foreach (var pageVM in model.Pages)
+                    {
+                        if (pageVM.PageIndex >= doc.PageCount)
+                            continue;
+                        var pdfPage = doc.Pages[pageVM.PageIndex];
+
+                        if (pdfPage.Annotations != null)
+                        {
+                            for (int k = pdfPage.Annotations.Count - 1; k >= 0; k--)
+                            {
+                                var annot = pdfPage.Annotations[k];
+                                if (annot == null)
+                                    continue;
+                                var subtype = annot.Elements.GetString("/Subtype");
+                                if (subtype == "/FreeText" || subtype == "/Highlight" || subtype == "/Underline")
+                                {
+                                    pdfPage.Annotations.Elements.RemoveAt(k);
+                                }
+                            }
+                        }
+
+                        foreach (MinsPDFViewer.PdfAnnotation ann in pageVM.Annotations)
+                        {
+                            if (ann.Type == AnnotationType.SignaturePlaceholder || ann.Type == AnnotationType.SignatureField)
+                                continue;
+
+                            double scaleX = pageVM.PdfPageWidthPoint / pageVM.Width;
+                            double scaleY = pageVM.PdfPageHeightPoint / pageVM.Height;
+
+                            double pdfW = ann.Width * scaleX;
+                            double pdfH = ann.Height * scaleY;
+
+                            double pdfX = (ann.X + pageVM.CropX) * scaleX;
+                            double visibleTop = pageVM.CropY + pageVM.CropHeightPoint;
+                            double pdfY = visibleTop - (ann.Y * scaleY) - pdfH;
+
+                            var rect = new PdfRectangle(new XRect(pdfX, pdfY, pdfW, pdfH));
+                            var newPdfAnn = new GenericPdfAnnotation(doc);
+                            newPdfAnn.Rectangle = rect;
+
+                            if (ann.Type == AnnotationType.FreeText)
+                            {
+                                newPdfAnn.Elements.SetName(PdfSharp.Pdf.Annotations.PdfAnnotation.Keys.Subtype, "/FreeText");
+                                newPdfAnn.Contents = ann.TextContent;
+
+                                string fontName = "/Helv";
+                                double fontSize = ann.FontSize > 0 ? ann.FontSize : 12;
+                                double r = 0, g = 0, b = 0;
+                                if (ann.Foreground is SolidColorBrush brush)
+                                {
+                                    r = brush.Color.R / 255.0;
+                                    g = brush.Color.G / 255.0;
+                                    b = brush.Color.B / 255.0;
+                                }
+                                string daString = $"{fontName} {fontSize} Tf {r:0.##} {g:0.##} {b:0.##} rg";
+                                newPdfAnn.Elements.SetString("/DA", daString);
+                            }
+                            else if (ann.Type == AnnotationType.Highlight)
+                            {
+                                newPdfAnn.Elements.SetName(PdfSharp.Pdf.Annotations.PdfAnnotation.Keys.Subtype, "/Highlight");
+                                var colorArr = new PdfArray(doc);
+                                if (ann.Background is SolidColorBrush b)
+                                {
+                                    colorArr.Elements.Add(new PdfReal(b.Color.R / 255.0));
+                                    colorArr.Elements.Add(new PdfReal(b.Color.G / 255.0));
+                                    colorArr.Elements.Add(new PdfReal(b.Color.B / 255.0));
+                                }
+                                else
+                                {
+                                    colorArr.Elements.Add(new PdfReal(1));
+                                    colorArr.Elements.Add(new PdfReal(1));
+                                    colorArr.Elements.Add(new PdfReal(0));
+                                }
+                                newPdfAnn.Elements.SetObject(PdfSharp.Pdf.Annotations.PdfAnnotation.Keys.C, colorArr);
+                            }
+                            else if (ann.Type == AnnotationType.Underline)
+                            {
+                                newPdfAnn.Elements.SetName(PdfSharp.Pdf.Annotations.PdfAnnotation.Keys.Subtype, "/Underline");
+                            }
+
+                            pdfPage.Annotations.Add(newPdfAnn);
+                        }
+                    }
+
+                    doc.Outlines.Clear();
+                    foreach (var bm in model.Bookmarks)
+                    {
+                        SaveBookmarkToDocument(bm, doc.Outlines, doc);
+                    }
+
+                    doc.Save(outputPath);
+                }
+            }
+            catch (Exception ex)
+            {
+                if (File.Exists(outputPath))
+                    File.Delete(outputPath);
+                throw new Exception($"저장 오류: {ex.Message}");
+            }
+            finally { if (File.Exists(tempPath)) File.Delete(tempPath); }
+        }
+
+        // =========================================================
+        // 5. 주석 추출
+        // =========================================================
+        private List<MinsPDFViewer.PdfAnnotation> ExtractAnnotationsFromPage(PdfPage page)
+        {
+            var list = new List<MinsPDFViewer.PdfAnnotation>();
             if (page.Annotations == null)
                 return list;
+
+            double cropX = 0;
+            double cropY = 0;
+            double cropH = page.Height.Point;
+
+            if (page.CropBox.Width > 0 && page.CropBox.Height > 0)
+            {
+                cropX = page.CropBox.X1;
+                cropY = page.CropBox.Y1;
+                cropH = page.CropBox.Height;
+            }
+
             for (int k = 0; k < page.Annotations.Count; k++)
             {
-                var annot = page.Annotations[k];
-                if (annot == null)
+                var pdfAnnot = page.Annotations[k] as PdfSharp.Pdf.Annotations.PdfAnnotation;
+                if (pdfAnnot == null)
                     continue;
-                var subtype = annot.Elements.GetString("/Subtype") ?? "";
-                var rect = annot.Rectangle.ToXRect();
-                double finalX = rect.X;
-                double finalY = page.Height.Point - (rect.Y + rect.Height);
+
+                var subtype = pdfAnnot.Elements.GetString("/Subtype");
+                var rect = pdfAnnot.Rectangle.ToXRect();
+
+                double finalX = rect.X - cropX;
+                double finalY = (cropY + cropH) - (rect.Y + rect.Height);
                 double finalW = rect.Width;
                 double finalH = rect.Height;
-                PdfAnnotation? newAnnot = null;
 
-                if (subtype == "/Widget" && annot.Elements.GetString("/FT") == "/Sig")
+                MinsPDFViewer.PdfAnnotation? newAnnot = null;
+
+                string ft = pdfAnnot.Elements.GetString("/FT");
+                string fieldName = pdfAnnot.Elements.GetString("/T");
+
+                if (subtype == "/Widget" && (ft == "/Sig" || (!string.IsNullOrEmpty(fieldName) && string.IsNullOrEmpty(ft))))
                 {
-                    string fieldName = annot.Elements.GetString("/T");
-                    newAnnot = new PdfAnnotation { Type = AnnotationType.SignatureField, FieldName = fieldName };
+                    newAnnot = new MinsPDFViewer.PdfAnnotation { Type = AnnotationType.SignatureField, FieldName = fieldName };
                 }
                 else if (subtype == "/FreeText")
                 {
-                    string da = annot.Elements.GetString("/DA");
-                    Brush textColor = Brushes.Black; // Simplified
-                    try
-                    { /*ParseColor logic*/
+                    double fontSize = 12;
+                    var brush = Brushes.Black;
+
+                    var da = pdfAnnot.Elements.GetString("/DA");
+                    if (!string.IsNullOrEmpty(da))
+                    {
+                        try
+                        {
+                            var sizeMatch = Regex.Match(da, @"(\d+(\.\d+)?) Tf");
+                            if (sizeMatch.Success)
+                                double.TryParse(sizeMatch.Groups[1].Value, out fontSize);
+
+                            var colorMatch = Regex.Match(da, @"(\d+(\.\d+)?) (\d+(\.\d+)?) (\d+(\.\d+)?) rg");
+                            if (colorMatch.Success)
+                            {
+                                byte r = (byte)(double.Parse(colorMatch.Groups[1].Value) * 255);
+                                byte g = (byte)(double.Parse(colorMatch.Groups[3].Value) * 255);
+                                byte b = (byte)(double.Parse(colorMatch.Groups[5].Value) * 255);
+                                brush = new SolidColorBrush(Color.FromRgb(r, g, b));
+                            }
+                        }
+                        catch { }
                     }
-                    catch { }
-                    newAnnot = new PdfAnnotation { Type = AnnotationType.FreeText, TextContent = annot.Contents, Foreground = textColor, Background = Brushes.Transparent };
+                    var finalBrush = brush.Clone();
+                    finalBrush.Freeze();
+                    var transBrush = Brushes.Transparent.Clone();
+                    transBrush.Freeze();
+
+                    newAnnot = new MinsPDFViewer.PdfAnnotation
+                    {
+                        Type = AnnotationType.FreeText,
+                        TextContent = pdfAnnot.Contents,
+                        FontSize = fontSize,
+                        Foreground = finalBrush,
+                        Background = transBrush
+                    };
                 }
-                // ... (Highlight, Underline 생략 - 기존 코드 유지)
+                else if (subtype == "/Highlight")
+                {
+                    newAnnot = new MinsPDFViewer.PdfAnnotation { Type = AnnotationType.Highlight };
+                    var colorArray = pdfAnnot.Elements.GetArray("/C");
+                    if (colorArray != null && colorArray.Elements.Count >= 3)
+                    {
+                        byte r = (byte)(colorArray.Elements.GetReal(0) * 255);
+                        byte g = (byte)(colorArray.Elements.GetReal(1) * 255);
+                        byte b = (byte)(colorArray.Elements.GetReal(2) * 255);
+                        var brush = new SolidColorBrush(Color.FromArgb(80, r, g, b));
+                        brush.Freeze();
+                        newAnnot.Background = brush;
+                    }
+                    else
+                    {
+                        var brush = new SolidColorBrush(Color.FromArgb(80, 255, 255, 0));
+                        brush.Freeze();
+                        newAnnot.Background = brush;
+                    }
+                }
+                else if (subtype == "/Underline")
+                {
+                    newAnnot = new MinsPDFViewer.PdfAnnotation { Type = AnnotationType.Underline, Background = Brushes.Black };
+                }
+
                 if (newAnnot != null)
                 {
                     newAnnot.X = finalX;
@@ -304,29 +504,25 @@ namespace MinsPDFViewer
             return list;
         }
 
-        public void SavePdf(PdfDocumentModel model, string outputPath)
+        private bool CheckIfPageHasSignature(PdfPage page)
         {
-            // 기존 SavePdf 코드 그대로 유지
-            if (model == null || string.IsNullOrEmpty(model.FilePath))
-                return;
-            // ...
-            try
+            if (page.Annotations == null)
+                return false;
+            for (int i = 0; i < page.Annotations.Count; i++)
             {
-                File.Copy(model.FilePath, outputPath, true); // 임시 (기존 로직 사용하세요)
+                var annot = page.Annotations[i];
+                if (annot != null && annot.Elements.GetString("/Subtype") == "/Widget")
+                    return true;
             }
-            catch { }
+            return false;
         }
-    }
 
-     // [신규] PDF 파일에서 책갈피 읽어오기 (재귀 호출)
-    public void LoadBookmarks(PdfDocumentModel model)
+        public void LoadBookmarks(PdfDocumentModel model)
         {
             try
             {
                 if (!File.Exists(model.FilePath))
                     return;
-
-                // PdfSharp으로 문서 구조 읽기 (Import 모드)
                 using (var doc = PdfReader.Open(model.FilePath, PdfDocumentOpenMode.Import))
                 {
                     model.Bookmarks.Clear();
@@ -338,21 +534,14 @@ namespace MinsPDFViewer
                     }
                 }
             }
-            catch (Exception ex)
-            {
-                System.Diagnostics.Debug.WriteLine($"책갈피 로드 실패: {ex.Message}");
-            }
+            catch (Exception ex) { System.Diagnostics.Debug.WriteLine($"책갈피 로드 실패: {ex.Message}"); }
         }
 
-        // [신규] 내부 헬퍼: PdfOutline -> ViewModel 변환
         private PdfBookmarkViewModel? ConvertOutlineToViewModel(PdfOutline outline, PdfDocument doc, PdfBookmarkViewModel? parent)
         {
             int pageIndex = -1;
-
-            // 목적지 페이지 찾기
             if (outline.DestinationPage != null)
             {
-                // PdfSharp의 Pages 컬렉션에서 인덱스 찾기
                 for (int i = 0; i < doc.Pages.Count; i++)
                 {
                     if (doc.Pages[i].Equals(outline.DestinationPage))
@@ -362,8 +551,6 @@ namespace MinsPDFViewer
                     }
                 }
             }
-
-            // 페이지를 못 찾았으면 책갈피 무시 (혹은 0페이지로)
             if (pageIndex == -1)
                 pageIndex = 0;
 
@@ -374,71 +561,31 @@ namespace MinsPDFViewer
                 Parent = parent
             };
 
-            // 자식 책갈피 재귀 호출
             foreach (var child in outline.Outlines)
             {
                 var childVm = ConvertOutlineToViewModel(child, doc, vm);
                 if (childVm != null)
                     vm.Children.Add(childVm);
             }
-
             return vm;
         }
 
-        // [수정] SavePdf 메서드에서 책갈피 저장 로직 추가
-        public void SavePdf(PdfDocumentModel model, string outputPath)
-        {
-            if (model == null || string.IsNullOrEmpty(model.FilePath))
-                return;
-
-            // 1. 임시 파일로 복사 (기존 로직 유지)
-            string tempPath = Path.GetTempFileName();
-            File.Copy(model.FilePath, tempPath, true);
-
-            try
-            {
-                // 2. PdfSharp으로 열어서 수정 (Modify 모드)
-                using (var doc = PdfReader.Open(tempPath, PdfDocumentOpenMode.Modify))
-                {
-                    // 2-1. 기존 주석/서명 저장 (기존 로직 유지 - 안 건드림)
-                    // (이 부분은 이전 대화의 SavePdf 내용을 그대로 두시면 됩니다.)
-                    // ... (생략된 기존 주석 저장 코드) ...
-
-                    // 2-2. [추가] 책갈피(Outlines) 덮어쓰기
-                    doc.Outlines.Clear(); // 기존 책갈피 삭제
-                    foreach (var bm in model.Bookmarks)
-                    {
-                        SaveBookmarkToDocument(bm, doc.Outlines, doc);
-                    }
-
-                    doc.Save(outputPath);
-                }
-            }
-            catch
-            {
-                if (File.Exists(outputPath))
-                    File.Delete(outputPath);
-                throw;
-            }
-            finally
-            {
-                if (File.Exists(tempPath))
-                    File.Delete(tempPath);
-            }
-        }
-
-        // [신규] ViewModel -> PdfOutline 변환 및 저장 (재귀)
         private void SaveBookmarkToDocument(PdfBookmarkViewModel vm, PdfOutlineCollection parentCollection, PdfDocument doc)
         {
             if (vm.PageIndex >= 0 && vm.PageIndex < doc.PageCount)
             {
                 var page = doc.Pages[vm.PageIndex];
-                var outline = parentCollection.Add(vm.Title, page, true); // true = 펼침 상태
-
+                var outline = parentCollection.Add(vm.Title, page, true);
                 foreach (var child in vm.Children)
                 {
                     SaveBookmarkToDocument(child, outline.Outlines, doc);
                 }
             }
         }
+
+        public class GenericPdfAnnotation : PdfSharp.Pdf.Annotations.PdfAnnotation
+        {
+            public GenericPdfAnnotation(PdfDocument document) : base(document) { }
+        }
     }
+}

@@ -63,11 +63,26 @@ namespace MinsPDFViewer
         public event PropertyChangedEventHandler? PropertyChanged;
         protected void OnPropertyChanged(string name) => PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));
 
-        // [추가] 리소스 정리
+        // [핵심 수정] 리소스 해제 시 충돌 방지
         public void Dispose()
         {
-            DocReader?.Dispose();
-            CleanDocReader?.Dispose();
+            // PdfService의 전역 락을 사용하여, 렌더링 중인 스레드와 충돌 방지
+            lock (PdfService.PdfiumLock)
+            {
+                if (DocReader != null)
+                {
+                    DocReader.Dispose();
+                    DocReader = null;
+                }
+
+                if (CleanDocReader != null)
+                {
+                    CleanDocReader.Dispose();
+                    CleanDocReader = null;
+                }
+            }
+
+            // DocLib는 싱글톤(Instance)이므로 여기서 Dispose하지 않음 (프로그램 종료 시 자동 해제됨)
         }
 
         private bool _isSelecting;

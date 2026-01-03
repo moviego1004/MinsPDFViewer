@@ -1356,47 +1356,153 @@ namespace MinsPDFViewer
             }
         }
 
-        // [신규] 현재 페이지를 책갈피에 추가
+        // [신규] 현재 화면에 보이는 페이지 번호를 계산하는 헬퍼 메서드
+        private int GetCurrentPageIndex()
+        {
+            if (SelectedDocument == null)
+                return 0;
+
+            var listView = GetVisualChild<ListView>(MainTabControl);
+            if (listView == null)
+                return 0;
+
+            var scrollViewer = GetVisualChild<ScrollViewer>(listView);
+            if (scrollViewer == null)
+                return 0;
+
+            double currentOffset = scrollViewer.VerticalOffset;
+            double accumulatedHeight = 0;
+
+            // 페이지 높이와 마진을 더해가며 현재 스크롤 위치와 비교
+            foreach (var page in SelectedDocument.Pages)
+            {
+                // 페이지 높이 + 상하 마진(대략 20px) * 줌 레벨
+                double pageTotalHeight = (page.Height * SelectedDocument.Zoom) + 20;
+
+                // 현재 누적 높이가 스크롤보다 커지면 이 페이지가 보고 있는 페이지임
+                if (accumulatedHeight + pageTotalHeight > currentOffset + 50) // +50은 약간의 오차 보정
+                {
+                    return page.PageIndex;
+                }
+                accumulatedHeight += pageTotalHeight;
+            }
+
+            return SelectedDocument.Pages.Count - 1; // 맨 끝이면 마지막 페이지
+        }
+
+        // [수정] 책갈피 추가 (현재 페이지 자동 인식)
         private void BtnAddBookmark_Click(object sender, RoutedEventArgs e)
         {
             if (SelectedDocument == null)
                 return;
 
-            // 현재 보고 있는 페이지 번호 찾기 (스크롤 위치 기준 대략적 계산 or 가장 위 페이지)
-            // 간단하게 현재 화면에 보이는 첫 번째 페이지를 기준으로 함
-            // (정확한 현재 페이지 감지는 ScrollViewer 오프셋 계산이 필요하지만, 여기선 0번 혹은 선택된 페이지로 가정)
+            // 1. 현재 보고 있는 페이지 번호 가져오기
+            int currentPageIdx = GetCurrentPageIndex();
 
-            int targetIndex = 0;
-            // _activePageIndex가 유효하다면 사용, 아니면 맨 위 페이지
-            // 여기서는 간단히 리스트뷰의 첫 번째 보이는 항목을 가져오는 로직이 필요하지만,
-            // 일단 "0페이지" 또는 "사용자가 클릭한 페이지"로 가정하고 추가
-
-            // 심플하게: "맨 마지막에 추가"
+            // 2. 책갈피 생성
             var newBm = new PdfBookmarkViewModel
             {
-                Title = $"새 책갈피 {SelectedDocument.Bookmarks.Count + 1}",
-                PageIndex = 0 // (나중에 현재 스크롤 위치 연동 개선 가능)
+                Title = $"새 책갈피 (p.{currentPageIdx + 1})", // 제목에 페이지 번호 힌트
+                PageIndex = currentPageIdx,
+                IsExpanded = true
             };
 
-            // 만약 트리에서 선택된 항목이 있다면 그 자식으로 추가? 형제로 추가?
-            // 여기서는 "루트"에 추가
-            SelectedDocument.Bookmarks.Add(newBm);
+            // 3. 트리 구조에 추가
+            // 선택된 책갈피가 있으면 그 아래(자식)로 추가, 없으면 최상위에 추가
+            if (BookmarkTree.SelectedItem is PdfBookmarkViewModel selectedBm)
+            {
+                newBm.Parent = selectedBm;
+                selectedBm.Children.Add(newBm);
+                selectedBm.IsExpanded = true; // 부모 펼치기
+            }
+            else
+            {
+                SelectedDocument.Bookmarks.Add(newBm);
+            }
         }
 
-        // [신규] 책갈피 삭제
+        //[신규] 우클릭 -> "현재 페이지로 위치 갱신" 기능
+        private void BtnUpdateBookmarkPage_Click(object sender, RoutedEventArgs e)
+        {
+            if (SelectedDocument == null)
+                return;
+
+            // 우클릭한 대상이 아니라 '현재 선택된' 아이템을 기준으로 처리
+            // (TreeView는 우클릭 시 선택 상태가 변하지 않을 수 있으므로 주의 필요하지만, 
+            //  보통 우클릭 전 좌클릭을 하므로 SelectedItem 사용)
+            if (BookmarkTree.SelectedItem is PdfBookmarkViewModel selectedBm)
+            {
+                int currentPageIdx = GetCurrentPageIndex();
+                selectedBm.PageIndex = currentPageIdx;
+
+                // 이름이 기본값(새 책갈피...)이면 센스있게 페이지 번호 업데이트, 
+                // 사용자가 이름을 바꿨다면 이름은 유지
+                if (selectedBm.Title.StartsWith("새 책갈피"))
+                {
+                    selectedBm.Title = $"새 책갈피 (p.{currentPageIdx + 1})";
+                }
+
+                MessageBox.Show($"'{selectedBm.Title}'의 위치가 {currentPageIdx + 1}페이지로 변경되었습니다.");
+            }
+        }
+
+        // MainWindow.xaml.cs
+
+        // [신규] 책갈피 항목 클릭 시 페이지 이동 (선택 여부와 관계없이 동작)
+        private void BookmarkItem_PreviewMouseLeftButtonUp(object sender, MouseButtonEventArgs e)
+        {
+            // 클릭된 요소의 데이터(ViewModel) 가져오기
+            if (sender is FrameworkElement element && element.DataContext is PdfBookmarkViewModel bm)
+            {
+                if (SelectedDocument != null)
+                {
+                    var targetPage = SelectedDocument.Pages.FirstOrDefault(p => p.PageIndex == bm.PageIndex);
+                    if (targetPage != null)
+                    {
+                        var listView = GetVisualChild<ListView>(MainTabControl);
+                        if (listView != null)
+                        {
+                            // [핵심] 해당 페이지로 즉시 스크롤
+                            listView.ScrollIntoView(targetPage);
+
+                            // (선택 사항) 약간의 강제 스크롤 보정
+                            // ScrollIntoView는 이미 보이면 동작 안 할 수 있으므로, 확실한 이동을 위해 추가 처리 가능
+                        }
+                    }
+                }
+            }
+            // 주의: e.Handled = true를 하지 않아야 텍스트박스 포커스나 트리 선택이 정상 동작함
+        }
+
+
+        // [수정] 삭제 버튼 (툴바 버튼 + 우클릭 메뉴 공용)
         private void BtnDeleteBookmark_Click(object sender, RoutedEventArgs e)
         {
-            if (BookmarkTree.SelectedItem is PdfBookmarkViewModel selectedBm && SelectedDocument != null)
+            // 1. 툴바 버튼 클릭 시: TreeView.SelectedItem 사용
+            // 2. ContextMenu 클릭 시: DataContext 사용
+
+            PdfBookmarkViewModel? targetBm = null;
+
+            if (sender is MenuItem menuItem && menuItem.DataContext is PdfBookmarkViewModel contextBm)
             {
-                // 1. 루트에서 찾기
-                if (SelectedDocument.Bookmarks.Contains(selectedBm))
+                targetBm = contextBm;
+            }
+            else
+            {
+                targetBm = BookmarkTree.SelectedItem as PdfBookmarkViewModel;
+            }
+
+            if (targetBm != null && SelectedDocument != null)
+            {
+                // 루트에서 삭제
+                if (SelectedDocument.Bookmarks.Contains(targetBm))
                 {
-                    SelectedDocument.Bookmarks.Remove(selectedBm);
+                    SelectedDocument.Bookmarks.Remove(targetBm);
                 }
-                // 2. 부모가 있는 경우 (재귀 탐색 필요 없이 Parent 속성 활용)
-                else if (selectedBm.Parent != null)
+                // 부모의 자식 목록에서 삭제
+                else if (targetBm.Parent != null)
                 {
-                    selectedBm.Parent.Children.Remove(selectedBm);
+                    targetBm.Parent.Children.Remove(targetBm);
                 }
             }
         }

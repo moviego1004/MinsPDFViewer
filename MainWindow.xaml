@@ -5,24 +5,22 @@
         xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
         xmlns:local="clr-namespace:MinsPDFViewer"
         mc:Ignorable="d"
-        Title="Mins PDF Viewer (Advanced)"
+        Title="MinsPDFViewer"
         Height="800"
         Width="1200"
-        KeyDown="Window_KeyDown"
-        UseLayoutRounding="True">
+        UseLayoutRounding="True"
+        Icon="MinsPDFViewer.ico"
+        KeyDown="Window_KeyDown">
+
         <Window.Resources>
                 <BooleanToVisibilityConverter x:Key="BooleanToVisibilityConverter"/>
-
                 <local:BoolToFontWeightConverter x:Key="BoolToFontWeightConverter"/>
-                <local:BindingProxy x:Key="ZoomProxy"
-                                    Data="{Binding SelectedDocument.Zoom}"/>
 
                 <DataTemplate x:Key="SignaturePlaceholderTemplate">
                         <Grid Width="{Binding Width}"
                               Height="{Binding Height}"
                               Cursor="SizeAll"
                               PreviewMouseDown="AnnotationDragHandle_PreviewMouseDown">
-
                                 <Rectangle Stroke="Red"
                                            StrokeThickness="2"
                                            StrokeDashArray="4 2"
@@ -33,16 +31,13 @@
                                            TextAlignment="Center"
                                            Foreground="Red"
                                            FontWeight="Bold"/>
-
                                 <Image Source="{Binding VisualStampPath}"
                                        Stretch="Fill"
                                        Opacity="0.9"/>
-
                                 <Rectangle Stroke="Blue"
                                            StrokeThickness="1"
                                            StrokeDashArray="2 2"
                                            Visibility="{Binding IsSelected, Converter={StaticResource BooleanToVisibilityConverter}}"/>
-
                                 <Thumb HorizontalAlignment="Right"
                                        VerticalAlignment="Bottom"
                                        Width="10"
@@ -61,7 +56,6 @@
                                         <RowDefinition Height="20"/>
                                         <RowDefinition Height="*"/>
                                 </Grid.RowDefinitions>
-
                                 <Border Grid.Row="0"
                                         Background="#DDDDDD"
                                         BorderBrush="Gray"
@@ -77,7 +71,6 @@
                                                    FontWeight="Bold"
                                                    FontSize="10"/>
                                 </Border>
-
                                 <Border Grid.Row="1"
                                         BorderThickness="1,0,1,1">
                                         <Border.Style>
@@ -97,7 +90,6 @@
                                                         </Style.Triggers>
                                                 </Style>
                                         </Border.Style>
-
                                         <TextBox Text="{Binding TextContent, UpdateSourceTrigger=PropertyChanged}"
                                                  FontFamily="{Binding FontFamily}"
                                                  FontSize="{Binding FontSize}"
@@ -113,7 +105,6 @@
                                                  GotFocus="AnnotationTextBox_GotFocus"
                                                  TextChanged="AnnotationTextBox_TextChanged"/>
                                 </Border>
-
                                 <Thumb Grid.Row="1"
                                        HorizontalAlignment="Right"
                                        VerticalAlignment="Bottom"
@@ -123,7 +114,6 @@
                                        DragDelta="ResizeThumb_DragDelta"
                                        Background="Gray"
                                        Opacity="0.5"
-                                       Margin="0,0,0,0"
                                        Visibility="{Binding IsSelected, Converter={StaticResource BooleanToVisibilityConverter}}"/>
                         </Grid>
                 </DataTemplate>
@@ -163,13 +153,11 @@
                                         <ControlTemplate TargetType="Button">
                                                 <Border Background="Transparent"
                                                         BorderBrush="Transparent"
-                                                        BorderThickness="0">
-                                                </Border>
+                                                        BorderThickness="0"/>
                                         </ControlTemplate>
                                 </Button.Template>
                         </Button>
                 </DataTemplate>
-
         </Window.Resources>
 
         <Grid>
@@ -195,6 +183,7 @@
                                         Click="BtnSaveAs_Click"
                                         Margin="0,0,10,0"/>
                                 <Separator/>
+
                                 <Button Content="🔖 책갈피"
                                         Click="BtnToggleSidebar_Click"
                                         Margin="0,0,5,0"/>
@@ -237,7 +226,6 @@
                                         Click="BtnOCR_Click"
                                         FontWeight="Bold"
                                         Foreground="Blue"/>
-
                                 <Separator/>
                                 <Button Name="BtnSign"
                                         Content="🔐 전자서명"
@@ -354,12 +342,6 @@
                                                         <Button Content="▼"
                                                                 ToolTip="아래로"
                                                                 Click="BtnMoveBookmarkDown_Click"/>
-                                                        <Button Content="➡"
-                                                                ToolTip="하위로 이동 (들여쓰기)"
-                                                                Click="BtnIndentBookmark_Click"/>
-                                                        <Button Content="⬅"
-                                                                ToolTip="상위로 이동 (내어쓰기)"
-                                                                Click="BtnOutdentBookmark_Click"/>
                                                 </ToolBar>
                                         </ToolBarTray>
 
@@ -371,17 +353,36 @@
                                                   SelectedItemChanged="BookmarkTree_SelectedItemChanged">
                                                 <TreeView.ItemTemplate>
                                                         <HierarchicalDataTemplate ItemsSource="{Binding Children}">
-                                                                <StackPanel Orientation="Horizontal">
+                                                                <StackPanel Orientation="Horizontal"
+                                                                            Background="Transparent"
+                                                                            PreviewMouseLeftButtonUp="BookmarkItem_PreviewMouseLeftButtonUp"
+                                                                            Cursor="Hand">
+
                                                                         <TextBox Text="{Binding Title, UpdateSourceTrigger=PropertyChanged}"
                                                                                  Background="Transparent"
-                                                                                 BorderThickness="0"/>
+                                                                                 BorderThickness="0"
+                                                                                 VerticalAlignment="Center"
+                                                                                 Margin="0,0,5,0"
+                                                                                 ToolTip="이름을 클릭하여 수정 가능"/>
+
                                                                         <TextBlock Text="{Binding PageIndex, StringFormat=' (p.{0})'}"
                                                                                    Foreground="Gray"
                                                                                    FontSize="10"
-                                                                                   VerticalAlignment="Center"/>
+                                                                                   VerticalAlignment="Center"
+                                                                                   IsHitTestVisible="False"/>
+                                                                        <StackPanel.ContextMenu>
+                                                                                <ContextMenu>
+                                                                                        <MenuItem Header="현재 페이지로 위치 갱신"
+                                                                                                  Click="BtnUpdateBookmarkPage_Click"/>
+                                                                                        <Separator/>
+                                                                                        <MenuItem Header="삭제"
+                                                                                                  Click="BtnDeleteBookmark_Click"/>
+                                                                                </ContextMenu>
+                                                                        </StackPanel.ContextMenu>
                                                                 </StackPanel>
                                                         </HierarchicalDataTemplate>
                                                 </TreeView.ItemTemplate>
+
                                                 <TreeView.ItemContainerStyle>
                                                         <Style TargetType="TreeViewItem">
                                                                 <Setter Property="IsExpanded"
@@ -397,15 +398,172 @@
                         <GridSplitter Grid.Column="1"
                                       Width="5"
                                       HorizontalAlignment="Center"
-                                      Background="LightGray"/>
+                                      Background="LightGray"
+                                      ResizeBehavior="PreviousAndNext"/>
 
                         <TabControl Name="MainTabControl"
                                     Grid.Column="2"
                                     ItemsSource="{Binding Documents}"
                                     SelectedItem="{Binding SelectedDocument}"
                                     SelectionChanged="MainTabControl_SelectionChanged">
-                        </TabControl>
 
+                                <TabControl.ItemTemplate>
+                                        <DataTemplate>
+                                                <StackPanel Orientation="Horizontal">
+                                                        <TextBlock Text="{Binding FileName}"
+                                                                   Margin="0,0,5,0"/>
+                                                        <Button Content="❌"
+                                                                Width="15"
+                                                                Height="15"
+                                                                FontSize="8"
+                                                                Tag="{Binding}"
+                                                                Click="BtnCloseTab_Click"
+                                                                Background="Transparent"
+                                                                BorderThickness="0"/>
+                                                </StackPanel>
+                                        </DataTemplate>
+                                </TabControl.ItemTemplate>
+
+                                <TabControl.ContentTemplate>
+                                        <DataTemplate>
+                                                <ListView ItemsSource="{Binding Pages}"
+                                                          ScrollViewer.HorizontalScrollBarVisibility="Auto"
+                                                          ScrollViewer.VerticalScrollBarVisibility="Auto"
+                                                          ScrollViewer.CanContentScroll="True"
+                                                          VirtualizingPanel.ScrollUnit="Pixel"
+                                                          VirtualizingPanel.VirtualizationMode="Recycling"
+                                                          Loaded="PdfListView_Loaded"
+                                                          Unloaded="PdfListView_Unloaded"
+                                                          PreviewMouseWheel="PdfListView_PreviewMouseWheel"
+                                                          Background="LightGray"
+                                                          BorderThickness="0">
+
+                                                        <ListView.ItemContainerStyle>
+                                                                <Style TargetType="ListViewItem">
+                                                                        <Setter Property="Margin"
+                                                                                Value="10"/>
+                                                                        <Setter Property="HorizontalContentAlignment"
+                                                                                Value="Center"/>
+                                                                        <Setter Property="Focusable"
+                                                                                Value="False"/>
+                                                                </Style>
+                                                        </ListView.ItemContainerStyle>
+
+                                                        <ListView.ItemTemplate>
+                                                                <DataTemplate>
+                                                                        <Border BorderBrush="Black"
+                                                                                BorderThickness="1"
+                                                                                Background="White">
+                                                                                <Border.Effect>
+                                                                                        <DropShadowEffect BlurRadius="10"
+                                                                                                          ShadowDepth="5"
+                                                                                                          Opacity="0.5"/>
+                                                                                </Border.Effect>
+
+                                                                                <Grid Width="{Binding Width}"
+                                                                                      Height="{Binding Height}"
+                                                                                      Tag="{Binding PageIndex}"
+                                                                                      Loaded="PageGrid_Loaded"
+                                                                                      Unloaded="PageGrid_Unloaded"
+                                                                                      MouseDown="Page_MouseDown"
+                                                                                      MouseMove="Page_MouseMove"
+                                                                                      MouseUp="Page_MouseUp"
+                                                                                      Background="Transparent">
+
+                                                                                        <Grid.LayoutTransform>
+                                                                                                <ScaleTransform ScaleX="{Binding DataContext.Zoom, RelativeSource={RelativeSource AncestorType=ListView}}"
+                                                                                                                ScaleY="{Binding DataContext.Zoom, RelativeSource={RelativeSource AncestorType=ListView}}"/>
+                                                                                        </Grid.LayoutTransform>
+
+                                                                                        <Image Source="{Binding ImageSource}"
+                                                                                               Stretch="Fill"
+                                                                                               RenderOptions.BitmapScalingMode="HighQuality"
+                                                                                               SnapsToDevicePixels="True"/>
+
+                                                                                        <Canvas Background="Transparent"
+                                                                                                IsHitTestVisible="False">
+                                                                                                <Border Canvas.Left="{Binding SelectionX}"
+                                                                                                        Canvas.Top="{Binding SelectionY}"
+                                                                                                        Width="{Binding SelectionWidth}"
+                                                                                                        Height="{Binding SelectionHeight}"
+                                                                                                        BorderBrush="Blue"
+                                                                                                        BorderThickness="1"
+                                                                                                        Background="#300000FF"
+                                                                                                        Visibility="{Binding IsSelecting, Converter={StaticResource BooleanToVisibilityConverter}}"/>
+                                                                                        </Canvas>
+
+                                                                                        <ItemsControl ItemsSource="{Binding Annotations}">
+                                                                                                <ItemsControl.ItemsPanel>
+                                                                                                        <ItemsPanelTemplate>
+                                                                                                                <Canvas/>
+                                                                                                        </ItemsPanelTemplate>
+                                                                                                </ItemsControl.ItemsPanel>
+                                                                                                <ItemsControl.ItemContainerStyle>
+                                                                                                        <Style TargetType="ContentPresenter">
+                                                                                                                <Setter Property="Canvas.Left"
+                                                                                                                        Value="{Binding X}"/>
+                                                                                                                <Setter Property="Canvas.Top"
+                                                                                                                        Value="{Binding Y}"/>
+                                                                                                        </Style>
+                                                                                                </ItemsControl.ItemContainerStyle>
+                                                                                                <ItemsControl.ItemTemplate>
+                                                                                                        <DataTemplate>
+                                                                                                                <ContentControl Content="{Binding}">
+                                                                                                                        <ContentControl.Style>
+                                                                                                                                <Style TargetType="ContentControl">
+                                                                                                                                        <Style.Triggers>
+                                                                                                                                                <DataTrigger Binding="{Binding Type}"
+                                                                                                                                                             Value="FreeText">
+                                                                                                                                                        <Setter Property="ContentTemplate"
+                                                                                                                                                                Value="{StaticResource FreeTextTemplate}"/>
+                                                                                                                                                </DataTrigger>
+                                                                                                                                                <DataTrigger Binding="{Binding Type}"
+                                                                                                                                                             Value="Highlight">
+                                                                                                                                                        <Setter Property="ContentTemplate"
+                                                                                                                                                                Value="{StaticResource HighlightTemplate}"/>
+                                                                                                                                                </DataTrigger>
+                                                                                                                                                <DataTrigger Binding="{Binding Type}"
+                                                                                                                                                             Value="Underline">
+                                                                                                                                                        <Setter Property="ContentTemplate"
+                                                                                                                                                                Value="{StaticResource UnderlineTemplate}"/>
+                                                                                                                                                </DataTrigger>
+                                                                                                                                                <DataTrigger Binding="{Binding Type}"
+                                                                                                                                                             Value="SearchHighlight">
+                                                                                                                                                        <Setter Property="ContentTemplate"
+                                                                                                                                                                Value="{StaticResource SearchHighlightTemplate}"/>
+                                                                                                                                                </DataTrigger>
+                                                                                                                                                <DataTrigger Binding="{Binding Type}"
+                                                                                                                                                             Value="SignatureField">
+                                                                                                                                                        <Setter Property="ContentTemplate"
+                                                                                                                                                                Value="{StaticResource SignatureFieldTemplate}"/>
+                                                                                                                                                </DataTrigger>
+                                                                                                                                                <DataTrigger Binding="{Binding Type}"
+                                                                                                                                                             Value="SignaturePlaceholder">
+                                                                                                                                                        <Setter Property="ContentTemplate"
+                                                                                                                                                                Value="{StaticResource SignaturePlaceholderTemplate}"/>
+                                                                                                                                                </DataTrigger>
+                                                                                                                                        </Style.Triggers>
+                                                                                                                                </Style>
+                                                                                                                        </ContentControl.Style>
+                                                                                                                        <ContentControl.ContextMenu>
+                                                                                                                                <ContextMenu>
+                                                                                                                                        <MenuItem Header="삭제"
+                                                                                                                                                  CommandParameter="{Binding}"
+                                                                                                                                                  Click="BtnDeleteAnnotation_Click"/>
+                                                                                                                                </ContextMenu>
+                                                                                                                        </ContentControl.ContextMenu>
+                                                                                                                </ContentControl>
+                                                                                                        </DataTemplate>
+                                                                                                </ItemsControl.ItemTemplate>
+                                                                                        </ItemsControl>
+                                                                                </Grid>
+                                                                        </Border>
+                                                                </DataTemplate>
+                                                        </ListView.ItemTemplate>
+                                                </ListView>
+                                        </DataTemplate>
+                                </TabControl.ContentTemplate>
+                        </TabControl>
                 </Grid>
 
                 <StatusBar Grid.Row="2">
