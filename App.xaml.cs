@@ -16,6 +16,24 @@ namespace MinsPDFViewer
             System.Threading.Tasks.TaskScheduler.UnobservedTaskException += TaskScheduler_UnobservedTaskException;
         }
 
+        // 프로그램 시작 시점
+        protected override void OnStartup(StartupEventArgs e)
+        {
+            base.OnStartup(e);
+
+            // 1. 메인 윈도우 수동 생성
+            var mainWindow = new MainWindow();
+            mainWindow.Show();
+
+            // 2. 인자가 있다면 (탐색기에서 더블클릭으로 실행했다면)
+            if (e.Args.Length > 0)
+            {
+                string filePath = e.Args[0];
+                // 메인 윈도우에 파일 열기 요청
+                mainWindow.OpenPdfFromPath(filePath);
+            }
+        }
+
         private void App_DispatcherUnhandledException(object sender, System.Windows.Threading.DispatcherUnhandledExceptionEventArgs e)
         {
             LogException(e.Exception, "UI Thread Error");

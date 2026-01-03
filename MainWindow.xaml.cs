@@ -29,6 +29,9 @@ namespace MinsPDFViewer
         private readonly PdfSignatureService _signatureService;
         private OcrEngine? _ocrEngine;
 
+        private readonly HistoryService _historyService; // [신규]
+
+
         public System.Collections.ObjectModel.ObservableCollection<PdfDocumentModel> Documents
         {
             get; set;
@@ -70,6 +73,7 @@ namespace MinsPDFViewer
             _pdfService = new PdfService();
             _searchService = new SearchService();
             _signatureService = new PdfSignatureService();
+            _historyService = new HistoryService();
 
             try
             {
@@ -181,33 +185,68 @@ namespace MinsPDFViewer
             }
         }
 
-        // [수정] async void 적용 및 LoadPdfAsync 호출
-        private async void BtnOpen_Click(object sender, RoutedEventArgs e)
-        {
-            var dlg = new OpenFileDialog { Filter = "PDF Files|*.pdf" };
-            if (dlg.ShowDialog() == true)
-            {
-                // UI 스레드에서 락을 기다리지 않고, 작업이 끝날 때까지 부드럽게 대기(await)
-                var docModel = await _pdfService.LoadPdfAsync(dlg.FileName);
+        // // [수정] async void 적용 및 LoadPdfAsync 호출
+        // private async void BtnOpen_Click(object sender, RoutedEventArgs e)
+        // {
+        //     var dlg = new OpenFileDialog { Filter = "PDF Files|*.pdf" };
+        //     if (dlg.ShowDialog() == true)
+        //     {
+        //         // UI 스레드에서 락을 기다리지 않고, 작업이 끝날 때까지 부드럽게 대기(await)
+        //         var docModel = await _pdfService.LoadPdfAsync(dlg.FileName);
 
-                if (docModel != null)
-                {
-                    Documents.Add(docModel);
-                    SelectedDocument = docModel;
-                    // 초기화(렌더링 준비) 시작
-                    _ = _pdfService.InitializeDocumentAsync(docModel);
-                }
-            }
-        }
+        //         if (docModel != null)
+        //         {
+        //             Documents.Add(docModel);
+        //             SelectedDocument = docModel;
+        //             // 초기화(렌더링 준비) 시작
+        //             _ = _pdfService.InitializeDocumentAsync(docModel);
+        //         }
+        //     }
+        // }
 
+        // -------------------------------------------------------------
+        // [수정] 탭 닫기 (저장 로직 추가)
+        // -------------------------------------------------------------
         private void BtnCloseTab_Click(object sender, RoutedEventArgs e)
         {
             if (sender is Button btn && btn.Tag is PdfDocumentModel doc)
             {
-                doc.Dispose(); // [수정] CleanDocReader도 같이 정리됨
+                // [신규] 닫기 전에 현재 보고 있는 페이지 저장
+                // (주의: 탭이 닫히려는 순간에 이 문서가 'SelectedDocument'가 아닐 수도 있음.
+                //  따라서 닫으려는 문서가 활성화되어 있다면 현재 스크롤 위치를 저장)
+                if (doc == SelectedDocument)
+                {
+                    int currentPage = GetCurrentPageIndex();
+                    _historyService.SetLastPage(doc.FilePath, currentPage);
+                    _historyService.SaveHistory(); // 즉시 파일 쓰기
+                }
+
+                doc.Dispose();
                 Documents.Remove(doc);
-                if (Documents.Count == 0)
-                    SelectedDocument = null;
+            }
+        }
+
+        // -------------------------------------------------------------
+        // [신규] 프로그램 종료 시 (열려있는 모든 탭 저장)
+        // -------------------------------------------------------------
+        private void Window_Closing(object sender, System.ComponentModel.CancelEventArgs e)
+        {
+            // 열려있는 모든 문서의 현재 위치를 저장해야 하지만,
+            // ListView는 하나뿐이므로 '현재 선택된 탭'의 위치만 정확히 알 수 있음.
+
+            if (SelectedDocument != null)
+            {
+                int currentPage = GetCurrentPageIndex();
+                _historyService.SetLastPage(SelectedDocument.FilePath, currentPage);
+            }
+
+            // 전체 기록을 파일로 저장
+            _historyService.SaveHistory();
+
+            // 메모리 정리
+            foreach (var doc in Documents)
+            {
+                doc.Dispose();
             }
         }
 
@@ -1362,7 +1401,8 @@ namespace MinsPDFViewer
             if (SelectedDocument == null)
                 return 0;
 
-            var listView = GetVisualChild<ListView>(MainTabControl);
+            // 리스트뷰 내부의 스크롤뷰어 찾기
+            var listView = GetVisualChild<ListView>(MainTabControl); // 탭 안에 있는 경우
             if (listView == null)
                 return 0;
 
@@ -1373,22 +1413,41 @@ namespace MinsPDFViewer
             double currentOffset = scrollViewer.VerticalOffset;
             double accumulatedHeight = 0;
 
-            // 페이지 높이와 마진을 더해가며 현재 스크롤 위치와 비교
+            // 가변 높이 페이지 대응: 위에서부터 높이를 더해가며 현재 스크롤 위치와 비교
             foreach (var page in SelectedDocument.Pages)
             {
-                // 페이지 높이 + 상하 마진(대략 20px) * 줌 레벨
+                // 페이지 높이 + 여백(Margin 10+10=20) * 줌
+                // 주의: 뷰모델의 Height는 '현재 렌더링된 크기'가 아닐 수 있으므로 
+                // 렌더링 스케일 로직과 맞춰야 하지만, 보통 Width/Height 바인딩 된 값을 씁니다.
+                // 여기서는 간단히 뷰모델 값 사용
+
                 double pageTotalHeight = (page.Height * SelectedDocument.Zoom) + 20;
 
-                // 현재 누적 높이가 스크롤보다 커지면 이 페이지가 보고 있는 페이지임
-                if (accumulatedHeight + pageTotalHeight > currentOffset + 50) // +50은 약간의 오차 보정
+                // 현재 스크롤 위치가 이 페이지 범위 안에 걸치면 당첨
+                // (조금 넉넉하게 currentOffset + 50 정도 줌)
+                if (accumulatedHeight + pageTotalHeight > currentOffset + 50)
                 {
                     return page.PageIndex;
                 }
                 accumulatedHeight += pageTotalHeight;
             }
 
-            return SelectedDocument.Pages.Count - 1; // 맨 끝이면 마지막 페이지
+            return 0; // 못 찾으면 0
         }
+
+        private void PdfListView_ScrollChanged(object sender, ScrollChangedEventArgs e)
+        {
+            if (SelectedDocument == null)
+                return;
+
+            // 현재 보고 있는 페이지 인덱스 계산 (0부터 시작)
+            int currentIndex = GetCurrentPageIndex();
+            int totalPages = SelectedDocument.Pages.Count;
+
+            // UI 업데이트 (사용자에게는 1부터 시작하는 숫자로 보여줌)
+            TxtPageInfo.Text = $"{currentIndex + 1} / {totalPages}";
+        }
+
 
         // [수정] 책갈피 추가 (현재 페이지 자동 인식)
         private void BtnAddBookmark_Click(object sender, RoutedEventArgs e)
@@ -1396,29 +1455,18 @@ namespace MinsPDFViewer
             if (SelectedDocument == null)
                 return;
 
-            // 1. 현재 보고 있는 페이지 번호 가져오기
-            int currentPageIdx = GetCurrentPageIndex();
+            // [에러 해결] 이 줄이 빠져 있었습니다.
+            int currentIndex = GetCurrentPageIndex();
 
-            // 2. 책갈피 생성
-            var newBm = new PdfBookmarkViewModel
+            // 제목은 사람용(1부터), 내부는 기계용(0부터)
+            var newBookmark = new PdfBookmarkViewModel
             {
-                Title = $"새 책갈피 (p.{currentPageIdx + 1})", // 제목에 페이지 번호 힌트
-                PageIndex = currentPageIdx,
-                IsExpanded = true
+                Title = $"Page {currentIndex + 1}",
+                PageIndex = currentIndex,
+                Parent = null
             };
 
-            // 3. 트리 구조에 추가
-            // 선택된 책갈피가 있으면 그 아래(자식)로 추가, 없으면 최상위에 추가
-            if (BookmarkTree.SelectedItem is PdfBookmarkViewModel selectedBm)
-            {
-                newBm.Parent = selectedBm;
-                selectedBm.Children.Add(newBm);
-                selectedBm.IsExpanded = true; // 부모 펼치기
-            }
-            else
-            {
-                SelectedDocument.Bookmarks.Add(newBm);
-            }
+            SelectedDocument.Bookmarks.Add(newBookmark);
         }
 
         //[신규] 우클릭 -> "현재 페이지로 위치 갱신" 기능
@@ -1506,20 +1554,322 @@ namespace MinsPDFViewer
                 }
             }
         }
-        // [신규] 이동 (위/아래) 및 계층 변경 (들여쓰기/내어쓰기)
-        // 이 부분은 트리 구조 조작 로직이 조금 복잡하므로, 
-        // 1차적으로 "추가/삭제/이동"만 먼저 확인하시고, 필요하면 더 정교하게 짜드리겠습니다.
+        // =========================================================
+        // [신규 구현] 책갈피 트리 구조 조작 (위/아래/들여쓰기/내어쓰기)
+        // =========================================================
+
+        // 1. 위로 이동
         private void BtnMoveBookmarkUp_Click(object sender, RoutedEventArgs e)
-        { /* 구현 예정 */
+        {
+            if (BookmarkTree.SelectedItem is not PdfBookmarkViewModel selectedBm || SelectedDocument == null)
+                return;
+
+            // 현재 리스트(형제들) 찾기
+            var currentList = GetCurrentCollection(selectedBm);
+            if (currentList == null)
+                return;
+
+            int index = currentList.IndexOf(selectedBm);
+            if (index > 0)
+            {
+                // UI 반영을 위해 Move 사용 (ObservableCollection 기능)
+                currentList.Move(index, index - 1);
+                // 포커스 유지
+                selectedBm.IsSelected = true;
+            }
         }
+
+        // 2. 아래로 이동
         private void BtnMoveBookmarkDown_Click(object sender, RoutedEventArgs e)
-        { /* 구현 예정 */
+        {
+            if (BookmarkTree.SelectedItem is not PdfBookmarkViewModel selectedBm || SelectedDocument == null)
+                return;
+
+            var currentList = GetCurrentCollection(selectedBm);
+            if (currentList == null)
+                return;
+
+            int index = currentList.IndexOf(selectedBm);
+            if (index >= 0 && index < currentList.Count - 1)
+            {
+                currentList.Move(index, index + 1);
+                selectedBm.IsSelected = true;
+            }
         }
+
+        // 3. 들여쓰기 (자식으로 만들기: 바로 위 형제의 자식이 됨)
         private void BtnIndentBookmark_Click(object sender, RoutedEventArgs e)
-        { /* 구현 예정 */
+        {
+            if (BookmarkTree.SelectedItem is not PdfBookmarkViewModel selectedBm || SelectedDocument == null)
+                return;
+
+            var currentList = GetCurrentCollection(selectedBm);
+            if (currentList == null)
+                return;
+
+            int index = currentList.IndexOf(selectedBm);
+            if (index > 0) // 바로 위에 형제가 있어야 함
+            {
+                var newParent = currentList[index - 1];
+
+                // 이동 처리
+                currentList.Remove(selectedBm);
+                newParent.Children.Add(selectedBm);
+
+                // 부모 참조 갱신
+                selectedBm.Parent = newParent;
+
+                // 새 부모 펼치기 및 선택 유지
+                newParent.IsExpanded = true;
+                selectedBm.IsSelected = true;
+            }
         }
+
+        // 4. 내어쓰기 (부모 레벨로 올리기: 현재 부모의 다음 형제가 됨)
         private void BtnOutdentBookmark_Click(object sender, RoutedEventArgs e)
-        { /* 구현 예정 */
+        {
+            if (BookmarkTree.SelectedItem is not PdfBookmarkViewModel selectedBm || SelectedDocument == null)
+                return;
+
+            // 이미 최상위 루트라면 내어쓰기 불가능
+            if (selectedBm.Parent == null)
+                return;
+
+            var oldParent = selectedBm.Parent;
+
+            // 이동할 목표 리스트 (할아버지의 자식들 or 최상위 루트)
+            var targetList = (oldParent.Parent == null)
+                ? SelectedDocument.Bookmarks
+                : oldParent.Parent.Children;
+
+            // 현재 부모가 목표 리스트에서 몇 번째인지 확인 (그 바로 밑으로 가야 함)
+            int parentIndex = targetList.IndexOf(oldParent);
+            if (parentIndex >= 0)
+            {
+                // 이동 처리
+                oldParent.Children.Remove(selectedBm);
+                targetList.Insert(parentIndex + 1, selectedBm);
+
+                // 부모 참조 갱신
+                selectedBm.Parent = oldParent.Parent;
+
+                // 선택 유지
+                selectedBm.IsSelected = true;
+            }
         }
+
+        // [헬퍼] 현재 아이템이 속한 컬렉션(형제 리스트)을 찾아주는 메서드
+        private System.Collections.ObjectModel.ObservableCollection<PdfBookmarkViewModel>? GetCurrentCollection(PdfBookmarkViewModel bm)
+        {
+            if (SelectedDocument == null)
+                return null;
+
+            if (bm.Parent == null)
+            {
+                // 부모가 없으면 최상위 루트 리스트
+                return SelectedDocument.Bookmarks;
+            }
+            else
+            {
+                // 부모가 있으면 부모의 자식 리스트
+                return bm.Parent.Children;
+            }
+        }
+
+        // =========================================================
+        // [핵심 수정] 파일 열기 통합 메서드 (순서 개선)
+        // =========================================================
+        public async void OpenPdfFromPath(string filePath)
+        {
+            try
+            {
+                if (string.IsNullOrEmpty(filePath) || !File.Exists(filePath))
+                    return;
+                if (Path.GetExtension(filePath).ToLower() != ".pdf")
+                {
+                    MessageBox.Show("PDF 파일만 지원합니다.");
+                    return;
+                }
+
+                TxtStatus.Text = $"파일 여는 중: {Path.GetFileName(filePath)}...";
+
+                var docModel = await _pdfService.LoadPdfAsync(filePath);
+
+                if (docModel != null)
+                {
+                    Documents.Add(docModel);
+                    SelectedDocument = docModel;
+
+                    await _pdfService.InitializeDocumentAsync(docModel);
+
+                    // [신규] 마지막으로 읽던 페이지로 이동
+                    int lastPage = _historyService.GetLastPage(filePath);
+
+                    // 유효한 페이지 범위인지 확인 (파일 내용이 바뀔 수 있으므로)
+                    if (lastPage > 0 && lastPage < docModel.Pages.Count)
+                    {
+                        // 약간의 딜레이를 주어야 UI(ListView)가 준비된 후 이동됨
+                        await Task.Delay(100);
+
+                        var listView = GetVisualChild<ListView>(MainTabControl);
+                        if (listView != null)
+                        {
+                            var targetPage = docModel.Pages[lastPage];
+                            // [확실한 이동] 가상화된 리스트에서 강제 스크롤
+                            listView.ScrollIntoView(targetPage);
+                            TxtStatus.Text = $"이전 위치(p.{lastPage + 1})로 복원됨";
+                        }
+                    }
+                    else
+                    {
+                        TxtStatus.Text = "준비 완료";
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"파일 열기 실패: {ex.Message}");
+                TxtStatus.Text = "오류 발생";
+            }
+        }
+
+        // =========================================================
+        // [수정] 열기 버튼도 위 통합 메서드를 사용하도록 변경
+        // =========================================================
+        private void BtnOpen_Click(object sender, RoutedEventArgs e)
+        {
+            var dlg = new OpenFileDialog
+            {
+                Filter = "PDF Files (*.pdf)|*.pdf"
+            };
+
+            if (dlg.ShowDialog() == true)
+            {
+                OpenPdfFromPath(dlg.FileName);
+            }
+        }
+
+        // =========================================================
+        // 드래그 앤 드롭 이벤트 핸들러
+        // =========================================================
+        private void Window_DragOver(object sender, DragEventArgs e)
+        {
+            if (e.Data.GetDataPresent(DataFormats.FileDrop))
+            {
+                e.Effects = DragDropEffects.Copy;
+            }
+            else
+            {
+                e.Effects = DragDropEffects.None;
+            }
+            e.Handled = true;
+        }
+
+        private void Window_Drop(object sender, DragEventArgs e)
+        {
+            if (e.Data.GetDataPresent(DataFormats.FileDrop))
+            {
+                string[] files = (string[])e.Data.GetData(DataFormats.FileDrop);
+                foreach (string file in files)
+                {
+                    OpenPdfFromPath(file);
+                }
+            }
+        }
+
+        // 1. 왼쪽 회전
+        private void BtnRotateLeft_Click(object sender, RoutedEventArgs e)
+        {
+            if (SelectedDocument == null)
+                return;
+            int idx = GetCurrentPageIndex();
+            if (idx >= 0 && idx < SelectedDocument.Pages.Count)
+            {
+                var page = SelectedDocument.Pages[idx];
+                page.Rotation = (page.Rotation - 90);
+                if (page.Rotation < 0)
+                    page.Rotation += 360;
+
+                // 회전 시 가로/세로 스왑 (UI 레이아웃 갱신용)
+                double temp = page.Width;
+                page.Width = page.Height;
+                page.Height = temp;
+            }
+        }
+
+        // 2. 오른쪽 회전
+        private void BtnRotateRight_Click(object sender, RoutedEventArgs e)
+        {
+            if (SelectedDocument == null)
+                return;
+            int idx = GetCurrentPageIndex();
+            if (idx >= 0 && idx < SelectedDocument.Pages.Count)
+            {
+                var page = SelectedDocument.Pages[idx];
+                page.Rotation = (page.Rotation + 90) % 360;
+
+                double temp = page.Width;
+                page.Width = page.Height;
+                page.Height = temp;
+            }
+        }
+
+        // 3. 페이지 삭제
+        private void BtnDeletePage_Click(object sender, RoutedEventArgs e)
+        {
+            if (SelectedDocument == null)
+                return;
+            int idx = GetCurrentPageIndex();
+
+            if (idx >= 0 && idx < SelectedDocument.Pages.Count)
+            {
+                if (MessageBox.Show($"{idx + 1}페이지를 삭제하시겠습니까?\n(저장해야 반영됩니다)", "삭제 확인", MessageBoxButton.YesNo) == MessageBoxResult.Yes)
+                {
+                    SelectedDocument.Pages.RemoveAt(idx);
+
+                    // 인덱스 재정렬
+                    for (int i = 0; i < SelectedDocument.Pages.Count; i++)
+                    {
+                        SelectedDocument.Pages[i].PageIndex = i;
+                    }
+                    TxtStatus.Text = "페이지 삭제됨 (저장 시 반영)";
+                    // 페이지 정보 갱신을 위해 강제로 스크롤 이벤트 호출하거나 텍스트 갱신
+                    TxtPageInfo.Text = $"{Math.Min(idx + 1, SelectedDocument.Pages.Count)} / {SelectedDocument.Pages.Count}";
+                }
+            }
+        }
+
+        // 4. 빈 페이지 추가
+        private void BtnAddBlankPage_Click(object sender, RoutedEventArgs e)
+        {
+            if (SelectedDocument == null)
+                return;
+            int idx = GetCurrentPageIndex();
+
+            // 현재 페이지 뒤에 추가
+            var newPage = new PdfPageViewModel
+            {
+                IsBlankPage = true,
+                OriginalFilePath = null, // 빈 페이지는 원본 파일 없음
+                Width = 595,  // A4 기본 너비 (포인트)
+                Height = 842, // A4 기본 높이
+                PdfPageWidthPoint = 595,
+                PdfPageHeightPoint = 842,
+                Rotation = 0,
+                PageIndex = idx + 1,
+                // ImageSource는 null (하얀색으로 나옴)
+            };
+
+            SelectedDocument.Pages.Insert(idx + 1, newPage);
+
+            // 인덱스 재정렬
+            for (int i = 0; i < SelectedDocument.Pages.Count; i++)
+            {
+                SelectedDocument.Pages[i].PageIndex = i;
+            }
+            TxtStatus.Text = "빈 페이지 추가됨";
+            TxtPageInfo.Text = $"{idx + 2} / {SelectedDocument.Pages.Count}";
+        }
+
     }
 }

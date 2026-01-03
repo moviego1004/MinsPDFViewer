@@ -6,11 +6,15 @@
         xmlns:local="clr-namespace:MinsPDFViewer"
         mc:Ignorable="d"
         Title="MinsPDFViewer"
+        AllowDrop="True"
+        Drop="Window_Drop"
+        DragOver="Window_DragOver"
         Height="800"
         Width="1200"
         UseLayoutRounding="True"
         Icon="MinsPDFViewer.ico"
-        KeyDown="Window_KeyDown">
+        KeyDown="Window_KeyDown"
+        Closing="Window_Closing">
 
         <Window.Resources>
                 <BooleanToVisibilityConverter x:Key="BooleanToVisibilityConverter"/>
@@ -220,6 +224,28 @@
                                         Content="↕ 높이 맞춤"
                                         Click="BtnFitHeight_Click"/>
                                 <Separator/>
+                                <Button Content="📄+"
+                                        ToolTip="빈 페이지 추가"
+                                        Click="BtnAddBlankPage_Click"/>
+                                <Button Content="🗑️"
+                                        ToolTip="페이지 삭제"
+                                        Click="BtnDeletePage_Click"/>
+                                <Button Content="↺"
+                                        ToolTip="왼쪽 회전"
+                                        Click="BtnRotateLeft_Click"/>
+                                <Button Content="↻"
+                                        ToolTip="오른쪽 회전"
+                                        Click="BtnRotateRight_Click"/>
+                                <Separator/>
+
+                                <Image Source="{Binding ImageSource}"
+                                       Stretch="Fill"
+                                       RenderOptions.BitmapScalingMode="HighQuality"
+                                       SnapsToDevicePixels="True">
+                                        <Image.LayoutTransform>
+                                                <RotateTransform Angle="{Binding Rotation}"/>
+                                        </Image.LayoutTransform>
+                                </Image>
 
                                 <Button Name="BtnOCR"
                                         Content="👁 OCR 분석"
@@ -430,6 +456,7 @@
                                                           ScrollViewer.HorizontalScrollBarVisibility="Auto"
                                                           ScrollViewer.VerticalScrollBarVisibility="Auto"
                                                           ScrollViewer.CanContentScroll="True"
+                                                          ScrollViewer.ScrollChanged="PdfListView_ScrollChanged"
                                                           VirtualizingPanel.ScrollUnit="Pixel"
                                                           VirtualizingPanel.VirtualizationMode="Recycling"
                                                           Loaded="PdfListView_Loaded"
@@ -476,9 +503,15 @@
                                                                                         </Grid.LayoutTransform>
 
                                                                                         <Image Source="{Binding ImageSource}"
-                                                                                               Stretch="Fill"
+                                                                                               Stretch="Uniform"
+                                                                                               HorizontalAlignment="Left"
+                                                                                               VerticalAlignment="Top"
                                                                                                RenderOptions.BitmapScalingMode="HighQuality"
-                                                                                               SnapsToDevicePixels="True"/>
+                                                                                               SnapsToDevicePixels="True">
+                                                                                                <Image.LayoutTransform>
+                                                                                                        <RotateTransform Angle="{Binding Rotation}"/>
+                                                                                                </Image.LayoutTransform>
+                                                                                        </Image>
 
                                                                                         <Canvas Background="Transparent"
                                                                                                 IsHitTestVisible="False">
@@ -567,13 +600,39 @@
                 </Grid>
 
                 <StatusBar Grid.Row="2">
-                        <TextBlock Name="TxtStatus"
-                                   Text="준비"/>
-                        <Separator/>
-                        <ProgressBar Name="PbStatus"
-                                     Width="200"
-                                     Height="15"
-                                     Visibility="Collapsed"/>
+                        <StatusBarItem>
+                                <TextBlock x:Name="TxtStatus"
+                                           Text="준비"/>
+                        </StatusBarItem>
+
+                        <StatusBarItem>
+                                <ProgressBar x:Name="PbStatus"
+                                             Width="100"
+                                             Height="15"
+                                             Visibility="Collapsed"/>
+                        </StatusBarItem>
+
+                        <StatusBarItem HorizontalAlignment="Right">
+                                <TextBlock x:Name="TxtPageInfo"
+                                           Text="0 / 0"
+                                           FontWeight="Bold"
+                                           Margin="0,0,20,0"/>
+                        </StatusBarItem>
+
+                        <StatusBarItem HorizontalAlignment="Right">
+                                <StackPanel Orientation="Horizontal">
+                                        <Button Content="-"
+                                                Click="BtnZoomOut_Click"
+                                                Width="20"/>
+                                        <Slider Minimum="0.1"
+                                                Maximum="5.0"
+                                                Value="{Binding SelectedDocument.Zoom}"
+                                                Width="100"/>
+                                        <Button Content="+"
+                                                Click="BtnZoomIn_Click"
+                                                Width="20"/>
+                                </StackPanel>
+                        </StatusBarItem>
                 </StatusBar>
 
                 <Popup Name="SelectionPopup"
