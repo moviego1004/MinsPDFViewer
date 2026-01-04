@@ -66,6 +66,13 @@ namespace MinsPDFViewer
         private Color _defaultFontColor = Colors.Red;
         private bool _defaultIsBold = false;
 
+        private bool _isSpacePressed = false; // 스페이스바 눌림 상태
+        private bool _isPanning = false;      // 현재 드래그 이동 중인지
+        private Point _lastPanPoint;          // 마우스 마지막 위치
+
+        private ScrollViewer? _cachedScrollViewer;
+
+
         public MainWindow()
         {
             InitializeComponent();
@@ -238,6 +245,7 @@ namespace MinsPDFViewer
             {
                 int currentPage = GetCurrentPageIndex();
                 _historyService.SetLastPage(SelectedDocument.FilePath, currentPage);
+                SelectedDocument.IsDisposed = true;
             }
 
             // 전체 기록을 파일로 저장
@@ -563,7 +571,7 @@ namespace MinsPDFViewer
             }
         }
 
-        private void PerformSignatureProcess(PdfAnnotation ann)
+        private async void PerformSignatureProcess(PdfAnnotation ann)
         {
             if (SelectedDocument == null)
                 return;
@@ -627,7 +635,10 @@ namespace MinsPDFViewer
                         XRect pdfRect = new XRect(pdfX, pdfY, ann.Width * scaleX, ann.Height * scaleY);
 
                         string tempPath = Path.GetTempFileName();
-                        _pdfService.SavePdf(SelectedDocument, tempPath);
+
+                        // [수정] await 추가
+                        await _pdfService.SavePdf(SelectedDocument, tempPath);
+
 
                         _signatureService.SignPdf(tempPath, saveDlg.FileName, config, pageIndex, pdfRect);
 
@@ -772,12 +783,25 @@ namespace MinsPDFViewer
             }
         }
 
-        private void BtnSave_Click(object sender, RoutedEventArgs e)
+        // 1. 저장 버튼 (비동기)
+        private async void BtnSave_Click(object sender, RoutedEventArgs e)
         {
             if (SelectedDocument != null)
-                _pdfService.SavePdf(SelectedDocument, SelectedDocument.FilePath);
+            {
+                try
+                {
+                    await _pdfService.SavePdf(SelectedDocument, SelectedDocument.FilePath);
+                    // 저장 후 필요하다면 UI 갱신
+                }
+                catch (Exception ex)
+                {
+                    MessageBox.Show($"저장 오류: {ex.Message}");
+                }
+            }
         }
-        private void BtnSaveAs_Click(object sender, RoutedEventArgs e)
+
+        // 2. 다른 이름으로 저장 (비동기)
+        private async void BtnSaveAs_Click(object sender, RoutedEventArgs e)
         {
             if (SelectedDocument == null)
                 return;
@@ -786,7 +810,7 @@ namespace MinsPDFViewer
             {
                 try
                 {
-                    _pdfService.SavePdf(SelectedDocument, dlg.FileName);
+                    await _pdfService.SavePdf(SelectedDocument, dlg.FileName);
                     SelectedDocument.FilePath = dlg.FileName;
                     SelectedDocument.FileName = Path.GetFileName(dlg.FileName);
                     MessageBox.Show("저장되었습니다.");
@@ -1193,13 +1217,14 @@ namespace MinsPDFViewer
                 _currentTool = "TEXT";
             CheckToolbarVisibility();
         }
-        private void Window_KeyDown(object sender, KeyEventArgs e)
+        private void Window_PreviewKeyDown(object sender, KeyEventArgs e)
         {
             if (e.Key == Key.F && (Keyboard.Modifiers & ModifierKeys.Control) == ModifierKeys.Control)
             {
                 TxtSearch.Focus();
                 TxtSearch.SelectAll();
                 e.Handled = true;
+                return;
             }
             else if (e.Key == Key.Delete)
                 BtnDeleteAnnotation_Click(this, new RoutedEventArgs());
@@ -1209,7 +1234,59 @@ namespace MinsPDFViewer
                 _selectedAnnotation = null;
                 CheckToolbarVisibility();
             }
+
+            if (e.Key == Key.Space && !_isSpacePressed && _currentTool != "TEXT")
+            {
+                // 입력창이 아닐 때만
+                if (!(Keyboard.FocusedElement is TextBox))
+                {
+                    _isSpacePressed = true;
+
+                    // [핵심] 커서를 강제로 손바닥으로 변경 (가장 확실한 방법)
+                    Mouse.OverrideCursor = Cursors.Hand;
+
+                    e.Handled = true; // 스페이스바의 원래 기능(페이지 다운) 차단
+                }
+            }
+            // PageUp / PageDown
+            else if (e.Key == Key.PageUp || e.Key == Key.PageDown)
+            {
+                var sv = GetScrollViewer();
+                if (sv != null)
+                {
+                    if (e.Key == Key.PageDown)
+                        sv.PageDown();
+                    else
+                        sv.PageUp();
+                    e.Handled = true;
+                }
+            }
+
         }
+
+        // [3] Window_KeyUp 추가 (스페이스바 떼면 복귀)
+        // (기존에 Window_KeyUp이 없다면 새로 만드시고, xaml의 Window 태그에 KeyUp="Window_KeyUp" 연결 필요)
+        // 만약 xaml 연결이 번거롭다면 Window_KeyDown 대신 아래처럼 override를 써도 됩니다.
+        protected override void OnKeyUp(KeyEventArgs e)
+        {
+            base.OnKeyUp(e);
+            if (e.Key == Key.Space)
+            {
+                _isSpacePressed = false;
+                _isPanning = false;
+
+                // 커서 복구
+                Mouse.OverrideCursor = null;
+
+                var listView = FindChild<ListView>(MainTabControl);
+                if (listView != null)
+                {
+                    listView.ReleaseMouseCapture();
+                }
+            }
+        }
+
+
         private static T? GetVisualChild<T>(DependencyObject parent) where T : Visual
         {
             if (parent == null)
@@ -1227,6 +1304,60 @@ namespace MinsPDFViewer
             }
             return child;
         }
+
+        // [헬퍼 메서드] 현재 활성화된 탭의 ListView 찾기
+        private ListView? GetCurrentListView()
+        {
+            // MainTabControl은 탭 컨트롤의 이름입니다.
+            // 탭 안에 있는 ListView를 찾아서 반환합니다.
+            return GetVisualChild<ListView>(MainTabControl);
+        }
+
+        // [수정] 더 강력한 자식 찾기 메서드 (기존 GetVisualChild 대체)
+        private T? FindChild<T>(DependencyObject parent) where T : DependencyObject
+        {
+            if (parent == null)
+                return null;
+
+            for (int i = 0; i < VisualTreeHelper.GetChildrenCount(parent); i++)
+            {
+                var child = VisualTreeHelper.GetChild(parent, i);
+
+                if (child is T typedChild)
+                {
+                    return typedChild;
+                }
+
+                var result = FindChild<T>(child);
+                if (result != null)
+                    return result;
+            }
+            return null;
+        }
+
+        // [헬퍼] 스크롤 뷰어 찾기 (없으면 찾고, 있으면 재사용)
+        private ScrollViewer? GetScrollViewer()
+        {
+            if (_cachedScrollViewer == null)
+            {
+                var listView = FindChild<ListView>(MainTabControl);
+                if (listView != null)
+                {
+                    _cachedScrollViewer = FindChild<ScrollViewer>(listView);
+                }
+            }
+            return _cachedScrollViewer;
+        }
+
+        // [헬퍼] 현재 활성화된 스크롤 뷰어 찾기
+        private ScrollViewer? GetCurrentScrollViewer()
+        {
+            var listView = FindChild<ListView>(MainTabControl);
+            if (listView == null)
+                return null;
+            return FindChild<ScrollViewer>(listView);
+        }
+
         public event System.ComponentModel.PropertyChangedEventHandler? PropertyChanged;
         protected void OnPropertyChanged(string name) => PropertyChanged?.Invoke(this, new System.ComponentModel.PropertyChangedEventArgs(name));
 
@@ -1395,44 +1526,183 @@ namespace MinsPDFViewer
             }
         }
 
-        // [신규] 현재 화면에 보이는 페이지 번호를 계산하는 헬퍼 메서드
+
+        // =========================================================
+        // [신규] 북마크 드래그 앤 드롭 (구조 변경)
+        // =========================================================
+
+        private Point _startPoint;
+        private bool _isDragging = false;
+
+        private void BookmarkTree_PreviewMouseLeftButtonDown(object sender, MouseButtonEventArgs e)
+        {
+            _startPoint = e.GetPosition(null);
+        }
+
+        private void BookmarkTree_PreviewMouseMove(object sender, MouseEventArgs e)
+        {
+            if (e.LeftButton == MouseButtonState.Pressed && !_isDragging)
+            {
+                Point mousePos = e.GetPosition(null);
+                Vector diff = _startPoint - mousePos;
+
+                if (Math.Abs(diff.X) > SystemParameters.MinimumHorizontalDragDistance ||
+                    Math.Abs(diff.Y) > SystemParameters.MinimumVerticalDragDistance)
+                {
+                    // 드래그 시작
+                    if (BookmarkTree.SelectedItem is PdfBookmarkViewModel selectedBm)
+                    {
+                        // 편집 중일 땐 드래그 금지
+                        if (selectedBm.IsEditing)
+                            return;
+
+                        _isDragging = true;
+
+                        // 드래그 데이터 생성
+                        DataObject dragData = new DataObject("MinsBookmark", selectedBm);
+                        DragDrop.DoDragDrop(BookmarkTree, dragData, DragDropEffects.Move);
+
+                        _isDragging = false;
+                    }
+                }
+            }
+        }
+
+        private void BookmarkTree_DragOver(object sender, DragEventArgs e)
+        {
+            if (!e.Data.GetDataPresent("MinsBookmark") || SelectedDocument == null)
+            {
+                e.Effects = DragDropEffects.None;
+                return;
+            }
+            e.Effects = DragDropEffects.Move;
+        }
+
+        private void BookmarkTree_Drop(object sender, DragEventArgs e)
+        {
+            if (!e.Data.GetDataPresent("MinsBookmark") || SelectedDocument == null)
+                return;
+
+            var sourceBm = e.Data.GetData("MinsBookmark") as PdfBookmarkViewModel;
+            if (sourceBm == null)
+                return;
+
+            // 드롭된 위치 파악 (TreeViewItem 찾기)
+            // 배경에 놓으면 targetItem은 null -> 루트로 이동
+            var targetItem = FindAncestor<TreeViewItem>((DependencyObject)e.OriginalSource);
+            var targetBm = targetItem?.DataContext as PdfBookmarkViewModel;
+
+            // 자기 자신이나 자식에게 드롭 금지 (순환 참조 방지)
+            if (targetBm != null && (targetBm == sourceBm || IsChildOf(targetBm, sourceBm)))
+            {
+                MessageBox.Show("자기 자신이나 하위 항목으로 이동할 수 없습니다.");
+                return;
+            }
+
+            // 1. 기존 부모에게서 제거
+            var oldCollection = GetCurrentCollection(sourceBm);
+            if (oldCollection != null)
+                oldCollection.Remove(sourceBm);
+
+            // 2. 새 위치에 추가
+            if (targetBm == null)
+            {
+                // 배경에 드롭 -> 최상위 루트로 이동 (상위 레벨 이동 효과)
+                SelectedDocument.Bookmarks.Add(sourceBm);
+                sourceBm.Parent = null; // 부모 없음
+            }
+            else
+            {
+                // 다른 아이템 위에 드롭 -> 그 아이템의 자식으로 들어감 (하위 레벨 이동 효과)
+                targetBm.Children.Add(sourceBm);
+                sourceBm.Parent = targetBm;
+                targetBm.IsExpanded = true; // 넣은 곳 펼쳐주기
+            }
+        }
+
+        // [헬퍼] A가 B의 자손인지 확인 (순환 참조 방지)
+        private bool IsChildOf(PdfBookmarkViewModel potentialChild, PdfBookmarkViewModel potentialParent)
+        {
+            var current = potentialChild.Parent;
+            while (current != null)
+            {
+                if (current == potentialParent)
+                    return true;
+                current = current.Parent;
+            }
+            return false;
+        }
+
+        // [헬퍼] Visual Tree 위로 탐색
+        private static T? FindAncestor<T>(DependencyObject current) where T : DependencyObject
+        {
+            while (current != null)
+            {
+                if (current is T typed)
+                    return typed;
+                current = VisualTreeHelper.GetParent(current);
+            }
+            return null;
+        }
+
+        // [수정] 0페이지 버그 해결: FindChild를 사용하여 확실하게 스크롤뷰어 찾기
         private int GetCurrentPageIndex()
         {
             if (SelectedDocument == null)
                 return 0;
 
-            // 리스트뷰 내부의 스크롤뷰어 찾기
-            var listView = GetVisualChild<ListView>(MainTabControl); // 탭 안에 있는 경우
+            // [중요] FindChild로 스크롤뷰어를 확실히 찾음
+            var listView = FindChild<ListView>(MainTabControl);
             if (listView == null)
                 return 0;
-
-            var scrollViewer = GetVisualChild<ScrollViewer>(listView);
+            var scrollViewer = FindChild<ScrollViewer>(listView);
             if (scrollViewer == null)
                 return 0;
 
             double currentOffset = scrollViewer.VerticalOffset;
             double accumulatedHeight = 0;
 
-            // 가변 높이 페이지 대응: 위에서부터 높이를 더해가며 현재 스크롤 위치와 비교
             foreach (var page in SelectedDocument.Pages)
             {
-                // 페이지 높이 + 여백(Margin 10+10=20) * 줌
-                // 주의: 뷰모델의 Height는 '현재 렌더링된 크기'가 아닐 수 있으므로 
-                // 렌더링 스케일 로직과 맞춰야 하지만, 보통 Width/Height 바인딩 된 값을 씁니다.
-                // 여기서는 간단히 뷰모델 값 사용
-
                 double pageTotalHeight = (page.Height * SelectedDocument.Zoom) + 20;
-
-                // 현재 스크롤 위치가 이 페이지 범위 안에 걸치면 당첨
-                // (조금 넉넉하게 currentOffset + 50 정도 줌)
                 if (accumulatedHeight + pageTotalHeight > currentOffset + 50)
                 {
                     return page.PageIndex;
                 }
                 accumulatedHeight += pageTotalHeight;
             }
+            return 0;
+        }
 
-            return 0; // 못 찾으면 0
+        // [신규] 북마크 이름 변경 로직
+        private void BookmarkTree_KeyDown(object sender, KeyEventArgs e)
+        {
+            if (e.Key == Key.F2 && BookmarkTree.SelectedItem is PdfBookmarkViewModel bm)
+                bm.IsEditing = true;
+        }
+
+        private void BtnRenameBookmark_Click(object sender, RoutedEventArgs e)
+        {
+            if (sender is MenuItem item && item.DataContext is PdfBookmarkViewModel bm)
+                bm.IsEditing = true;
+            else if (BookmarkTree.SelectedItem is PdfBookmarkViewModel sBm)
+                sBm.IsEditing = true;
+        }
+
+        private void BookmarkRename_KeyDown(object sender, KeyEventArgs e)
+        {
+            if (e.Key == Key.Enter)
+            {
+                if ((sender as TextBox)?.DataContext is PdfBookmarkViewModel bm)
+                    bm.IsEditing = false;
+                e.Handled = true;
+            }
+        }
+
+        private void BookmarkRename_LostFocus(object sender, RoutedEventArgs e)
+        {
+            if ((sender as TextBox)?.DataContext is PdfBookmarkViewModel bm)
+                bm.IsEditing = false;
         }
 
         private void PdfListView_ScrollChanged(object sender, ScrollChangedEventArgs e)
@@ -1871,5 +2141,163 @@ namespace MinsPDFViewer
             TxtPageInfo.Text = $"{idx + 2} / {SelectedDocument.Pages.Count}";
         }
 
+        // [4] 마우스 이벤트 핸들러 (패닝 구현)
+
+        private void PdfListView_PreviewMouseDown(object sender, MouseButtonEventArgs e)
+        {
+            var listView = sender as ListView;
+            if (listView == null)
+                return;
+
+            // 스페이스바 누른 상태이거나, 휠 클릭일 때
+            if (_isSpacePressed || e.ChangedButton == MouseButton.Middle)
+            {
+                _isPanning = true;
+                _lastPanPoint = e.GetPosition(this); // [중요] 좌표 기준을 Window(this)로 잡아서 오차 방지
+
+                listView.CaptureMouse(); // 마우스 가두기
+
+                if (e.ChangedButton == MouseButton.Middle)
+                    Mouse.OverrideCursor = Cursors.ScrollAll; // 휠 클릭 시 커서 변경
+
+                e.Handled = true; // 다른 클릭 이벤트(텍스트 선택 등) 방지
+            }
+        }
+
+        private void PdfListView_PreviewMouseMove(object sender, MouseEventArgs e)
+        {
+            if (_isPanning)
+            {
+                var listView = sender as ListView;
+                var sv = GetScrollViewer(); // 캐시된 스크롤뷰어 사용
+
+                if (sv != null && listView != null)
+                {
+                    var currentPoint = e.GetPosition(this); // Window 기준 좌표
+                    var delta = currentPoint - _lastPanPoint;
+
+                    // 스크롤 이동 (마우스를 왼쪽으로 끌면 -> 시점은 오른쪽으로 이동 -> Offset 증가여야 함?)
+                    // 아니오, 종이를 잡고 "오른쪽"으로 끌면 -> 종이는 오른쪽으로 감 -> 우리는 왼쪽을 보게 됨 -> Offset 감소
+                    sv.ScrollToHorizontalOffset(sv.HorizontalOffset - delta.X);
+                    sv.ScrollToVerticalOffset(sv.VerticalOffset - delta.Y);
+
+                    _lastPanPoint = currentPoint;
+                }
+            }
+        }
+
+
+        private void PdfListView_PreviewMouseUp(object sender, MouseButtonEventArgs e)
+        {
+            if (_isPanning)
+            {
+                _isPanning = false;
+                var listView = sender as ListView;
+                if (listView != null)
+                    listView.ReleaseMouseCapture();
+
+                // 스페이스바 떼지 않았으면 손바닥 유지, 뗐으면 원래대로 복구
+                if (!_isSpacePressed)
+                    Mouse.OverrideCursor = null;
+                else
+                    Mouse.OverrideCursor = Cursors.Hand;
+            }
+        }
+
+        // =========================================================
+        // [수정] 마우스 다운 (윈도우 레벨에서 처리)
+        // =========================================================
+        private void Window_PreviewMouseDown(object sender, MouseButtonEventArgs e)
+        {
+            // 스페이스바가 눌려있거나, 휠(Middle) 클릭인 경우
+            if (_isSpacePressed || e.ChangedButton == MouseButton.Middle)
+            {
+                _isPanning = true;
+                _lastPanPoint = e.GetPosition(this); // Window 기준 좌표
+
+                // 마우스가 윈도우 밖으로 나가도 이벤트를 받기 위해 캡처
+                // (this는 Window입니다)
+                Mouse.Capture(this.Content as UIElement);
+
+                if (e.ChangedButton == MouseButton.Middle)
+                {
+                    Mouse.OverrideCursor = Cursors.ScrollAll;
+                }
+
+                // [중요] Handled를 true로 설정하여 자식 컨트롤(페이지, 텍스트박스 등)의 클릭 이벤트를 막음
+                // -> 이렇게 해야 "페이지 이동"이나 "텍스트 선택"이 발생하지 않고 오직 패닝만 됨
+                e.Handled = true;
+            }
+        }
+
+        // =========================================================
+        // [수정] 마우스 이동 (패닝 동작)
+        // =========================================================
+        private void Window_PreviewMouseMove(object sender, MouseEventArgs e)
+        {
+            if (_isPanning)
+            {
+                var scrollViewer = GetCurrentScrollViewer();
+                if (scrollViewer != null)
+                {
+                    var currentPoint = e.GetPosition(this);
+                    var delta = currentPoint - _lastPanPoint;
+
+                    // 스크롤 이동 (마우스 가는 방향과 반대로 스크롤을 밀어야 화면이 따라옴)
+                    scrollViewer.ScrollToHorizontalOffset(scrollViewer.HorizontalOffset - delta.X);
+                    scrollViewer.ScrollToVerticalOffset(scrollViewer.VerticalOffset - delta.Y);
+
+                    _lastPanPoint = currentPoint;
+                }
+            }
+        }
+
+        // =========================================================
+        // [수정] 마우스 업 (패닝 종료)
+        // =========================================================
+        private void Window_PreviewMouseUp(object sender, MouseButtonEventArgs e)
+        {
+            if (_isPanning)
+            {
+                _isPanning = false;
+                Mouse.Capture(null); // 마우스 캡처 해제
+
+                // 스페이스바가 여전히 눌려있으면 Hand, 아니면 복구
+                if (_isSpacePressed)
+                    Mouse.OverrideCursor = Cursors.Hand;
+                else
+                    Mouse.OverrideCursor = null;
+            }
+        }
+
+        // [신규] 윈도우 레벨 휠 처리 (Ctrl+Wheel 확대/축소)
+        private void Window_PreviewMouseWheel(object sender, MouseWheelEventArgs e)
+        {
+            // Ctrl 키가 눌려있을 때만 확대/축소 동작
+            if ((Keyboard.Modifiers & ModifierKeys.Control) == ModifierKeys.Control)
+            {
+                if (SelectedDocument != null)
+                {
+                    // 확대 (Delta > 0)
+                    if (e.Delta > 0)
+                    {
+                        // 최대 5.0배 제한
+                        if (SelectedDocument.Zoom < 5.0)
+                            SelectedDocument.Zoom += 0.1;
+                    }
+                    // 축소 (Delta < 0)
+                    else
+                    {
+                        // 최소 0.2배 제한 (0.1 이하는 너무 작음)
+                        if (SelectedDocument.Zoom > 0.2)
+                            SelectedDocument.Zoom -= 0.1;
+                    }
+                }
+
+                // [중요] 이벤트를 여기서 처리했음을 알림 (스크롤 방지)
+                e.Handled = true;
+            }
+            // Ctrl 키가 없으면? -> 그냥 둠 (기본 스크롤 동작 수행)
+        }
     }
 }

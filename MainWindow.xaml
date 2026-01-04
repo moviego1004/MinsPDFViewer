@@ -13,7 +13,11 @@
         Width="1200"
         UseLayoutRounding="True"
         Icon="MinsPDFViewer.ico"
-        KeyDown="Window_KeyDown"
+        PreviewKeyDown="Window_PreviewKeyDown"
+        PreviewMouseDown="Window_PreviewMouseDown"
+        PreviewMouseMove="Window_PreviewMouseMove"
+        PreviewMouseUp="Window_PreviewMouseUp"
+        PreviewMouseWheel="Window_PreviewMouseWheel"
         Closing="Window_Closing">
 
         <Window.Resources>
@@ -376,21 +380,54 @@
                                                   ItemsSource="{Binding SelectedDocument.Bookmarks}"
                                                   BorderThickness="0"
                                                   Background="Transparent"
-                                                  SelectedItemChanged="BookmarkTree_SelectedItemChanged">
+                                                  AllowDrop="True"
+                                                  PreviewMouseLeftButtonDown="BookmarkTree_PreviewMouseLeftButtonDown"
+                                                  PreviewMouseMove="BookmarkTree_PreviewMouseMove"
+                                                  Drop="BookmarkTree_Drop"
+                                                  DragOver="BookmarkTree_DragOver"
+                                                  SelectedItemChanged="BookmarkTree_SelectedItemChanged"
+                                                  KeyDown="BookmarkTree_KeyDown">
+
                                                 <TreeView.ItemTemplate>
                                                         <HierarchicalDataTemplate ItemsSource="{Binding Children}">
                                                                 <StackPanel Orientation="Horizontal"
-                                                                            Background="Transparent"
-                                                                            PreviewMouseLeftButtonUp="BookmarkItem_PreviewMouseLeftButtonUp"
-                                                                            Cursor="Hand">
-
-                                                                        <TextBox Text="{Binding Title, UpdateSourceTrigger=PropertyChanged}"
-                                                                                 Background="Transparent"
-                                                                                 BorderThickness="0"
-                                                                                 VerticalAlignment="Center"
-                                                                                 Margin="0,0,5,0"
-                                                                                 ToolTip="이름을 클릭하여 수정 가능"/>
-
+                                                                            Background="Transparent">
+                                                                        <Grid Margin="0,0,5,0">
+                                                                                <TextBlock Text="{Binding Title}"
+                                                                                           VerticalAlignment="Center">
+                                                                                        <TextBlock.Style>
+                                                                                                <Style TargetType="TextBlock">
+                                                                                                        <Setter Property="Visibility"
+                                                                                                                Value="Visible"/>
+                                                                                                        <Style.Triggers>
+                                                                                                                <DataTrigger Binding="{Binding IsEditing}"
+                                                                                                                             Value="True">
+                                                                                                                        <Setter Property="Visibility"
+                                                                                                                                Value="Collapsed"/>
+                                                                                                                </DataTrigger>
+                                                                                                        </Style.Triggers>
+                                                                                                </Style>
+                                                                                        </TextBlock.Style>
+                                                                                </TextBlock>
+                                                                                <TextBox Text="{Binding Title, UpdateSourceTrigger=PropertyChanged}"
+                                                                                         VerticalAlignment="Center"
+                                                                                         KeyDown="BookmarkRename_KeyDown"
+                                                                                         LostFocus="BookmarkRename_LostFocus">
+                                                                                        <TextBox.Style>
+                                                                                                <Style TargetType="TextBox">
+                                                                                                        <Setter Property="Visibility"
+                                                                                                                Value="Collapsed"/>
+                                                                                                        <Style.Triggers>
+                                                                                                                <DataTrigger Binding="{Binding IsEditing}"
+                                                                                                                             Value="True">
+                                                                                                                        <Setter Property="Visibility"
+                                                                                                                                Value="Visible"/>
+                                                                                                                </DataTrigger>
+                                                                                                        </Style.Triggers>
+                                                                                                </Style>
+                                                                                        </TextBox.Style>
+                                                                                </TextBox>
+                                                                        </Grid>
                                                                         <TextBlock Text="{Binding PageIndex, StringFormat=' (p.{0})'}"
                                                                                    Foreground="Gray"
                                                                                    FontSize="10"
@@ -398,6 +435,8 @@
                                                                                    IsHitTestVisible="False"/>
                                                                         <StackPanel.ContextMenu>
                                                                                 <ContextMenu>
+                                                                                        <MenuItem Header="이름 변경 (F2)"
+                                                                                                  Click="BtnRenameBookmark_Click"/>
                                                                                         <MenuItem Header="현재 페이지로 위치 갱신"
                                                                                                   Click="BtnUpdateBookmarkPage_Click"/>
                                                                                         <Separator/>
@@ -418,6 +457,7 @@
                                                         </Style>
                                                 </TreeView.ItemContainerStyle>
                                         </TreeView>
+
                                 </Grid>
                         </Border>
 
@@ -461,7 +501,6 @@
                                                           VirtualizingPanel.VirtualizationMode="Recycling"
                                                           Loaded="PdfListView_Loaded"
                                                           Unloaded="PdfListView_Unloaded"
-                                                          PreviewMouseWheel="PdfListView_PreviewMouseWheel"
                                                           Background="LightGray"
                                                           BorderThickness="0">
 

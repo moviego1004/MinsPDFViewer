@@ -19,7 +19,6 @@ namespace MinsPDFViewer
         public object SyncRoot { get; } = new object();
         public string FilePath { get; set; } = "";
         public string FileName { get; set; } = "";
-        public ObservableCollection<PdfPageViewModel> Pages { get; set; } = new ObservableCollection<PdfPageViewModel>();
 
         private double _zoom = 1.0;
         public double Zoom
@@ -53,11 +52,20 @@ namespace MinsPDFViewer
             get; set;
         }
 
+        public volatile bool IsDisposed = false;
+
+        public ObservableCollection<PdfPageViewModel> Pages { get; set; } = new ObservableCollection<PdfPageViewModel>();
+
+
         // [신규] 책갈피
         public ObservableCollection<PdfBookmarkViewModel> Bookmarks { get; set; } = new ObservableCollection<PdfBookmarkViewModel>();
 
         public void Dispose()
         {
+            if (IsDisposed)
+                return;
+            IsDisposed = true; // [중요] 나 죽는다고 깃발 꽂기
+
             lock (PdfService.PdfiumLock)
             {
                 if (CleanDocReader != null)
@@ -69,6 +77,7 @@ namespace MinsPDFViewer
                     catch { }
                     CleanDocReader = null;
                 }
+
                 if (DocReader != null)
                 {
                     try
@@ -79,11 +88,8 @@ namespace MinsPDFViewer
                     DocReader = null;
                 }
             }
-            if (Pages != null)
-                Application.Current.Dispatcher.Invoke(() => Pages.Clear());
-            if (Bookmarks != null)
-                Application.Current.Dispatcher.Invoke(() => Bookmarks.Clear());
         }
+
 
         public event PropertyChangedEventHandler? PropertyChanged;
         protected void OnPropertyChanged(string name) => PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));
@@ -407,6 +413,19 @@ namespace MinsPDFViewer
                 OnPropertyChanged(nameof(IsSelected));
             }
         }
+
+        // [신규] 이름 편집 모드
+        private bool _isEditing;
+        public bool IsEditing
+        {
+            get => _isEditing; set
+            {
+                _isEditing = value;
+                OnPropertyChanged(nameof(IsEditing));
+            }
+        }
+
+
 
         public ObservableCollection<PdfBookmarkViewModel> Children { get; set; } = new ObservableCollection<PdfBookmarkViewModel>();
         public PdfBookmarkViewModel? Parent
