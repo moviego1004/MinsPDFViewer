@@ -2,8 +2,9 @@ using System;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.ComponentModel;
-using System.Windows;
+using System.Windows; // Application.Current 접근용
 using System.Windows.Media;
+using Docnet.Core;
 using Docnet.Core.Readers;
 using PdfSharp.Pdf;
 
@@ -39,7 +40,7 @@ namespace MinsPDFViewer
             get; set;
         }
 
-        public Docnet.Core.IDocLib? DocLib
+        public IDocLib? DocLib
         {
             get; set;
         }
@@ -55,55 +56,63 @@ namespace MinsPDFViewer
         public volatile bool IsDisposed = false;
 
         public ObservableCollection<PdfPageViewModel> Pages { get; set; } = new ObservableCollection<PdfPageViewModel>();
-
-
-        // [신규] 책갈피
         public ObservableCollection<PdfBookmarkViewModel> Bookmarks { get; set; } = new ObservableCollection<PdfBookmarkViewModel>();
 
         public void Dispose()
         {
+            Dispose(true);
+            GC.SuppressFinalize(this);
+        }
+
+        protected virtual void Dispose(bool disposing)
+        {
             if (IsDisposed)
                 return;
-            IsDisposed = true; // [중요] 나 죽는다고 깃발 꽂기
+            IsDisposed = true; // 1. 종료 신호
 
-            lock (PdfService.PdfiumLock)
+            if (disposing)
             {
-                if (CleanDocReader != null)
+                // [핵심 수정] 생성된 스레드(UI Thread)와 해제 스레드를 일치시킵니다.
+                // 기존 Task.Run(백그라운드) -> Application.Current.Dispatcher.Invoke(UI스레드)
+                if (Application.Current != null)
                 {
-                    try
+                    Application.Current.Dispatcher.Invoke(() =>
                     {
-                        CleanDocReader.Dispose();
-                    }
-                    catch { }
-                    CleanDocReader = null;
-                }
+                        lock (PdfService.PdfiumLock)
+                        {
+                            // CleanDocReader: 참조만 해제 (Dispose 금지 - 메모리 충돌 방지)
+                            if (CleanDocReader != null)
+                            {
+                                CleanDocReader = null;
+                            }
 
-                if (DocReader != null)
-                {
-                    try
-                    {
-                        DocReader.Dispose();
-                    }
-                    catch { }
-                    DocReader = null;
+                            // DocReader: UI 스레드에서 안전하게 해제
+                            if (DocReader != null)
+                            {
+                                try
+                                {
+                                    DocReader.Dispose();
+                                }
+                                catch { }
+                                DocReader = null;
+                            }
+                        }
+                    });
                 }
             }
         }
-
 
         public event PropertyChangedEventHandler? PropertyChanged;
         protected void OnPropertyChanged(string name) => PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));
     }
 
+    // [이하 ViewModel 클래스들은 기존 그대로 유지]
     public class PdfPageViewModel : INotifyPropertyChanged
     {
-        // =========================================================
-        // [신규] 페이지 편집 속성 (회전, 삭제, 재조립용)
-        // =========================================================
         public string? OriginalFilePath
         {
             get; set;
-        } // 원본 경로 (빈 페이지면 null 가능)
+        }
         public int OriginalPageIndex
         {
             get; set;
@@ -116,40 +125,27 @@ namespace MinsPDFViewer
         private int _rotation;
         public int Rotation
         {
-            get => _rotation;
-            set
+            get => _rotation; set
             {
                 _rotation = value;
                 OnPropertyChanged(nameof(Rotation));
             }
         }
 
-        // =========================================================
-        // [복구] 기존 OCR 및 검색, 메모리 관리 속성
-        // =========================================================
         public List<OcrWordInfo>? OcrWords
         {
             get; set;
-        } // OCR 결과
-        public string MediaBoxInfo { get; set; } = "";   // 디버깅용
-
-        // 메모리 해제 메서드
+        }
+        public string MediaBoxInfo { get; set; } = "";
         public void Unload()
         {
             ImageSource = null;
-            // 필요하다면 여기서 OcrWords 등도 정리 가능
         }
-
-        // =========================================================
-        // 기존 뷰어 속성
-        // =========================================================
         public int PageIndex
         {
             get; set;
         }
-
-        private double _width;
-        public double Width
+        private double _width; public double Width
         {
             get => _width; set
             {
@@ -157,9 +153,7 @@ namespace MinsPDFViewer
                 OnPropertyChanged(nameof(Width));
             }
         }
-
-        private double _height;
-        public double Height
+        private double _height; public double Height
         {
             get => _height; set
             {
@@ -167,7 +161,6 @@ namespace MinsPDFViewer
                 OnPropertyChanged(nameof(Height));
             }
         }
-
         public double PdfPageWidthPoint
         {
             get; set;
@@ -196,7 +189,6 @@ namespace MinsPDFViewer
         {
             get; set;
         }
-
         private ImageSource? _imageSource;
         public ImageSource? ImageSource
         {
@@ -206,10 +198,7 @@ namespace MinsPDFViewer
                 OnPropertyChanged(nameof(ImageSource));
             }
         }
-
         public ObservableCollection<PdfAnnotation> Annotations { get; set; } = new ObservableCollection<PdfAnnotation>();
-
-        // 텍스트 선택용
         public bool IsSelecting
         {
             get; set;
@@ -230,7 +219,6 @@ namespace MinsPDFViewer
         {
             get; set;
         }
-
         public event PropertyChangedEventHandler? PropertyChanged;
         protected void OnPropertyChanged(string name) => PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));
     }
@@ -270,14 +258,12 @@ namespace MinsPDFViewer
                 OnPropertyChanged(nameof(Height));
             }
         }
-
         public AnnotationType Type
         {
             get; set;
         }
         public Color AnnotationColor { get; set; } = Colors.Yellow;
         public Brush Background { get; set; } = Brushes.Transparent;
-
         private string _textContent = "";
         public string TextContent
         {
@@ -287,7 +273,6 @@ namespace MinsPDFViewer
                 OnPropertyChanged(nameof(TextContent));
             }
         }
-
         private double _fontSize = 12;
         public double FontSize
         {
@@ -297,7 +282,6 @@ namespace MinsPDFViewer
                 OnPropertyChanged(nameof(FontSize));
             }
         }
-
         private string _fontFamily = "Malgun Gothic";
         public string FontFamily
         {
@@ -307,7 +291,6 @@ namespace MinsPDFViewer
                 OnPropertyChanged(nameof(FontFamily));
             }
         }
-
         private Brush _foreground = Brushes.Black;
         public Brush Foreground
         {
@@ -317,7 +300,6 @@ namespace MinsPDFViewer
                 OnPropertyChanged(nameof(Foreground));
             }
         }
-
         private bool _isBold;
         public bool IsBold
         {
@@ -327,13 +309,11 @@ namespace MinsPDFViewer
                 OnPropertyChanged(nameof(IsBold));
             }
         }
-
         public string FieldName { get; set; } = "";
         public object? SignatureData
         {
             get; set;
         }
-
         private string? _visualStampPath;
         public string? VisualStampPath
         {
@@ -343,7 +323,6 @@ namespace MinsPDFViewer
                 OnPropertyChanged(nameof(VisualStampPath));
             }
         }
-
         private bool _isSelected;
         public bool IsSelected
         {
@@ -353,7 +332,6 @@ namespace MinsPDFViewer
                 OnPropertyChanged(nameof(IsSelected));
             }
         }
-
         public event PropertyChangedEventHandler? PropertyChanged;
         protected void OnPropertyChanged(string name) => PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));
     }
@@ -383,7 +361,6 @@ namespace MinsPDFViewer
                 OnPropertyChanged(nameof(Title));
             }
         }
-
         private int _pageIndex;
         public int PageIndex
         {
@@ -393,7 +370,6 @@ namespace MinsPDFViewer
                 OnPropertyChanged(nameof(PageIndex));
             }
         }
-
         private bool _isExpanded = true;
         public bool IsExpanded
         {
@@ -403,7 +379,6 @@ namespace MinsPDFViewer
                 OnPropertyChanged(nameof(IsExpanded));
             }
         }
-
         private bool _isSelected;
         public bool IsSelected
         {
@@ -413,8 +388,6 @@ namespace MinsPDFViewer
                 OnPropertyChanged(nameof(IsSelected));
             }
         }
-
-        // [신규] 이름 편집 모드
         private bool _isEditing;
         public bool IsEditing
         {
@@ -424,15 +397,11 @@ namespace MinsPDFViewer
                 OnPropertyChanged(nameof(IsEditing));
             }
         }
-
-
-
         public ObservableCollection<PdfBookmarkViewModel> Children { get; set; } = new ObservableCollection<PdfBookmarkViewModel>();
         public PdfBookmarkViewModel? Parent
         {
             get; set;
         }
-
         public event PropertyChangedEventHandler? PropertyChanged;
         protected void OnPropertyChanged(string name) => PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));
     }
