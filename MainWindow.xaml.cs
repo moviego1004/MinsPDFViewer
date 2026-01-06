@@ -1568,18 +1568,44 @@ namespace MinsPDFViewer
             }
         }
 
+        // =========================================================
+        // [수정] 책갈피 영역 드래그 오버 (파일 드롭 허용 추가)
+        // =========================================================
         private void BookmarkTree_DragOver(object sender, DragEventArgs e)
         {
-            if (!e.Data.GetDataPresent("MinsBookmark") || SelectedDocument == null)
+            // 1. 파일인 경우: 복사(Copy) 허용
+            if (e.Data.GetDataPresent(DataFormats.FileDrop))
             {
-                e.Effects = DragDropEffects.None;
+                e.Effects = DragDropEffects.Copy;
+                e.Handled = true;
                 return;
             }
-            e.Effects = DragDropEffects.Move;
+
+            // 2. 북마크 이동인 경우
+            if (e.Data.GetDataPresent("MinsBookmark") && SelectedDocument != null)
+            {
+                e.Effects = DragDropEffects.Move;
+                e.Handled = true;
+                return;
+            }
+
+            e.Effects = DragDropEffects.None;
+            e.Handled = true;
         }
 
+        // =========================================================
+        // [수정] 책갈피 영역 드롭 (파일 드롭 처리 추가)
+        // =========================================================
         private void BookmarkTree_Drop(object sender, DragEventArgs e)
         {
+            // [추가됨] 파일이 드롭되면 윈도우의 파일 열기 로직을 호출
+            if (e.Data.GetDataPresent(DataFormats.FileDrop))
+            {
+                Window_Drop(sender, e);
+                return;
+            }
+
+            // ... (기존 북마크 이동 로직 유지) ...
             if (!e.Data.GetDataPresent("MinsBookmark") || SelectedDocument == null)
                 return;
 
@@ -1587,37 +1613,31 @@ namespace MinsPDFViewer
             if (sourceBm == null)
                 return;
 
-            // 드롭된 위치 파악 (TreeViewItem 찾기)
-            // 배경에 놓으면 targetItem은 null -> 루트로 이동
             var targetItem = FindAncestor<TreeViewItem>((DependencyObject)e.OriginalSource);
             var targetBm = targetItem?.DataContext as PdfBookmarkViewModel;
 
-            // 자기 자신이나 자식에게 드롭 금지 (순환 참조 방지)
             if (targetBm != null && (targetBm == sourceBm || IsChildOf(targetBm, sourceBm)))
             {
                 MessageBox.Show("자기 자신이나 하위 항목으로 이동할 수 없습니다.");
                 return;
             }
 
-            // 1. 기존 부모에게서 제거
             var oldCollection = GetCurrentCollection(sourceBm);
             if (oldCollection != null)
                 oldCollection.Remove(sourceBm);
 
-            // 2. 새 위치에 추가
             if (targetBm == null)
             {
-                // 배경에 드롭 -> 최상위 루트로 이동 (상위 레벨 이동 효과)
                 SelectedDocument.Bookmarks.Add(sourceBm);
-                sourceBm.Parent = null; // 부모 없음
+                sourceBm.Parent = null;
             }
             else
             {
-                // 다른 아이템 위에 드롭 -> 그 아이템의 자식으로 들어감 (하위 레벨 이동 효과)
                 targetBm.Children.Add(sourceBm);
                 sourceBm.Parent = targetBm;
-                targetBm.IsExpanded = true; // 넣은 곳 펼쳐주기
+                targetBm.IsExpanded = true;
             }
+            e.Handled = true;
         }
 
         // [헬퍼] A가 B의 자손인지 확인 (순환 참조 방지)
@@ -2037,12 +2057,22 @@ namespace MinsPDFViewer
 
         private void Window_Drop(object sender, DragEventArgs e)
         {
+            // 드래그된 데이터가 파일인지 확인
             if (e.Data.GetDataPresent(DataFormats.FileDrop))
             {
+                // 파일 경로 배열 가져오기
                 string[] files = (string[])e.Data.GetData(DataFormats.FileDrop);
-                foreach (string file in files)
+
+                if (files != null && files.Length > 0)
                 {
-                    OpenPdfFromPath(file);
+                    // 여러 개를 드래그해도 첫 번째 파일만 엽니다 (필요하면 반복문 사용 가능)
+                    string filePath = files[0];
+
+                    // 확장자가 PDF인지 확인 (대소문자 무시)
+                    if (System.IO.Path.GetExtension(filePath).Equals(".pdf", StringComparison.OrdinalIgnoreCase))
+                    {                        
+                        OpenPdfFromPath(filePath);                         
+                    }
                 }
             }
         }
