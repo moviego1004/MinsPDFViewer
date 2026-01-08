@@ -21,7 +21,7 @@ namespace MinsPDFViewer
         public static readonly object PdfiumLock = new object();
         private readonly IDocLib _docLib;
 
-        // [설정] 단일 리더의 품질 배율 (2.0 = FHD/QHD에서 충분히 선명함)
+        // [설정] 단일 리더 품질 배율 (2.0 = 속도와 화질의 균형)
         private const double RENDER_SCALE = 2.0;
 
         public PdfService()
@@ -30,7 +30,7 @@ namespace MinsPDFViewer
         }
 
         // =========================================================
-        // 1. PDF 로드 (단일 리더, 메모리 모드)
+        // 1. PDF 로드 (단일 리더, 메모리 모드, 파일 잠금 없음)
         // =========================================================
         public async Task<PdfDocumentModel?> LoadPdfAsync(string filePath)
         {
@@ -42,13 +42,10 @@ namespace MinsPDFViewer
                 try
                 {
                     IDocReader docReader;
-
-                    // 파일을 메모리로 읽어서 잠금 회피
                     byte[] fileBytes = ReadFileSafely(filePath);
 
                     lock (PdfiumLock)
                     {
-                        // UI 스레드에서 생성 (안전성)
                         docReader = Application.Current.Dispatcher.Invoke(() =>
                             _docLib.GetDocReader(fileBytes, new PageDimensions(RENDER_SCALE)));
                     }
@@ -73,7 +70,7 @@ namespace MinsPDFViewer
         }
 
         // =========================================================
-        // 2. 초기화 (동일)
+        // 2. 초기화
         // =========================================================
         public async Task InitializeDocumentAsync(PdfDocumentModel model)
         {
@@ -183,7 +180,7 @@ namespace MinsPDFViewer
         }
 
         // =========================================================
-        // 3. 렌더링 (단순화: 단일 리더 사용)
+        // 3. 렌더링
         // =========================================================
         public void RenderPageImage(PdfDocumentModel model, PdfPageViewModel pageVM)
         {
@@ -219,7 +216,6 @@ namespace MinsPDFViewer
             {
                 Application.Current.Dispatcher.Invoke(() =>
                 {
-                    // 2.0배율 이미지를 생성. XAML에서 HighQuality 옵션을 켜면 확대해도 깨끗함.
                     var bmp = BitmapSource.Create(w, h, 96, 96, System.Windows.Media.PixelFormats.Bgra32, null, imgBytes, w * 4);
                     bmp.Freeze();
                     pageVM.ImageSource = bmp;
@@ -278,23 +274,22 @@ namespace MinsPDFViewer
         }
 
         // =========================================================
-        // 4. 저장 (좌표계 로직 완벽 복구 + 스트림 저장)
+        // 4. 저장 (NeedAppearances 수정 및 안정화)
         // =========================================================
         public async Task SavePdf(PdfDocumentModel model, string outputPath)
         {
             if (model == null || model.Pages.Count == 0)
                 return;
 
-            // [Step 1] 데이터 스냅샷 (UI 스레드)
-            // 좌표 계산에 필요한 Crop 정보와 Point 크기 정보를 모두 백업합니다.
+            // [Step 1] 데이터 스냅샷
             var bookmarkList = model.Bookmarks.ToList();
             var pagesSnapshot = model.Pages.Select(p => new PageSaveData
             {
                 IsBlankPage = p.IsBlankPage,
-                Width = p.Width,                   // WPF 화면상 너비
-                Height = p.Height,                 // WPF 화면상 높이
-                PdfPageWidthPoint = p.PdfPageWidthPoint,   // 실제 PDF 포인트 너비
-                PdfPageHeightPoint = p.PdfPageHeightPoint, // 실제 PDF 포인트 높이
+                Width = p.Width,
+                Height = p.Height,
+                PdfPageWidthPoint = p.PdfPageWidthPoint,
+                PdfPageHeightPoint = p.PdfPageHeightPoint,
                 CropX = p.CropX,
                 CropY = p.CropY,
                 CropHeightPoint = p.CropHeightPoint,
@@ -323,7 +318,7 @@ namespace MinsPDFViewer
 
             bool isOverwriting = string.Equals(model.FilePath, outputPath, StringComparison.OrdinalIgnoreCase);
 
-            // [Step 2] 원본 파일 데이터 읽기
+            // [Step 2] 원본 읽기
             byte[] sourceFileBytes = ReadFileSafely(model.FilePath);
 
             // [Step 3] PDF 생성 및 저장
@@ -366,27 +361,22 @@ namespace MinsPDFViewer
                             if (newPage.Rotate < 0)
                                 newPage.Rotate += 360;
 
-                            // -----------------------------------------------------------
-                            // 주석 저장 로직 (좌표계 완벽 복구)
-                            // -----------------------------------------------------------
                             foreach (var ann in pageData.Annotations)
                             {
                                 if (ann.Type == AnnotationType.SignaturePlaceholder)
                                     continue;
 
-                                // [복구된 로직] 화면 비율(Scale)과 CropBox 좌표 보정
-                                double scaleX = pageData.PdfPageWidthPoint / pageData.Width;
-                                double scaleY = pageData.PdfPageHeightPoint / pageData.Height;
+                                double scaleX = (pageData.PdfPageWidthPoint > 0) ? pageData.PdfPageWidthPoint / pageData.Width : 1.0;
+                                double scaleY = (pageData.PdfPageHeightPoint > 0) ? pageData.PdfPageHeightPoint / pageData.Height : 1.0;
 
                                 double pdfW = ann.Width * scaleX;
                                 double pdfH = ann.Height * scaleY;
-
-                                // PDF X좌표: Crop시작점 + (WPF좌표 * 비율)
                                 double pdfX = pageData.CropX + (ann.X * scaleX);
 
-                                // PDF Y좌표: (Crop상단 + Crop높이) - (WPF좌표 * 비율) - PDF높이
-                                // PDF는 좌측하단이 0이므로, 전체 높이에서 내려오는 방식으로 계산
-                                double pdfY = (pageData.CropY + pageData.CropHeightPoint) - (ann.Y * scaleY) - pdfH;
+                                double cropHeight = pageData.CropHeightPoint > 0 ? pageData.CropHeightPoint : pageData.PdfPageHeightPoint;
+                                if (cropHeight == 0)
+                                    cropHeight = pageData.Height;
+                                double pdfY = (pageData.CropY + cropHeight) - (ann.Y * scaleY) - pdfH;
 
                                 var rect = new PdfRectangle(new XRect(pdfX, pdfY, pdfW, pdfH));
                                 var newPdfAnn = new GenericPdfAnnotation(outputDoc);
@@ -396,11 +386,9 @@ namespace MinsPDFViewer
                                 {
                                     newPdfAnn.Elements.SetName(PdfSharp.Pdf.Annotations.PdfAnnotation.Keys.Subtype, "/FreeText");
                                     newPdfAnn.Contents = ann.TextContent;
-
                                     string r = (ann.ForeR / 255.0).ToString("0.##");
                                     string g = (ann.ForeG / 255.0).ToString("0.##");
                                     string b = (ann.ForeB / 255.0).ToString("0.##");
-
                                     newPdfAnn.Elements.SetString("/DA", $"/Helv {ann.FontSize} Tf {r} {g} {b} rg");
                                     outputDoc.Pages[outputDoc.PageCount - 1].Annotations.Add(newPdfAnn);
                                 }
@@ -426,6 +414,32 @@ namespace MinsPDFViewer
                         {
                             foreach (var bm in bookmarkList)
                                 SaveBookmarkToPdfSharp(bm, outputDoc.Outlines, outputDoc);
+                        }
+
+                        // [수정] AcroForm 프로퍼티 접근 에러 해결
+                        // 프로퍼티(outputDoc.AcroForm) 대신 내부 Catalog에 직접 접근하여 사전(Dictionary)을 생성합니다.
+                        var catalog = outputDoc.Internals.Catalog;
+                        PdfDictionary acroFormDict;
+
+                        if (catalog.Elements.ContainsKey("/AcroForm"))
+                        {
+                            acroFormDict = catalog.Elements.GetDictionary("/AcroForm");
+                        }
+                        else
+                        {
+                            // 없으면 수동으로 만들어서 집어넣습니다. (이러면 에러 안 남)
+                            acroFormDict = new PdfDictionary(outputDoc);
+                            catalog.Elements["/AcroForm"] = acroFormDict;
+                        }
+
+                        // NeedAppearances 플래그 설정 (이게 있어야 텍스트 박스가 보임)
+                        if (acroFormDict.Elements.ContainsKey("/NeedAppearances"))
+                        {
+                            acroFormDict.Elements["/NeedAppearances"] = new PdfBoolean(true);
+                        }
+                        else
+                        {
+                            acroFormDict.Elements.Add("/NeedAppearances", new PdfBoolean(true));
                         }
 
                         outputDoc.Save(outputStream);
@@ -461,9 +475,8 @@ namespace MinsPDFViewer
 
                 lock (PdfiumLock)
                 {
-                    // 단일 리더 생성 (배율 2.0)
                     model.DocReader = Application.Current.Dispatcher.Invoke(() =>
-                        _docLib.GetDocReader(newFileBytes, new PageDimensions(2.0)));
+                        _docLib.GetDocReader(newFileBytes, new PageDimensions(RENDER_SCALE)));
                 }
 
                 model.IsDisposed = false;
@@ -533,6 +546,7 @@ namespace MinsPDFViewer
             return new List<MinsPDFViewer.PdfAnnotation>();
         }
 
+        // DTO & Annotation Classes
         public class GenericPdfAnnotation : PdfSharp.Pdf.Annotations.PdfAnnotation
         {
             public GenericPdfAnnotation(PdfDocument document) : base(document) { }
@@ -547,19 +561,19 @@ namespace MinsPDFViewer
             public double Width
             {
                 get; set;
-            }      // WPF Width
+            }
             public double Height
             {
                 get; set;
-            }     // WPF Height
+            }
             public double PdfPageWidthPoint
             {
                 get; set;
-            }  // Real PDF Width
+            }
             public double PdfPageHeightPoint
             {
                 get; set;
-            } // Real PDF Height
+            }
             public double CropX
             {
                 get; set;
