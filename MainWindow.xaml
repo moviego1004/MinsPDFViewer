@@ -64,14 +64,29 @@
                                         <RowDefinition Height="20"/>
                                         <RowDefinition Height="*"/>
                                 </Grid.RowDefinitions>
+
                                 <Border Grid.Row="0"
-                                        Background="#DDDDDD"
                                         BorderBrush="Gray"
                                         BorderThickness="1,1,1,0"
                                         CornerRadius="3,3,0,0"
                                         Cursor="SizeAll"
-                                        Visibility="{Binding IsSelected, Converter={StaticResource BooleanToVisibilityConverter}}"
+                                        Background="Transparent"
                                         PreviewMouseDown="AnnotationDragHandle_PreviewMouseDown">
+
+                                        <Border.Style>
+                                                <Style TargetType="Border">
+                                                        <Setter Property="Background"
+                                                                        Value="Transparent"/>
+                                                        <Style.Triggers>
+                                                                <DataTrigger Binding="{Binding IsSelected}"
+                                                                                Value="True">
+                                                                        <Setter Property="Background"
+                                                                                        Value="#DDDDDD"/>
+                                                                </DataTrigger>
+                                                        </Style.Triggers>
+                                                </Style>
+                                        </Border.Style>
+
                                         <TextBlock Text="::"
                                                    HorizontalAlignment="Center"
                                                    VerticalAlignment="Center"
@@ -79,25 +94,27 @@
                                                    FontWeight="Bold"
                                                    FontSize="10"/>
                                 </Border>
+
                                 <Border Grid.Row="1"
                                         BorderThickness="1,0,1,1">
                                         <Border.Style>
                                                 <Style TargetType="Border">
                                                         <Setter Property="BorderBrush"
-                                                                Value="Transparent"/>
+                                                                        Value="Transparent"/>
                                                         <Setter Property="Background"
-                                                                Value="Transparent"/>
+                                                                        Value="Transparent"/>
                                                         <Style.Triggers>
                                                                 <DataTrigger Binding="{Binding IsSelected}"
-                                                                             Value="True">
+                                                                                Value="True">
                                                                         <Setter Property="BorderBrush"
-                                                                                Value="Gray"/>
+                                                                                        Value="Gray"/>
                                                                         <Setter Property="Background"
-                                                                                Value="#55FFFFFF"/>
+                                                                                        Value="#55FFFFFF"/>
                                                                 </DataTrigger>
                                                         </Style.Triggers>
                                                 </Style>
                                         </Border.Style>
+
                                         <TextBox Text="{Binding TextContent, UpdateSourceTrigger=PropertyChanged}"
                                                  FontFamily="{Binding FontFamily}"
                                                  FontSize="{Binding FontSize}"
@@ -113,6 +130,7 @@
                                                  GotFocus="AnnotationTextBox_GotFocus"
                                                  TextChanged="AnnotationTextBox_TextChanged"/>
                                 </Border>
+
                                 <Thumb Grid.Row="1"
                                        HorizontalAlignment="Right"
                                        VerticalAlignment="Bottom"

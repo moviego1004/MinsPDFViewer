@@ -2,7 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.ComponentModel;
-using System.Windows; // Application.Current 접근용
+using System.Windows;
 using System.Windows.Media;
 using Docnet.Core;
 using Docnet.Core.Readers;
@@ -44,14 +44,13 @@ namespace MinsPDFViewer
         {
             get; set;
         }
+
+        // [변경] 단일 리더 체제
         public IDocReader? DocReader
         {
             get; set;
         }
-        public IDocReader? CleanDocReader
-        {
-            get; set;
-        }
+        // CleanDocReader 삭제됨
 
         public volatile bool IsDisposed = false;
 
@@ -68,25 +67,17 @@ namespace MinsPDFViewer
         {
             if (IsDisposed)
                 return;
-            IsDisposed = true; // 1. 종료 신호
+            IsDisposed = true;
 
             if (disposing)
             {
-                // [핵심 수정] 생성된 스레드(UI Thread)와 해제 스레드를 일치시킵니다.
-                // 기존 Task.Run(백그라운드) -> Application.Current.Dispatcher.Invoke(UI스레드)
+                // UI 스레드에서 안전하게 해제
                 if (Application.Current != null)
                 {
                     Application.Current.Dispatcher.Invoke(() =>
                     {
                         lock (PdfService.PdfiumLock)
                         {
-                            // CleanDocReader: 참조만 해제 (Dispose 금지 - 메모리 충돌 방지)
-                            if (CleanDocReader != null)
-                            {
-                                CleanDocReader = null;
-                            }
-
-                            // DocReader: UI 스레드에서 안전하게 해제
                             if (DocReader != null)
                             {
                                 try
