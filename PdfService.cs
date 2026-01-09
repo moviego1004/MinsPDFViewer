@@ -146,7 +146,7 @@ namespace MinsPDFViewer
         }
 
         // =========================================================
-        // 3. 렌더링 및 주석 읽기
+        // 3. 렌더링
         // =========================================================
         public void RenderPageImage(PdfDocumentModel model, PdfPageViewModel pageVM)
         {
@@ -204,6 +204,7 @@ namespace MinsPDFViewer
                     if (!File.Exists(path))
                         return;
 
+                    // [수정] MinsPDFViewer.PdfAnnotation 리스트 사용
                     List<MinsPDFViewer.PdfAnnotation> extracted = new List<MinsPDFViewer.PdfAnnotation>();
 
                     try
@@ -238,6 +239,7 @@ namespace MinsPDFViewer
             });
         }
 
+        // [수정] 반환 타입을 앱 모델(MinsPDFViewer.PdfAnnotation)로 명확히 지정
         private List<MinsPDFViewer.PdfAnnotation> ExtractAnnotationsFromPage(PdfPage page)
         {
             var list = new List<MinsPDFViewer.PdfAnnotation>();
@@ -293,8 +295,9 @@ namespace MinsPDFViewer
                         }
 
                         var textBrush = new SolidColorBrush(Color.FromRgb(fr, fg, fb));
-                        textBrush.Freeze(); // [중요]
+                        textBrush.Freeze();
 
+                        // [수정] GenericPdfAnnotation 사용 금지 -> MinsPDFViewer.PdfAnnotation 생성
                         var newAnn = new MinsPDFViewer.PdfAnnotation
                         {
                             Type = AnnotationType.FreeText,
@@ -332,8 +335,9 @@ namespace MinsPDFViewer
                         double y = pageH - rect.Y1 - h;
 
                         var highlightBrush = new SolidColorBrush(Color.FromRgb(br, bg, bb)) { Opacity = 0.5 };
-                        highlightBrush.Freeze(); // [중요]
+                        highlightBrush.Freeze();
 
+                        // [수정] GenericPdfAnnotation 사용 금지 -> MinsPDFViewer.PdfAnnotation 생성
                         var newAnn = new MinsPDFViewer.PdfAnnotation
                         {
                             Type = AnnotationType.Highlight,
@@ -352,14 +356,13 @@ namespace MinsPDFViewer
         }
 
         // =========================================================
-        // 4. 저장 (순수 XPdfForm 방식 - PdfReader.Open 제거)
+        // 4. 저장 (Docnet 세탁 -> XPdfForm 재구성 -> Dictionary 주석)
         // =========================================================
         public async Task SavePdf(PdfDocumentModel model, string outputPath)
         {
             if (model == null || model.Pages.Count == 0)
                 return;
 
-            // UI 스냅샷
             var pagesSnapshot = model.Pages.Select(p => new PageSaveData
             {
                 IsBlankPage = p.IsBlankPage,
@@ -389,13 +392,24 @@ namespace MinsPDFViewer
 
             await Task.Run(() =>
             {
+                string sanitizedSourcePath = Path.GetTempFileName();
                 try
                 {
-                    // 1. 임시 파일로 복사
-                    string tempSourcePath = Path.GetTempFileName();
-                    File.Copy(model.FilePath, tempSourcePath, true);
+                    // [1. 구조 세탁] Docnet.Merge 사용
+                    lock (PdfiumLock)
+                    {
+                        // [수정] 빌드 에러 해결: 인자 순서 변경 (Destination, Sources)
+                        _docLib.Merge(sanitizedSourcePath, new[] { model.FilePath });
+                    }
+                }
+                catch (Exception ex)
+                {
+                    throw new Exception($"파일 구조 개선(Sanitize) 실패: {ex.Message}");
+                }
 
-                    // 2. 새 문서 생성
+                try
+                {
+                    // [2. 재구성] 세탁된 파일을 기반으로 새 문서 생성
                     using (var outputDoc = new PdfDocument())
                     {
                         var acroForm = new PdfDictionary(outputDoc);
@@ -404,132 +418,51 @@ namespace MinsPDFViewer
 
                         InjectHelveticaToAcroForm(outputDoc);
 
-                        // 3. [핵심] XPdfForm만 사용 (PdfReader.Open 사용 안함)
-                        // 이렇게 하면 원본 파일의 내부 구조 파싱 에러(NotImplemented)를 피할 수 있습니다.
-                        using (var form = XPdfForm.FromFile(tempSourcePath))
+                        // XPdfForm을 이용해 "보이는 그대로" 배경을 그림 (호환성 최상)
+                        using (var form = XPdfForm.FromFile(sanitizedSourcePath))
                         {
                             for (int i = 0; i < pagesSnapshot.Count; i++)
                             {
                                 var pageData = pagesSnapshot[i];
                                 PdfPage newPage = outputDoc.AddPage();
 
-                                // 페이지 크기 설정
                                 if (pageData.Width > 0 && pageData.Height > 0)
                                 {
                                     newPage.Width = XUnit.FromPoint(pageData.Width);
                                     newPage.Height = XUnit.FromPoint(pageData.Height);
                                 }
 
-                                // 원본 그리기 (배경)
                                 if (!pageData.IsBlankPage && pageData.OriginalPageIndex < form.PageCount)
                                 {
-                                    form.PageNumber = pageData.OriginalPageIndex + 1; // 1-based index
+                                    form.PageNumber = pageData.OriginalPageIndex + 1;
                                     using (var gfx = XGraphics.FromPdfPage(newPage))
                                     {
                                         gfx.DrawImage(form, 0, 0, newPage.Width.Point, newPage.Height.Point);
                                     }
                                 }
 
-                                // 주석 및 서명 추가 (Dictionary 방식 사용 - 빌드 에러 해결)
+                                // 주석 추가 (Dictionary 방식)
                                 foreach (var ann in pageData.Annotations)
                                 {
-                                    double pdfX = ann.X;
-                                    double pdfY = newPage.Height.Point - ann.Y - ann.Height;
-                                    double pdfW = ann.Width;
-                                    double pdfH = ann.Height;
-                                    var rect = new PdfSharpRect(new XRect(pdfX, pdfY, pdfW, pdfH));
-
-                                    // (1) 전자서명 필드
-                                    if (ann.Type == AnnotationType.SignaturePlaceholder)
-                                    {
-                                        string fieldName = $"Signature_{Guid.NewGuid().ToString("N").Substring(0, 8)}";
-                                        var sigField = new GenericPdfAnnotation(outputDoc);
-                                        sigField.Rectangle = rect;
-                                        sigField.Elements["/Subtype"] = new PdfName("/Widget");
-                                        sigField.Elements["/FT"] = new PdfName("/Sig");
-                                        sigField.Elements["/T"] = new PdfString(fieldName);
-                                        sigField.Elements["/P"] = newPage;
-                                        sigField.Elements["/F"] = new PdfInteger(4);
-
-                                        newPage.Annotations.Add(sigField);
-
-                                        if (!acroForm.Elements.ContainsKey("/Fields"))
-                                            acroForm.Elements["/Fields"] = new PdfArray(outputDoc);
-
-                                        acroForm.Elements.GetArray("/Fields")?.Elements.Add(sigField);
-                                        continue;
-                                    }
-
-                                    // (2) 일반 주석 (텍스트, 형광펜)
-                                    if (pdfW < 5)
-                                        pdfW = 20;
-                                    if (pdfH < 5)
-                                        pdfH = 10;
-
-                                    var newPdfAnn = new GenericPdfAnnotation(outputDoc);
-                                    newPdfAnn.Rectangle = rect;
-                                    newPdfAnn.Elements["/F"] = new PdfInteger(4);
-
-                                    if (ann.Type == AnnotationType.FreeText)
-                                    {
-                                        newPdfAnn.Elements["/Subtype"] = new PdfName("/FreeText");
-                                        newPdfAnn.Elements["/Contents"] = new PdfString(ann.TextContent ?? "");
-
-                                        double fSize = ann.FontSize < 5 ? 10 : ann.FontSize;
-                                        string r = (ann.ForeR / 255.0).ToString("0.##", CultureInfo.InvariantCulture);
-                                        string g = (ann.ForeG / 255.0).ToString("0.##", CultureInfo.InvariantCulture);
-                                        string b = (ann.ForeB / 255.0).ToString("0.##", CultureInfo.InvariantCulture);
-
-                                        newPdfAnn.Elements["/DA"] = new PdfString($"/Helvetica {fSize} Tf {r} {g} {b} rg");
-                                        newPdfAnn.Elements["/Q"] = new PdfInteger(0);
-
-                                        // AP Stream 직접 생성 (가시성 확보)
-                                        CreateAppearanceStream(outputDoc, newPdfAnn, pdfW, pdfH, ann.TextContent ?? "", fSize, r, g, b);
-                                        newPage.Annotations.Add(newPdfAnn);
-                                    }
-                                    else if (ann.Type == AnnotationType.Highlight || ann.Type == AnnotationType.Underline)
-                                    {
-                                        var qp = new PdfArray(outputDoc);
-                                        qp.Elements.Add(new PdfReal(pdfX));
-                                        qp.Elements.Add(new PdfReal(pdfY + pdfH));
-                                        qp.Elements.Add(new PdfReal(pdfX + pdfW));
-                                        qp.Elements.Add(new PdfReal(pdfY + pdfH));
-                                        qp.Elements.Add(new PdfReal(pdfX));
-                                        qp.Elements.Add(new PdfReal(pdfY));
-                                        qp.Elements.Add(new PdfReal(pdfX + pdfW));
-                                        qp.Elements.Add(new PdfReal(pdfY));
-                                        newPdfAnn.Elements["/QuadPoints"] = qp;
-
-                                        string subtype = (ann.Type == AnnotationType.Highlight) ? "/Highlight" : "/Underline";
-                                        newPdfAnn.Elements["/Subtype"] = new PdfName(subtype);
-
-                                        if (ann.Type == AnnotationType.Highlight)
-                                        {
-                                            var c = new PdfArray(outputDoc);
-                                            c.Elements.Add(new PdfReal(ann.BackR / 255.0));
-                                            c.Elements.Add(new PdfReal(ann.BackG / 255.0));
-                                            c.Elements.Add(new PdfReal(ann.BackB / 255.0));
-                                            newPdfAnn.Elements["/C"] = c;
-                                        }
-                                        newPage.Annotations.Add(newPdfAnn);
-                                    }
+                                    AddAnnotationToPage(outputDoc, newPage, ann, acroForm);
                                 }
                             }
                         }
 
                         outputDoc.Save(tempFilePath);
                     }
-
-                    if (File.Exists(tempSourcePath))
-                        File.Delete(tempSourcePath);
                 }
                 catch (Exception ex)
                 {
                     throw new Exception($"PDF 저장 실패: {ex.Message}");
                 }
+                finally
+                {
+                    if (File.Exists(sanitizedSourcePath))
+                        File.Delete(sanitizedSourcePath);
+                }
             });
 
-            // 파일 이동
             try
             {
                 if (File.Exists(outputPath))
@@ -538,7 +471,7 @@ namespace MinsPDFViewer
             }
             catch (Exception ex)
             {
-                throw new IOException($"파일 저장 실패: {ex.Message}");
+                throw new IOException($"파일 덮어쓰기 실패: {ex.Message}");
             }
             finally
             {
@@ -546,7 +479,6 @@ namespace MinsPDFViewer
                     File.Delete(tempFilePath);
             }
 
-            // 모델 리로드
             if (string.Equals(model.FilePath, outputPath, StringComparison.OrdinalIgnoreCase))
             {
                 lock (PdfiumLock)
@@ -568,7 +500,93 @@ namespace MinsPDFViewer
             }
         }
 
-        private void CreateAppearanceStream(PdfDocument doc, PdfSharp.Pdf.Annotations.PdfAnnotation annotation, double w, double h, string text, double fSize, string r, string g, string b)
+        // [Helper] Dictionary를 이용한 저수준 주석 추가 (가장 안전함)
+        private void AddAnnotationToPage(PdfDocument doc, PdfPage page, AnnotationSaveData ann, PdfDictionary acroForm)
+        {
+            double pdfX = ann.X;
+            double pdfY = page.Height.Point - ann.Y - ann.Height;
+            double pdfW = ann.Width;
+            double pdfH = ann.Height;
+            var rect = new PdfSharpRect(new XRect(pdfX, pdfY, pdfW, pdfH));
+
+            var annotDict = new PdfDictionary(doc);
+            annotDict.Elements["/Type"] = new PdfName("/Annot");
+            annotDict.Elements["/Rect"] = rect;
+            annotDict.Elements["/F"] = new PdfInteger(4); // Print
+
+            // (1) 서명 필드
+            if (ann.Type == AnnotationType.SignaturePlaceholder)
+            {
+                string fieldName = $"Signature_{Guid.NewGuid().ToString("N").Substring(0, 8)}";
+                annotDict.Elements["/Subtype"] = new PdfName("/Widget");
+                annotDict.Elements["/FT"] = new PdfName("/Sig");
+                annotDict.Elements["/T"] = new PdfString(fieldName);
+                annotDict.Elements["/P"] = page;
+
+                AddAnnotToPageArray(page, annotDict, doc);
+
+                if (!acroForm.Elements.ContainsKey("/Fields"))
+                    acroForm.Elements["/Fields"] = new PdfArray(doc);
+                acroForm.Elements.GetArray("/Fields")?.Elements.Add(annotDict);
+                return;
+            }
+
+            // (2) 텍스트 박스
+            if (ann.Type == AnnotationType.FreeText)
+            {
+                annotDict.Elements["/Subtype"] = new PdfName("/FreeText");
+                annotDict.Elements["/Contents"] = new PdfString(ann.TextContent ?? "");
+
+                double fSize = ann.FontSize < 5 ? 10 : ann.FontSize;
+                string r = (ann.ForeR / 255.0).ToString("0.##", CultureInfo.InvariantCulture);
+                string g = (ann.ForeG / 255.0).ToString("0.##", CultureInfo.InvariantCulture);
+                string b = (ann.ForeB / 255.0).ToString("0.##", CultureInfo.InvariantCulture);
+
+                annotDict.Elements["/DA"] = new PdfString($"/Helvetica {fSize} Tf {r} {g} {b} rg");
+                annotDict.Elements["/Q"] = new PdfInteger(0);
+
+                CreateAppearanceStream(doc, annotDict, pdfW, pdfH, ann.TextContent ?? "", fSize, r, g, b);
+                AddAnnotToPageArray(page, annotDict, doc);
+            }
+            // (3) 형광펜 & 밑줄
+            else if (ann.Type == AnnotationType.Highlight || ann.Type == AnnotationType.Underline)
+            {
+                string subtype = (ann.Type == AnnotationType.Highlight) ? "/Highlight" : "/Underline";
+                annotDict.Elements["/Subtype"] = new PdfName(subtype);
+
+                var qp = new PdfArray(doc);
+                qp.Elements.Add(new PdfReal(pdfX));
+                qp.Elements.Add(new PdfReal(pdfY + pdfH));
+                qp.Elements.Add(new PdfReal(pdfX + pdfW));
+                qp.Elements.Add(new PdfReal(pdfY + pdfH));
+                qp.Elements.Add(new PdfReal(pdfX));
+                qp.Elements.Add(new PdfReal(pdfY));
+                qp.Elements.Add(new PdfReal(pdfX + pdfW));
+                qp.Elements.Add(new PdfReal(pdfY));
+                annotDict.Elements["/QuadPoints"] = qp;
+
+                if (ann.Type == AnnotationType.Highlight)
+                {
+                    var c = new PdfArray(doc);
+                    c.Elements.Add(new PdfReal(ann.BackR / 255.0));
+                    c.Elements.Add(new PdfReal(ann.BackG / 255.0));
+                    c.Elements.Add(new PdfReal(ann.BackB / 255.0));
+                    annotDict.Elements["/C"] = c;
+                }
+                AddAnnotToPageArray(page, annotDict, doc);
+            }
+        }
+
+        private void AddAnnotToPageArray(PdfPage page, PdfDictionary annotDict, PdfDocument doc)
+        {
+            if (!page.Elements.ContainsKey("/Annots"))
+                page.Elements["/Annots"] = new PdfArray(doc);
+
+            var annots = page.Elements.GetArray("/Annots");
+            annots?.Elements.Add(annotDict);
+        }
+
+        private void CreateAppearanceStream(PdfDocument doc, PdfDictionary annotation, double w, double h, string text, double fSize, string r, string g, string b)
         {
             var form = new PdfDictionary(doc);
             form.Elements["/Type"] = new PdfName("/XObject");
@@ -654,21 +672,6 @@ namespace MinsPDFViewer
             }
             return GetPdfDictionary(fontDict, "/Helvetica");
         }
-        private void InjectHelveticaToPage(PdfPage page)
-        {
-            var resources = GetPdfDictionary(page, "/Resources");
-            if (resources == null)
-            {
-                resources = new PdfDictionary(page.Owner);
-                page.Elements["/Resources"] = resources;
-            }
-            var fontDict = GetPdfDictionary(resources, "/Font");
-            if (fontDict == null)
-            {
-                fontDict = new PdfDictionary(page.Owner);
-                resources.Elements["/Font"] = fontDict;
-            }
-        }
         public void LoadBookmarks(PdfDocumentModel model)
         {
             try
@@ -710,12 +713,6 @@ namespace MinsPDFViewer
                     vm.Children.Add(cvm);
             }
             return vm;
-        }
-
-        // 정식 명칭 사용
-        public class GenericPdfAnnotation : PdfSharp.Pdf.Annotations.PdfAnnotation
-        {
-            public GenericPdfAnnotation(PdfDocument document) : base(document) { }
         }
 
         private class PageSaveData
