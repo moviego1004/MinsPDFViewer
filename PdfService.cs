@@ -205,7 +205,7 @@ namespace MinsPDFViewer
                     if (!File.Exists(path))
                         return;
 
-                    // [수정] MPdfAnnotation 사용 (이름 충돌 방지)
+                    // [수정] 앱 모델 타입 명시
                     List<MPdfAnnotation> extracted = new List<MPdfAnnotation>();
 
                     try
@@ -228,14 +228,11 @@ namespace MinsPDFViewer
                     {
                         Application.Current.Dispatcher.Invoke(() =>
                         {
-                            // ViewModel의 Annotations 컬렉션 타입도 MPdfAnnotation으로 변경되었다고 가정
-                            // 만약 ViewModel 수정이 어렵다면 여기서 변환 로직이 필요할 수 있음
-                            // 현재는 사용자가 이름을 바꿨다고 가정하고 진행
                             if (pageVM.Annotations.Count == 0)
                             {
                                 foreach (var appAnnotation in extracted)
                                 {
-                                    // dynamic 캐스팅을 통해 ViewModel 컬렉션에 추가 (타입 불일치 방지)
+                                    // ViewModel 호환성을 위해 dynamic 사용
                                     ((dynamic)pageVM.Annotations).Add(appAnnotation);
                                 }
                             }
@@ -246,7 +243,7 @@ namespace MinsPDFViewer
             });
         }
 
-        // [수정] 반환 타입 MPdfAnnotation
+        // [수정] 반환 타입은 MPdfAnnotation (앱 모델)
         private List<MPdfAnnotation> ExtractAnnotationsFromPage(PdfPage page)
         {
             var list = new List<MPdfAnnotation>();
@@ -307,7 +304,6 @@ namespace MinsPDFViewer
                         var textBrush = new SolidColorBrush(Color.FromRgb(fr, fg, fb));
                         textBrush.Freeze();
 
-                        // [수정] MPdfAnnotation 생성 (상속 없음)
                         var newAnn = new MPdfAnnotation
                         {
                             Type = AnnotationType.FreeText,
@@ -365,7 +361,7 @@ namespace MinsPDFViewer
         }
 
         // =========================================================
-        // 4. 저장
+        // 4. 저장 (하이브리드 엔진 + 파일 잠금 회피)
         // =========================================================
         public async Task SavePdf(PdfDocumentModel model, string outputPath)
         {
@@ -401,24 +397,29 @@ namespace MinsPDFViewer
 
             await Task.Run(() =>
             {
+                // [안전 저장 1단계] 원본 파일에 락을 걸지 않기 위해 복사본 사용
                 string tempSourceCopy = Path.GetTempFileName();
                 File.Copy(model.FilePath, tempSourceCopy, true);
+
                 string sanitizedSourcePath = Path.GetTempFileName();
 
                 try
                 {
+                    // [안전 저장 2단계] 복사본을 세탁(Merge)하여 구조적 오류 제거
                     lock (PdfiumLock)
                     {
-                        _docLib.Merge(sanitizedSourcePath, new[] { tempSourceCopy }); // 배열로 전달
+                        // [수정] 빌드 에러 해결: 단일 문자열 전달
+                        _docLib.Merge(sanitizedSourcePath, tempSourceCopy);
                     }
                 }
                 catch (Exception ex)
                 {
-                    throw new Exception($"파일 구조 개선 실패: {ex.Message}");
+                    throw new Exception($"파일 구조 개선(Sanitize) 실패: {ex.Message}");
                 }
 
                 try
                 {
+                    // [안전 저장 3단계] 1차 시도 - XPdfForm (벡터 유지 저장)
                     using (var outputDoc = new PdfDocument())
                     {
                         var acroForm = new PdfDictionary(outputDoc);
@@ -428,6 +429,8 @@ namespace MinsPDFViewer
 
                         using (var form = XPdfForm.FromFile(sanitizedSourcePath))
                         {
+                            int count = form.PageCount;
+
                             for (int i = 0; i < pagesSnapshot.Count; i++)
                             {
                                 var pageData = pagesSnapshot[i];
@@ -456,8 +459,10 @@ namespace MinsPDFViewer
                 catch (Exception ex)
                 {
                     System.Diagnostics.Debug.WriteLine($"[1차 저장 실패] {ex.Message}. 2차 시도(이미지) 진행...");
+
                     try
                     {
+                        // [안전 저장 4단계] 2차 시도 - Docnet 이미지 렌더링 (호환성 100%)
                         using (var outputDoc = new PdfDocument())
                         {
                             var acroForm = new PdfDictionary(outputDoc);
@@ -528,6 +533,7 @@ namespace MinsPDFViewer
                 }
             });
 
+            // [안전 저장 5단계] 원본 덮어쓰기 (Atomic Save)
             try
             {
                 if (File.Exists(outputPath))
@@ -536,7 +542,7 @@ namespace MinsPDFViewer
             }
             catch (Exception ex)
             {
-                throw new IOException($"파일 덮어쓰기 실패: {ex.Message}");
+                throw new IOException($"파일 저장 실패(덮어쓰기): {ex.Message}");
             }
             finally
             {
