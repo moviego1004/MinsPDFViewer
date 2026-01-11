@@ -1,6 +1,7 @@
 ﻿using System;
 using System.IO;
 using System.Windows;
+using PdfSharp.Fonts; // 추가
 
 namespace MinsPDFViewer
 {
@@ -20,6 +21,12 @@ namespace MinsPDFViewer
         protected override void OnStartup(StartupEventArgs e)
         {
             base.OnStartup(e);
+
+            // [핵심] 한글 폰트 지원을 위해 리졸버 등록
+            if (GlobalFontSettings.FontResolver == null)
+            {
+                GlobalFontSettings.FontResolver = new WindowsFontResolver();
+            }
 
             // 1. 메인 윈도우 수동 생성
             var mainWindow = new MainWindow();
