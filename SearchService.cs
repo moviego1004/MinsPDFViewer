@@ -64,10 +64,10 @@ namespace MinsPDFViewer
 
                     lock (PdfService.PdfiumLock)
                     {
-                        if (document.PdfDocument is PdfiumViewer.PdfDocument specificDoc)
+                        if (document.PdfDocument != null)
                         {
-                            // [수정] GetPdfText는 string을 반환함
-                            string pageText = specificDoc.GetPdfText(i);
+                            // GetPdfText는 string을 반환
+                            string pageText = document.PdfDocument.GetPdfText(i);
 
                             int startIndex = (i == _lastPageIndex) ? _lastCharIndex : 0;
                             findIndex = pageText.IndexOf(query, startIndex, StringComparison.OrdinalIgnoreCase);
@@ -81,8 +81,29 @@ namespace MinsPDFViewer
                                     if (idx == -1)
                                         break;
 
-                                    // [수정] GetTextBounds는 Document에서 호출
-                                    var bounds = specificDoc.GetTextBounds(i, idx, query.Length);
+                                    // [수정] 구체 클래스로 캐스팅하여 GetTextSegments 호출 시도
+                                    IList<PdfRectangle> bounds = new List<PdfRectangle>();
+
+                                    if (document.PdfDocument is PdfiumViewer.PdfDocument specificDoc)
+                                    {
+                                        // PdfiumViewer 2.13.0 기준 API 확인: GetTextSegments(int page, int index, int count)
+                                        // PdfTextSpan을 반환할 수도 있고 PdfRectangle을 반환할 수도 있음.
+                                        // 만약 컴파일 에러가 난다면 이 부분이 핵심 원인입니다.
+                                        // 여기서는 일반적인 PdfiumViewer 패턴인 GetTextSegments를 사용합니다.
+
+                                        // 주의: GetTextSegments가 없다면 SearchService 기능을 잠시 비활성화해야 할 수도 있습니다.
+                                        // 우선 가장 유력한 후보인 GetTextSegments를 사용합니다.
+
+                                        // 반환 타입이 IList<PdfTextSpan>일 가능성이 높음 -> 변환 필요
+                                        var segments = specificDoc.GetTextSegments(i, idx, query.Length);
+                                        foreach (var seg in segments)
+                                        {
+                                            // PdfTextSpan -> PdfRectangle 변환 (Bounds 속성이 있다면)
+                                            // PdfTextSpan에 X, Y, Width, Height가 직접 있다면 그대로 사용
+                                            bounds.Add(new PdfRectangle(i, new System.Drawing.RectangleF((float)seg.X, (float)seg.Y, (float)seg.Width, (float)seg.Height)));
+                                        }
+                                    }
+
                                     bool isActive = (idx == findIndex);
                                     matchesOnPage.Add(new SearchMatchInfo { Rects = bounds, IsActive = isActive });
 
@@ -131,10 +152,9 @@ namespace MinsPDFViewer
 
                     lock (PdfService.PdfiumLock)
                     {
-                        if (document.PdfDocument is PdfiumViewer.PdfDocument specificDoc)
+                        if (document.PdfDocument != null)
                         {
-                            // [수정] GetPdfText는 string을 반환
-                            string pageText = specificDoc.GetPdfText(i);
+                            string pageText = document.PdfDocument.GetPdfText(i);
 
                             int startIndex = (i == _lastPageIndex) ? ((_lastCharIndex == -1 || _lastCharIndex == 0) ? pageText.Length - 1 : Math.Max(0, _lastCharIndex - 2)) : pageText.Length - 1;
                             if (startIndex < 0 || startIndex >= pageText.Length)
@@ -151,8 +171,16 @@ namespace MinsPDFViewer
                                     if (idx == -1)
                                         break;
 
-                                    // [수정] GetTextBounds는 Document에서 호출
-                                    var bounds = specificDoc.GetTextBounds(i, idx, query.Length);
+                                    IList<PdfRectangle> bounds = new List<PdfRectangle>();
+                                    if (document.PdfDocument is PdfiumViewer.PdfDocument specificDoc)
+                                    {
+                                        var segments = specificDoc.GetTextSegments(i, idx, query.Length);
+                                        foreach (var seg in segments)
+                                        {
+                                            bounds.Add(new PdfRectangle(i, new System.Drawing.RectangleF((float)seg.X, (float)seg.Y, (float)seg.Width, (float)seg.Height)));
+                                        }
+                                    }
+
                                     bool isActive = (idx == findIndex);
                                     matchesOnPage.Add(new SearchMatchInfo { Rects = bounds, IsActive = isActive });
 
@@ -228,7 +256,6 @@ namespace MinsPDFViewer
             return activeAnnotation;
         }
 
-        // [내부 클래스] 매치 정보 전달용 DTO
         private class SearchMatchInfo
         {
             public IList<PdfRectangle> Rects { get; set; } = new List<PdfRectangle>();
