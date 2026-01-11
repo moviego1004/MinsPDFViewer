@@ -4,9 +4,9 @@ using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.Windows;
 using System.Windows.Media;
-using Docnet.Core;
-using Docnet.Core.Readers;
-using PdfSharp.Pdf;
+using PdfiumViewer;
+// [충돌 방지] PdfSharp의 PdfDocument는 명시적으로 별칭 사용
+using PdfSharpDoc = PdfSharp.Pdf.PdfDocument;
 
 namespace MinsPDFViewer
 {
@@ -40,17 +40,15 @@ namespace MinsPDFViewer
             get; set;
         }
 
-        public IDocLib? DocLib
+        // [PdfiumViewer] 문서 객체
+        public IPdfDocument? PdfDocument
         {
             get; set;
         }
-
-        // [변경] 단일 리더 체제
-        public IDocReader? DocReader
+        public System.IO.MemoryStream? FileStream
         {
             get; set;
         }
-        // CleanDocReader 삭제됨
 
         public volatile bool IsDisposed = false;
 
@@ -71,22 +69,21 @@ namespace MinsPDFViewer
 
             if (disposing)
             {
-                // UI 스레드에서 안전하게 해제
                 if (Application.Current != null)
                 {
                     Application.Current.Dispatcher.Invoke(() =>
                     {
                         lock (PdfService.PdfiumLock)
                         {
-                            if (DocReader != null)
+                            try
                             {
-                                try
-                                {
-                                    DocReader.Dispose();
-                                }
-                                catch { }
-                                DocReader = null;
+                                PdfDocument?.Dispose();
+                                PdfDocument = null;
+                                FileStream?.Close();
+                                FileStream?.Dispose();
+                                FileStream = null;
                             }
+                            catch { }
                         }
                     });
                 }
@@ -97,7 +94,6 @@ namespace MinsPDFViewer
         protected void OnPropertyChanged(string name) => PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));
     }
 
-    // [이하 ViewModel 클래스들은 기존 그대로 유지]
     public class PdfPageViewModel : INotifyPropertyChanged
     {
         public string? OriginalFilePath
@@ -136,6 +132,7 @@ namespace MinsPDFViewer
         {
             get; set;
         }
+
         private double _width; public double Width
         {
             get => _width; set
@@ -152,6 +149,7 @@ namespace MinsPDFViewer
                 OnPropertyChanged(nameof(Height));
             }
         }
+
         public double PdfPageWidthPoint
         {
             get; set;
@@ -180,6 +178,7 @@ namespace MinsPDFViewer
         {
             get; set;
         }
+
         private ImageSource? _imageSource;
         public ImageSource? ImageSource
         {
@@ -189,6 +188,7 @@ namespace MinsPDFViewer
                 OnPropertyChanged(nameof(ImageSource));
             }
         }
+
         public ObservableCollection<PdfAnnotation> Annotations { get; set; } = new ObservableCollection<PdfAnnotation>();
         public bool IsSelecting
         {
@@ -210,6 +210,7 @@ namespace MinsPDFViewer
         {
             get; set;
         }
+
         public event PropertyChangedEventHandler? PropertyChanged;
         protected void OnPropertyChanged(string name) => PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));
     }
@@ -249,12 +250,14 @@ namespace MinsPDFViewer
                 OnPropertyChanged(nameof(Height));
             }
         }
+
         public AnnotationType Type
         {
             get; set;
         }
         public Color AnnotationColor { get; set; } = Colors.Yellow;
         public Brush Background { get; set; } = Brushes.Transparent;
+
         private string _textContent = "";
         public string TextContent
         {
@@ -264,6 +267,7 @@ namespace MinsPDFViewer
                 OnPropertyChanged(nameof(TextContent));
             }
         }
+
         private double _fontSize = 12;
         public double FontSize
         {
@@ -273,6 +277,7 @@ namespace MinsPDFViewer
                 OnPropertyChanged(nameof(FontSize));
             }
         }
+
         private string _fontFamily = "Malgun Gothic";
         public string FontFamily
         {
@@ -282,6 +287,7 @@ namespace MinsPDFViewer
                 OnPropertyChanged(nameof(FontFamily));
             }
         }
+
         private Brush _foreground = Brushes.Black;
         public Brush Foreground
         {
@@ -291,6 +297,7 @@ namespace MinsPDFViewer
                 OnPropertyChanged(nameof(Foreground));
             }
         }
+
         private bool _isBold;
         public bool IsBold
         {
@@ -300,11 +307,13 @@ namespace MinsPDFViewer
                 OnPropertyChanged(nameof(IsBold));
             }
         }
+
         public string FieldName { get; set; } = "";
         public object? SignatureData
         {
             get; set;
         }
+
         private string? _visualStampPath;
         public string? VisualStampPath
         {
@@ -314,6 +323,7 @@ namespace MinsPDFViewer
                 OnPropertyChanged(nameof(VisualStampPath));
             }
         }
+
         private bool _isSelected;
         public bool IsSelected
         {
@@ -323,6 +333,7 @@ namespace MinsPDFViewer
                 OnPropertyChanged(nameof(IsSelected));
             }
         }
+
         public event PropertyChangedEventHandler? PropertyChanged;
         protected void OnPropertyChanged(string name) => PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));
     }
@@ -336,9 +347,10 @@ namespace MinsPDFViewer
         }
     }
 
+    // [수정] PdfDocument 명확화
     public class GenericPdfAnnotation : PdfSharp.Pdf.Annotations.PdfAnnotation
     {
-        public GenericPdfAnnotation(PdfDocument document) : base(document) { }
+        public GenericPdfAnnotation(PdfSharpDoc document) : base(document) { }
     }
 
     public class PdfBookmarkViewModel : INotifyPropertyChanged
@@ -352,6 +364,7 @@ namespace MinsPDFViewer
                 OnPropertyChanged(nameof(Title));
             }
         }
+
         private int _pageIndex;
         public int PageIndex
         {
@@ -361,6 +374,7 @@ namespace MinsPDFViewer
                 OnPropertyChanged(nameof(PageIndex));
             }
         }
+
         private bool _isExpanded = true;
         public bool IsExpanded
         {
@@ -370,6 +384,7 @@ namespace MinsPDFViewer
                 OnPropertyChanged(nameof(IsExpanded));
             }
         }
+
         private bool _isSelected;
         public bool IsSelected
         {
@@ -379,6 +394,7 @@ namespace MinsPDFViewer
                 OnPropertyChanged(nameof(IsSelected));
             }
         }
+
         private bool _isEditing;
         public bool IsEditing
         {
@@ -388,11 +404,13 @@ namespace MinsPDFViewer
                 OnPropertyChanged(nameof(IsEditing));
             }
         }
+
         public ObservableCollection<PdfBookmarkViewModel> Children { get; set; } = new ObservableCollection<PdfBookmarkViewModel>();
         public PdfBookmarkViewModel? Parent
         {
             get; set;
         }
+
         public event PropertyChangedEventHandler? PropertyChanged;
         protected void OnPropertyChanged(string name) => PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));
     }
