@@ -9,6 +9,11 @@ using System.Windows;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using PdfiumViewer;
+using PdfSharp.Drawing;
+using PdfSharp.Pdf;
+using PdfSharp.Pdf.IO;
+using PdfSharp.Pdf.Annotations;
+using PdfSharp.Pdf.Advanced; // 추가: PdfFormXObject 사용을 위해
 using DrawingBitmap = System.Drawing.Bitmap;
 using DrawingRectangle = System.Drawing.Rectangle;
 using PdfiumDoc = PdfiumViewer.PdfDocument;
@@ -71,35 +76,15 @@ namespace MinsPDFViewer
                 public float top;
             }
 
-            // Annotation subtypes
             public const int FPDF_ANNOT_UNKNOWN = 0;
             public const int FPDF_ANNOT_TEXT = 1;
             public const int FPDF_ANNOT_LINK = 2;
             public const int FPDF_ANNOT_FREETEXT = 3;
-            public const int FPDF_ANNOT_LINE = 4;
-            public const int FPDF_ANNOT_SQUARE = 5;
-            public const int FPDF_ANNOT_CIRCLE = 6;
-            public const int FPDF_ANNOT_POLYGON = 7;
-            public const int FPDF_ANNOT_POLYLINE = 8;
             public const int FPDF_ANNOT_HIGHLIGHT = 9;
-            public const int FPDF_ANNOT_UNDERLINE = 10;
-            public const int FPDF_ANNOT_SQUIGGLY = 11;
-            public const int FPDF_ANNOT_STRIKEOUT = 12;
-            public const int FPDF_ANNOT_STAMP = 13;
-            public const int FPDF_ANNOT_CARET = 14;
-            public const int FPDF_ANNOT_INK = 15;
-            public const int FPDF_ANNOT_POPUP = 16;
-            public const int FPDF_ANNOT_FILEATTACHMENT = 17;
-            public const int FPDF_ANNOT_SOUND = 18;
-            public const int FPDF_ANNOT_MOVIE = 19;
-            public const int FPDF_ANNOT_WIDGET = 20;
 
-            // Color types for FPDFAnnot_GetColor
             public const int FPDFANNOT_COLORTYPE_Color = 0;
-            public const int FPDFANNOT_COLORTYPE_InteriorColor = 1;
         }
 
-        // 1. PDF 로드
         public async Task<PdfDocumentModel?> LoadPdfAsync(string filePath)
         {
             if (!File.Exists(filePath)) return null;
@@ -129,7 +114,6 @@ namespace MinsPDFViewer
             });
         }
 
-        // 2. 문서 초기화
         public async Task InitializeDocumentAsync(PdfDocumentModel model)
         {
             if (model.PdfDocument == null || model.IsDisposed) return;
@@ -170,7 +154,6 @@ namespace MinsPDFViewer
             });
         }
 
-        // 3. 렌더링
         public void RenderPageImage(PdfDocumentModel model, PdfPageViewModel pageVM)
         {
             if (model.IsDisposed || pageVM.IsBlankPage) return;
@@ -203,11 +186,10 @@ namespace MinsPDFViewer
         {
             var rect = new DrawingRectangle(0, 0, bitmap.Width, bitmap.Height);
             var bitmapData = bitmap.LockBits(rect, System.Drawing.Imaging.ImageLockMode.ReadOnly, System.Drawing.Imaging.PixelFormat.Format32bppPArgb);
-            try { return BitmapSource.Create(bitmap.Width, bitmap.Height, bitmap.HorizontalResolution, bitmap.VerticalResolution, PixelFormats.Bgra32, null, bitmapData.Scan0, bitmapData.Stride * bitmap.Height, bitmapData.Stride); }
+            try { return BitmapSource.Create(bitmap.Width, bitmap.Height, bitmap.HorizontalResolution, bitmap.VerticalResolution, PixelFormats.Bgra32, null, bitmapData.Scan0, bitmapData.Stride * bitmap.Height, bitmapData.Stride); } 
             finally { bitmap.UnlockBits(bitmapData); }
         }
 
-        // 4. 주석 로드 (Pdfium P/Invoke 사용)
         private void LoadAnnotationsLazy(PdfDocumentModel model, PdfPageViewModel pageVM)
         {
             if (pageVM.AnnotationsLoaded) return;
@@ -221,7 +203,6 @@ namespace MinsPDFViewer
 
                     var extracted = new List<PdfAnnotation>();
 
-                    // Pdfium을 사용하여 주석 로드
                     IntPtr doc = NativeMethods.FPDF_LoadDocument(path, null);
                     if (doc == IntPtr.Zero) return;
 
@@ -247,32 +228,27 @@ namespace MinsPDFViewer
 
                                     if (subtype == NativeMethods.FPDF_ANNOT_FREETEXT || subtype == NativeMethods.FPDF_ANNOT_HIGHLIGHT)
                                     {
-                                        // Rect 가져오기
                                         var rect = new NativeMethods.FS_RECTF();
                                         if (!NativeMethods.FPDFAnnot_GetRect(annot, ref rect)) continue;
 
-                                        // PDF 좌표계(좌하단 0,0)를 UI 좌표계(좌상단 0,0)로 변환
                                         double uiX = rect.left * (pageVM.Width / pageW);
                                         double uiY = (pageH - rect.top) * (pageVM.Height / pageH);
                                         double uiW = (rect.right - rect.left) * (pageVM.Width / pageW);
                                         double uiH = (rect.top - rect.bottom) * (pageVM.Height / pageH);
 
-                                        // Contents 읽기
                                         string content = GetAnnotationStringValue(annot, "Contents");
+                                        if (content.StartsWith("Title: ")) // Adobe Note 무시
+                                            continue;
 
-                                        // 스타일 파싱
                                         double fSize = 12;
                                         Brush brush = Brushes.Black;
 
-                                        // /DA 문자열 추출 시도
                                         string da = GetAnnotationStringValue(annot, "DA");
                                         if (!string.IsNullOrEmpty(da))
                                         {
-                                            // FontSize 파싱
                                             var fsMatch = Regex.Match(da, @"([\d.]+)\s+Tf");
                                             if (fsMatch.Success) double.TryParse(fsMatch.Groups[1].Value, out fSize);
 
-                                            // Color 파싱 (RGB)
                                             var colMatch = Regex.Match(da, @"([\d.]+)\s+([\d.]+)\s+([\d.]+)\s+rg");
                                             if (colMatch.Success)
                                             {
@@ -283,11 +259,10 @@ namespace MinsPDFViewer
                                             }
                                         }
 
-                                        // Highlight 배경색 파싱
                                         Brush background = Brushes.Transparent;
                                         if (subtype == NativeMethods.FPDF_ANNOT_HIGHLIGHT)
                                         {
-                                            background = new SolidColorBrush(Color.FromArgb(80, 255, 255, 0)); // 기본 노란색
+                                            background = new SolidColorBrush(Color.FromArgb(80, 255, 255, 0));
                                             uint r = 0, g = 0, b = 0, a = 0;
                                             if (NativeMethods.FPDFAnnot_GetColor(annot, NativeMethods.FPDFANNOT_COLORTYPE_Color, ref r, ref g, ref b, ref a))
                                             {
@@ -336,25 +311,19 @@ namespace MinsPDFViewer
                 }
                 catch (Exception ex)
                 {
-                    // 읽기 실패 시 조용히 무시하거나 로그
                     System.Diagnostics.Debug.WriteLine($"Annotation Load Error: {ex.Message}");
                 }
             });
         }
 
-        // Pdfium에서 주석 문자열 값 가져오기 헬퍼
         private string GetAnnotationStringValue(IntPtr annot, string key)
         {
-            // 먼저 필요한 버퍼 크기 확인
             ulong len = NativeMethods.FPDFAnnot_GetStringValue(annot, key, IntPtr.Zero, 0);
             if (len == 0) return "";
-
-            // UTF-16LE로 반환되므로 버퍼 할당
             IntPtr buffer = System.Runtime.InteropServices.Marshal.AllocHGlobal((int)len);
             try
             {
                 NativeMethods.FPDFAnnot_GetStringValue(annot, key, buffer, len);
-                // UTF-16LE 문자열로 변환 (null terminator 제외)
                 return System.Runtime.InteropServices.Marshal.PtrToStringUni(buffer) ?? "";
             }
             finally
@@ -363,408 +332,273 @@ namespace MinsPDFViewer
             }
         }
 
-        // 5. 저장 (자체 구현 엔진 - PdfSharp 미사용)
+        // 저장 시 스레드 간 데이터 전달을 위한 DTO
+        private class PageSaveData
+        {
+            public int OriginalPageIndex { get; set; }
+            public double Width { get; set; }
+            public double Height { get; set; }
+            public double PdfPageWidthPoint { get; set; }
+            public double PdfPageHeightPoint { get; set; }
+            public List<AnnotationSaveData> Annotations { get; set; } = new List<AnnotationSaveData>();
+        }
+
+        private class AnnotationSaveData
+        {
+            public AnnotationType Type { get; set; }
+            public double X { get; set; }
+            public double Y { get; set; }
+            public double Width { get; set; }
+            public double Height { get; set; }
+            public string TextContent { get; set; } = "";
+            public double FontSize { get; set; }
+            public bool IsBold { get; set; }
+            public Color ForegroundColor { get; set; }
+            public Color BackgroundColor { get; set; }
+        }
+
         public async Task SavePdf(PdfDocumentModel model, string outputPath)
         {
-            if (model == null) return; // model null 체크
+            if (model == null) return;
 
-            // 1. 스냅샷 생성
-            List<PageSaveData> pagesSnapshot = new List<PageSaveData>();
             string originalFilePath = model.FilePath;
-            Exception? collectException = null;
 
-            // UI 스레드에서 데이터 수집 (동기적으로 실행하여 확실히 완료되도록 함)
+            // 1. [UI 스레드] 저장에 필요한 데이터를 미리 추출 (스냅샷 생성)
+            // UI 객체(Brush 등)는 다른 스레드에서 접근 불가능하므로 여기서 값(Color)으로 변환해둡니다.
+            List<PageSaveData> pagesSnapshot = new List<PageSaveData>();
+
             await Application.Current.Dispatcher.InvokeAsync(() =>
             {
+                foreach (var p in model.Pages)
+                {
+                    var pageData = new PageSaveData
+                    {
+                        OriginalPageIndex = p.OriginalPageIndex,
+                        Width = p.Width,
+                        Height = p.Height,
+                        PdfPageWidthPoint = p.PdfPageWidthPoint,
+                        PdfPageHeightPoint = p.PdfPageHeightPoint
+                    };
+
+                    foreach (var ann in p.Annotations)
+                    {
+                        if (ann.Type == AnnotationType.SearchHighlight ||
+                            ann.Type == AnnotationType.SignaturePlaceholder ||
+                            ann.Type == AnnotationType.SignatureField) continue;
+
+                        var annData = new AnnotationSaveData
+                        {
+                            Type = ann.Type,
+                            X = ann.X,
+                            Y = ann.Y,
+                            Width = ann.Width,
+                            Height = ann.Height,
+                            TextContent = ann.TextContent ?? "",
+                            FontSize = ann.FontSize,
+                            IsBold = ann.IsBold,
+                            // Brush에서 Color 추출
+                            ForegroundColor = (ann.Foreground as SolidColorBrush)?.Color ?? Colors.Black,
+                            BackgroundColor = (ann.Background as SolidColorBrush)?.Color ?? Colors.Transparent
+                        };
+                        pageData.Annotations.Add(annData);
+                    }
+                    pagesSnapshot.Add(pageData);
+                }
+            });
+            
+            await Task.Run(() =>
+            {
+                // 원본 파일을 임시 파일로 복사하여 작업
+                string tempWorkPath = Path.GetTempFileName();
+                File.Copy(originalFilePath, tempWorkPath, true);
+
                 try
                 {
-                    System.Diagnostics.Debug.WriteLine($"SavePdf: Starting data collection. Pages count = {model.Pages.Count}");
-
-                    if (model.Pages.Count == 0)
+                    // PdfSharp을 사용하여 PDF 편집 및 저장
+                    using (var doc = PdfReader.Open(tempWorkPath, PdfDocumentOpenMode.Modify))
                     {
-                        // 페이지가 없으면 저장할 것도 없음
-                        System.Diagnostics.Debug.WriteLine("SavePdf: No pages in document model.");
-                        return;
-                    }
-
-                    foreach (var p in model.Pages)
-                    {
-                        var pageData = new PageSaveData
+                        for (int i = 0; i < pagesSnapshot.Count; i++)
                         {
-                            OriginalPageIndex = p.OriginalPageIndex,
-                            Width = p.Width,
-                            Height = p.Height,
-                            PdfPageWidthPoint = p.PdfPageWidthPoint,
-                            PdfPageHeightPoint = p.PdfPageHeightPoint,
-                            Annotations = new List<AnnotationSaveData>()
-                        };
+                            if (i >= doc.PageCount) break;
 
-                        // 주석이 없는 페이지도 스냅샷에는 포함시켜야 함 (페이지 구조 유지를 위해)
-                        foreach (var a in p.Annotations)
-                        {
-                            if (a.Type == AnnotationType.SearchHighlight) continue;
-                            pageData.Annotations.Add(new AnnotationSaveData
+                            var pageData = pagesSnapshot[i];
+                            var pdfPage = doc.Pages[i];
+
+                            // 1. 기존 주석 중 FreeText, Highlight, Underline 등 편집 가능한 타입 제거
+                            if (pdfPage.Annotations != null)
                             {
-                                Type = a.Type,
-                                X = a.X,
-                                Y = a.Y,
-                                Width = a.Width,
-                                Height = a.Height,
-                                TextContent = a.TextContent ?? "",
-                                FontSize = a.FontSize,
-                                ForeR = (a.Foreground as SolidColorBrush)?.Color.R ?? 0,
-                                ForeG = (a.Foreground as SolidColorBrush)?.Color.G ?? 0,
-                                ForeB = (a.Foreground as SolidColorBrush)?.Color.B ?? 0,
-                                BackR = (a.Background as SolidColorBrush)?.Color.R ?? 255,
-                                BackG = (a.Background as SolidColorBrush)?.Color.G ?? 255,
-                                BackB = (a.Background as SolidColorBrush)?.Color.B ?? 255,
-                                IsHighlight = a.Type == AnnotationType.Highlight
-                            });
-                        }
-                        pagesSnapshot.Add(pageData);
-                    }
+                                var toRemove = new List<PdfSharp.Pdf.Annotations.PdfAnnotation>();
+                                
+                                int count = pdfPage.Annotations.Count;
+                                for (int idx = 0; idx < count; idx++)
+                                {
+                                    var item = pdfPage.Annotations[idx];
+                                    
+                                    string subtype = "";
+                                    if (item.Elements.ContainsKey("/Subtype"))
+                                        subtype = item.Elements.GetString("/Subtype");
 
-                    System.Diagnostics.Debug.WriteLine($"SavePdf: Data collection complete. Snapshot count = {pagesSnapshot.Count}");
+                                    if (subtype == "/FreeText" || subtype == "/Highlight" || subtype == "/Underline")
+                                    {
+                                        toRemove.Add(item);
+                                    }
+                                }
+                                
+                                foreach (var item in toRemove)
+                                {
+                                    pdfPage.Annotations.Remove(item);
+                                }
+                            }
+
+                            // 2. 스냅샷 데이터(DTO)를 사용하여 주석 추가
+                            foreach (var ann in pageData.Annotations)
+                            {
+                                double pdfPageH = pdfPage.Height.Point;
+                                double pdfPageW = pdfPage.Width.Point;
+                                
+                                double scaleX = pdfPageW / pageData.Width;
+                                double scaleY = pdfPageH / pageData.Height;
+                                
+                                double rectX = ann.X * scaleX;
+                                double rectY = pdfPageH - ((ann.Y + ann.Height) * scaleY);
+                                double rectW = ann.Width * scaleX;
+                                double rectH = ann.Height * scaleY;
+                                
+                                var rect = new PdfSharp.Pdf.PdfRectangle(new XRect(rectX, rectY, rectW, rectH));
+
+                                if (ann.Type == AnnotationType.FreeText)
+                                {
+                                    var pdfAnnot = new GenericPdfAnnotation(doc);
+                                    pdfAnnot.Elements["/Subtype"] = new PdfName("/FreeText");
+                                    pdfAnnot.Elements["/Rect"] = rect;
+                                    pdfAnnot.Elements["/Contents"] = new PdfString(ann.TextContent, PdfStringEncoding.Unicode);
+                                    
+                                    var form = new XForm(doc, new XRect(0, 0, rectW, rectH));
+                                    using (var gfx = XGraphics.FromForm(form))
+                                    {
+                                        double fontSize = ann.FontSize * scaleY;
+                                        if (fontSize < 1) fontSize = 10;
+                                        
+                                        var fontStyle = ann.IsBold ? XFontStyleEx.Bold : XFontStyleEx.Regular;
+                                        var font = new XFont("Malgun Gothic", fontSize, fontStyle);
+                                        
+                                        var c = ann.ForegroundColor;
+                                        var brush = new XSolidBrush(XColor.FromArgb(c.A, c.R, c.G, c.B));
+                                        
+                                        var lines = ann.TextContent.Split(new[] { "\r\n", "\n", "\r" }, StringSplitOptions.None);
+                                        double lineHeight = font.GetHeight();
+                                        double currentY = 0;
+                                        
+                                        foreach (var line in lines)
+                                        {
+                                            gfx.DrawString(line, font, brush, new XPoint(0, currentY + lineHeight * 0.8)); 
+                                            currentY += lineHeight;
+                                        }
+                                    }
+                                    
+                                    var apDict = new PdfDictionary(doc);
+                                    var pdfFormProp = typeof(XForm).GetProperty("PdfForm", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Public);
+                                    if (pdfFormProp != null)
+                                    {
+                                        var obj = pdfFormProp.GetValue(form);
+                                        if (obj is PdfFormXObject pdfForm)
+                                        {
+                                            apDict.Elements["/N"] = pdfForm.Reference;
+                                            pdfAnnot.Elements["/AP"] = apDict;
+                                        }
+                                    }
+                                    
+                                    pdfPage.Annotations.Add(pdfAnnot);
+                                }
+                                else if (ann.Type == AnnotationType.Highlight)
+                                {
+                                    var pdfAnnot = new GenericPdfAnnotation(doc);
+                                    pdfAnnot.Elements["/Subtype"] = new PdfName("/Highlight");
+                                    pdfAnnot.Elements["/Rect"] = rect;
+                                    
+                                    var c = ann.BackgroundColor; // 배경색 사용
+                                    pdfAnnot.Elements["/C"] = new PdfArray(doc, new PdfReal(c.R/255.0), new PdfReal(c.G/255.0), new PdfReal(c.B/255.0));
+                                    pdfAnnot.Elements["/T"] = new PdfString(Environment.UserName);
+                                    
+                                    double qL = rectX;
+                                    double qR = rectX + rectW;
+                                    double qT = rectY + rectH;
+                                    double qB = rectY;
+                                    
+                                    var quadPoints = new PdfArray(doc);
+                                    quadPoints.Elements.Add(new PdfReal(qL)); quadPoints.Elements.Add(new PdfReal(qT));
+                                    quadPoints.Elements.Add(new PdfReal(qR)); quadPoints.Elements.Add(new PdfReal(qT));
+                                    quadPoints.Elements.Add(new PdfReal(qL)); quadPoints.Elements.Add(new PdfReal(qB));
+                                    quadPoints.Elements.Add(new PdfReal(qR)); quadPoints.Elements.Add(new PdfReal(qB));
+                                    
+                                    pdfAnnot.Elements["/QuadPoints"] = quadPoints;
+                                    pdfPage.Annotations.Add(pdfAnnot);
+                                }
+                                else if (ann.Type == AnnotationType.Underline)
+                                {
+                                    var pdfAnnot = new GenericPdfAnnotation(doc);
+                                    pdfAnnot.Elements["/Subtype"] = new PdfName("/Underline");
+                                    pdfAnnot.Elements["/Rect"] = rect;
+                                    
+                                    var c = Colors.Black;
+                                    pdfAnnot.Elements["/C"] = new PdfArray(doc, new PdfReal(c.R/255.0), new PdfReal(c.G/255.0), new PdfReal(c.B/255.0));
+                                    
+                                    double qL = rectX;
+                                    double qR = rectX + rectW;
+                                    double qT = rectY + rectH;
+                                    double qB = rectY;
+                                    
+                                    var quadPoints = new PdfArray(doc);
+                                    quadPoints.Elements.Add(new PdfReal(qL)); quadPoints.Elements.Add(new PdfReal(qT));
+                                    quadPoints.Elements.Add(new PdfReal(qR)); quadPoints.Elements.Add(new PdfReal(qT));
+                                    quadPoints.Elements.Add(new PdfReal(qL)); quadPoints.Elements.Add(new PdfReal(qB));
+                                    quadPoints.Elements.Add(new PdfReal(qR)); quadPoints.Elements.Add(new PdfReal(qB));
+                                    
+                                    pdfAnnot.Elements["/QuadPoints"] = quadPoints;
+                                    pdfPage.Annotations.Add(pdfAnnot);
+                                }
+                            }
+                        }
+                        
+                        doc.Save(outputPath);
+                    }
                 }
-                catch (Exception ex)
+                finally
                 {
-                    System.Diagnostics.Debug.WriteLine($"SavePdf Snapshot Error: {ex.Message}");
-                    collectException = ex;
+                    try { if (File.Exists(tempWorkPath)) File.Delete(tempWorkPath); } catch {}
                 }
             });
 
-            // 데이터 수집 중 예외 발생 시 다시 throw
-            if (collectException != null)
-            {
-                throw new Exception($"데이터 수집 실패: {collectException.Message}", collectException);
-            }
-
-            // 스냅샷이 비어있으면 진행 불가
-            if (pagesSnapshot.Count == 0)
-            {
-                System.Diagnostics.Debug.WriteLine("SavePdf: Snapshot is empty after collection.");
-                // 원본 모델에 페이지가 있었는데 스냅샷이 비었다면 오류
-                // (UI 스레드 외부에서 Pages.Count 접근은 위험할 수 있으나, 여기서는 단순 체크용)
-                return; // 페이지가 없으면 저장할 것이 없음
-            }
-
-            string tempFilePath = Path.GetTempFileName();
-            try
-            {
-                await Task.Run(() => SavePdfWithIncrementalUpdate(originalFilePath, tempFilePath, pagesSnapshot));
-                if (File.Exists(outputPath)) File.Delete(outputPath);
-                File.Move(tempFilePath, outputPath);
-            }
-            catch (Exception ex)
-            {
-                throw new IOException($"파일 저장 실패: {ex.Message}");
-            }
-            finally { if (File.Exists(tempFilePath)) try { File.Delete(tempFilePath); } catch { } }
-
-            // 저장 후 리로드
             var newModel = await LoadPdfAsync(outputPath);
             if (newModel != null)
             {
-                model.PdfDocument?.Dispose();
-                model.FileStream?.Dispose();
+                lock (PdfiumLock)
+                {
+                    try
+                    {
+                        model.PdfDocument?.Dispose();
+                        model.FileStream?.Dispose();
+                    }
+                    catch { }
+                }
+                
                 model.PdfDocument = newModel.PdfDocument;
                 model.FileStream = newModel.FileStream;
                 model.FilePath = outputPath;
                 model.IsDisposed = false;
-                Application.Current.Dispatcher.Invoke(() =>
+                
+                await Application.Current.Dispatcher.InvokeAsync(() =>
                 {
                     foreach (var p in model.Pages)
                     {
-                        p.Annotations.Clear();
                         p.AnnotationsLoaded = false;
+                        p.Annotations.Clear();
                         p.ImageSource = null;
                     }
                 });
             }
         }
 
-        // ==================================================================================
-        // CORE: 저수준 PDF 파싱 및 수정 로직 (PdfSharp 대체)
-        // ==================================================================================
-
-        private void SavePdfWithIncrementalUpdate(string inputPath, string outputPath, List<PageSaveData> pages)
-        {
-            byte[] originalBytes = File.ReadAllBytes(inputPath);
-            string content = Encoding.Latin1.GetString(originalBytes);
-
-            // 1. 기존 주석들의 Subtype 매핑 (ID -> Subtype 문자열)
-            // 목적: 기존 주석 중 지워야 할 것(FreeText/Highlight)과 유지할 것(Widget 등)을 구분
-            var annotTypeMap = MapAllAnnotationTypes(content);
-
-            // 2. 페이지 객체 ID 찾기
-            var pageObjIds = FindPageObjectIds(content, pages.Count);
-
-            int startxrefPos = content.LastIndexOf("startxref");
-            if (startxrefPos < 0) throw new Exception("Invalid PDF: startxref missing");
-            var match = Regex.Match(content.Substring(startxrefPos), @"startxref\s+(\d+)");
-            long prevXref = long.Parse(match.Groups[1].Value);
-
-            int nextObjNum = FindNextObjectNumber(content);
-
-            using (var output = new FileStream(outputPath, FileMode.Create))
-            {
-                // 원본 복사 (EOF 제외)
-                int eofPos = content.LastIndexOf("%%EOF");
-                if (eofPos < 0) eofPos = originalBytes.Length;
-                output.Write(originalBytes, 0, eofPos);
-
-                // 줄바꿈용 버퍼
-                byte[] newLine = Encoding.Latin1.GetBytes("\r\n");
-                var xrefs = new List<(int id, long offset)>();
-
-                // 페이지별 새 주석 참조를 미리 수집 (페이지 객체 수정에 필요)
-                var pageAnnotRefs = new Dictionary<int, List<string>>();
-
-                foreach (var page in pages)
-                {
-                    // 새 주석 객체 생성
-                    var newAnnotRefs = new List<string>();
-                    foreach (var ann in page.Annotations)
-                    {
-                        int id = nextObjNum++;
-
-                        // 줄바꿈 먼저 쓰기
-                        output.Write(newLine, 0, newLine.Length);
-
-                        // 현재 위치 기록 (정확한 오프셋)
-                        long offset = output.Position;
-                        xrefs.Add((id, offset));
-
-                        double sx = page.PdfPageWidthPoint / page.Width;
-                        double sy = page.PdfPageHeightPoint / page.Height;
-                        double px = ann.X * sx;
-                        double py = page.PdfPageHeightPoint - (ann.Y * sy) - (ann.Height * sy);
-                        double pw = ann.Width * sx;
-                        double ph = ann.Height * sy;
-
-                        // 객체 데이터 생성 및 쓰기
-                        string objStr = GenerateAnnotObj(id, ann, px, py, pw, ph);
-                        byte[] objBytes = Encoding.Latin1.GetBytes(objStr);
-                        output.Write(objBytes, 0, objBytes.Length);
-
-                        newAnnotRefs.Add($"{id} 0 R");
-                    }
-
-                    int pIdx = page.OriginalPageIndex;
-                    if (pIdx < pageObjIds.Count && pageObjIds[pIdx].id > 0)
-                    {
-                        pageAnnotRefs[pageObjIds[pIdx].id] = newAnnotRefs;
-                    }
-                }
-
-                // 페이지 객체 업데이트 (/Annots 수정)
-                foreach (var page in pages)
-                {
-                    int pIdx = page.OriginalPageIndex;
-                    if (pIdx < pageObjIds.Count && pageObjIds[pIdx].id > 0)
-                    {
-                        int pid = pageObjIds[pIdx].id;
-                        // 기존 /Annots 가져오기
-                        var existingRefs = ExtractAnnotRefs(content, pid);
-
-                        // [핵심] 필터링: 기존 주석 중 "FreeText/Highlight"는 제거 (중복 방지), "Widget" 등은 유지
-                        var keptRefs = new List<string>();
-                        foreach (var refStr in existingRefs)
-                        {
-                            var refIdMatch = Regex.Match(refStr, @"(\d+)");
-                            if (refIdMatch.Success && int.TryParse(refIdMatch.Groups[1].Value, out int refId))
-                            {
-                                if (annotTypeMap.TryGetValue(refId, out string? subtype))
-                                {
-                                    // 우리가 관리하는 타입이면 제거(새로 쓸거니까), 아니면 유지
-                                    if (subtype != "/FreeText" && subtype != "/Highlight")
-                                        keptRefs.Add(refStr);
-                                }
-                                else keptRefs.Add(refStr); // 타입 모르면 유지
-                            }
-                        }
-
-                        // 병합
-                        if (pageAnnotRefs.TryGetValue(pid, out var newRefs))
-                            keptRefs.AddRange(newRefs);
-
-                        string newAnnotsStr = $"/Annots [{string.Join(" ", keptRefs)}]";
-                        string modPage = GenerateModifiedPage(content, pid, newAnnotsStr);
-                        if (!string.IsNullOrEmpty(modPage))
-                        {
-                            // 줄바꿈 먼저 쓰기
-                            output.Write(newLine, 0, newLine.Length);
-
-                            // 현재 위치 기록 (정확한 오프셋)
-                            long offset = output.Position;
-                            xrefs.Add((pid, offset));
-
-                            byte[] pageBytes = Encoding.Latin1.GetBytes(modPage);
-                            output.Write(pageBytes, 0, pageBytes.Length);
-                        }
-                    }
-                }
-
-                // XREF & Trailer
-                WriteXrefAndTrailer(output, prevXref, xrefs);
-            }
-        }
-
-        private Dictionary<int, string> MapAllAnnotationTypes(string content)
-        {
-            var map = new Dictionary<int, string>();
-            // 모든 객체 중 /Type /Annot 인 것의 Subtype 추출
-            // 정규식: "10 0 obj ... /Subtype /Widget ... endobj"
-            var matches = Regex.Matches(content, @"(\d+)\s+\d+\s+obj.*?(?:/Type\s*/Annot)?.*?/Subtype\s*(/\w+).*?endobj", RegexOptions.Singleline);
-            foreach (Match m in matches)
-            {
-                int id = int.Parse(m.Groups[1].Value);
-                string subtype = m.Groups[2].Value;
-                if (!map.ContainsKey(id)) map[id] = subtype;
-            }
-            return map;
-        }
-
-        private List<string> ExtractAnnotRefs(string content, int pageId)
-        {
-            var refs = new List<string>();
-            var match = Regex.Match(content, $@"{pageId}\s+0\s+obj(.*?)endobj", RegexOptions.Singleline);
-            if (!match.Success) return refs;
-
-            string body = match.Groups[1].Value;
-            var annotMatch = Regex.Match(body, @"/Annots\s*\[([^\]]*)\]");
-            if (annotMatch.Success)
-            {
-                var parts = annotMatch.Groups[1].Value.Split(new[] { ' ', '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries);
-                for (int i = 0; i < parts.Length; i += 3)
-                {
-                    if (i + 2 < parts.Length && parts[i + 2] == "R")
-                        refs.Add($"{parts[i]} {parts[i + 1]} R");
-                }
-            }
-            return refs;
-        }
-
-        private string GenerateModifiedPage(string content, int pageId, string newAnnots)
-        {
-            var match = Regex.Match(content, $@"{pageId}\s+0\s+obj(.*?)endobj", RegexOptions.Singleline);
-            if (!match.Success) return "";
-            string body = match.Groups[1].Value;
-            // 기존 /Annots 제거
-            body = Regex.Replace(body, @"/Annots\s*\[[^\]]*\]", "");
-            body = Regex.Replace(body, @"/Annots\s+\d+\s+0\s+R", "");
-
-            // 삽입 위치 (>> 앞)
-            int pos = body.LastIndexOf(">>");
-            if (pos >= 0) body = body.Insert(pos, "\n" + newAnnots + "\n");
-
-            return $"{pageId} 0 obj{body}endobj\n";
-        }
-
-        private string GenerateAnnotObj(int id, AnnotationSaveData a, double x, double y, double w, double h)
-        {
-            var sb = new StringBuilder();
-            sb.AppendLine($"{id} 0 obj << /Type /Annot");
-            if (a.Type == AnnotationType.FreeText)
-            {
-                sb.AppendLine($"/Subtype /FreeText /Rect [{x:F2} {y:F2} {x + w:F2} {y + h:F2}]");
-                // UTF-16BE Hex String
-                var bom = new byte[] { 0xFE, 0xFF };
-                var txt = Encoding.BigEndianUnicode.GetBytes(a.TextContent);
-                var hex = BitConverter.ToString(bom.Concat(txt).ToArray()).Replace("-", "");
-                sb.AppendLine($"/Contents <{hex}>");
-                sb.AppendLine($"/DA (/Helv {a.FontSize:F1} Tf {a.ForeR / 255.0:F3} {a.ForeG / 255.0:F3} {a.ForeB / 255.0:F3} rg)");
-                sb.AppendLine("/Q 0 /F 4");
-            }
-            else // Highlight
-            {
-                sb.AppendLine($"/Subtype /Highlight /Rect [{x:F2} {y:F2} {x + w:F2} {y + h:F2}]");
-                sb.AppendLine($"/QuadPoints [{x:F2} {y + h:F2} {x + w:F2} {y + h:F2} {x:F2} {y:F2} {x + w:F2} {y:F2}]");
-                sb.AppendLine($"/C [{a.BackR / 255.0:F3} {a.BackG / 255.0:F3} {a.BackB / 255.0:F3}]");
-                sb.AppendLine("/F 4");
-            }
-            sb.AppendLine(">> endobj");
-            return sb.ToString();
-        }
-
-        private void WriteXrefAndTrailer(Stream s, long prevXref, List<(int id, long offset)> xrefs)
-        {
-            long startxref = s.Position;
-            var sb = new StringBuilder();
-            sb.AppendLine("xref");
-            // 0번 객체 (dummy)
-            sb.AppendLine("0 1");
-            sb.AppendLine("0000000000 65535 f ");
-
-            xrefs.Sort((a, b) => a.id.CompareTo(b.id));
-            int idx = 0;
-            while (idx < xrefs.Count)
-            {
-                int start = xrefs[idx].id;
-                int count = 1;
-                while (idx + count < xrefs.Count && xrefs[idx + count].id == start + count) count++;
-                sb.AppendLine($"{start} {count}");
-                for (int i = 0; i < count; i++)
-                    sb.AppendLine($"{xrefs[idx + i].offset:D10} 00000 n ");
-                idx += count;
-            }
-            sb.AppendLine($"trailer << /Prev {prevXref} >>");
-            sb.AppendLine("startxref");
-            sb.AppendLine(startxref.ToString());
-            sb.AppendLine("%%EOF");
-            byte[] b = Encoding.Latin1.GetBytes(sb.ToString());
-            s.Write(b, 0, b.Length);
-        }
-
-        private List<(int id, int gen)> FindPageObjectIds(string content, int count)
-        {
-            var list = new List<(int id, int gen)>();
-            // /Kids [ ... ] 파싱
-            var match = Regex.Match(content, @"/Type\s*/Pages.*?/Kids\s*\[([^\]]+)\]", RegexOptions.Singleline);
-            if (match.Success)
-            {
-                var refs = Regex.Matches(match.Groups[1].Value, @"(\d+)\s+(\d+)\s+R");
-                foreach (Match r in refs) list.Add((int.Parse(r.Groups[1].Value), int.Parse(r.Groups[2].Value)));
-            }
-            // fallback
-            if (list.Count < count)
-            {
-                var pages = Regex.Matches(content, @"(\d+)\s+(\d+)\s+obj.*?/Type\s*/Page\b", RegexOptions.Singleline);
-                foreach (Match p in pages)
-                {
-                    int id = int.Parse(p.Groups[1].Value);
-                    if (!list.Any(x => x.id == id)) list.Add((id, int.Parse(p.Groups[2].Value)));
-                }
-            }
-            return list;
-        }
-
-        private int FindNextObjectNumber(string content)
-        {
-            var matches = Regex.Matches(content, @"(\d+)\s+\d+\s+obj");
-            int max = 0;
-            foreach (Match m in matches) max = Math.Max(max, int.Parse(m.Groups[1].Value));
-            return max + 1;
-        }
-
-        // --- Models for Snapshot ---
-        private class PageSaveData
-        {
-            public int OriginalPageIndex;
-            public double Width, Height, PdfPageWidthPoint, PdfPageHeightPoint;
-            public List<AnnotationSaveData> Annotations = new List<AnnotationSaveData>();
-        }
-
-        private class AnnotationSaveData
-        {
-            public AnnotationType Type;
-            public double X, Y, Width, Height, FontSize;
-            public string TextContent = "";
-            public byte ForeR, ForeG, ForeB, BackR, BackG, BackB;
-            public bool IsHighlight;
-        }
-
-        // Bookmarks (기존 유지)
         public void LoadBookmarks(PdfDocumentModel model)
         {
             lock (PdfiumLock)
