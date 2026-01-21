@@ -2,7 +2,9 @@
   "permissions": {
     "allow": [
       "Bash(dotnet build:*)",
-      "Bash(dotnet:*)"
+      "Bash(dotnet:*)",
+      "Bash(Select-String -Pattern \"\\(error|Build succeeded|Build FAILED\\)\")",
+      "Bash(findstr:*)"
     ]
   }
 }

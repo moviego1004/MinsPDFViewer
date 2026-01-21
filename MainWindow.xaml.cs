@@ -310,16 +310,33 @@ namespace MinsPDFViewer
 
         private void Page_MouseDown(object sender, MouseButtonEventArgs e)
         {
+            System.Diagnostics.Debug.WriteLine($"Page_MouseDown called, _currentTool = {_currentTool}");
+
             if (SelectedDocument == null)
+            {
+                System.Diagnostics.Debug.WriteLine("Page_MouseDown: SelectedDocument is null");
                 return;
+            }
 
             var grid = sender as Grid;
             if (grid == null)
+            {
+                System.Diagnostics.Debug.WriteLine("Page_MouseDown: grid is null");
                 return;
+            }
 
             _activePageIndex = (int)grid.Tag;
             _dragStartPoint = e.GetPosition(grid);
-            var pageVM = SelectedDocument.Pages[_activePageIndex];
+
+            // grid.DataContext를 직접 사용하여 올바른 페이지 VM을 가져옴
+            var pageVM = grid.DataContext as PdfPageViewModel;
+            if (pageVM == null)
+            {
+                System.Diagnostics.Debug.WriteLine("Page_MouseDown: pageVM is null from DataContext");
+                return;
+            }
+
+            System.Diagnostics.Debug.WriteLine($"Page_MouseDown: pageIndex={_activePageIndex}, pageVM.PageIndex={pageVM.PageIndex}, point=({_dragStartPoint.X}, {_dragStartPoint.Y})");
 
             // TEXT 도구일 때는 주석 위에서도 새 텍스트 박스 생성
             if (_currentTool == "TEXT")
@@ -331,6 +348,7 @@ namespace MinsPDFViewer
                 }
                 var newAnnot = new PdfAnnotation { Type = AnnotationType.FreeText, X = _dragStartPoint.X, Y = _dragStartPoint.Y, Width = 150, Height = 50, FontSize = _defaultFontSize, FontFamily = _defaultFontFamily, Foreground = new SolidColorBrush(_defaultFontColor), IsBold = _defaultIsBold, TextContent = "", IsSelected = true };
                 pageVM.Annotations.Add(newAnnot);
+                System.Diagnostics.Debug.WriteLine($"TEXT: Added annotation at ({newAnnot.X}, {newAnnot.Y}), Annotations count = {pageVM.Annotations.Count}");
                 _selectedAnnotation = newAnnot;
                 _currentTool = "CURSOR";
                 RbCursor.IsChecked = true;
@@ -721,8 +739,10 @@ namespace MinsPDFViewer
 
         private void AnnotationTextBox_Loaded(object sender, RoutedEventArgs e)
         {
+            System.Diagnostics.Debug.WriteLine("AnnotationTextBox_Loaded called");
             if (sender is TextBox tb && tb.DataContext is PdfAnnotation ann)
             {
+                System.Diagnostics.Debug.WriteLine($"AnnotationTextBox_Loaded: Type={ann.Type}, X={ann.X}, Y={ann.Y}, W={ann.Width}, H={ann.Height}");
                 tb.TextChanged -= AnnotationTextBox_TextChanged;
                 tb.TextChanged += AnnotationTextBox_TextChanged;
                 if (ann.IsSelected)
@@ -1151,6 +1171,7 @@ namespace MinsPDFViewer
                 _currentTool = "HIGHLIGHT";
             else if (RbText.IsChecked == true)
                 _currentTool = "TEXT";
+            System.Diagnostics.Debug.WriteLine($"Tool_Click: _currentTool = {_currentTool}");
             CheckToolbarVisibility();
         }
 

@@ -273,6 +273,11 @@ namespace MinsPDFViewer
         {
             get; set;
         }
+
+        // 템플릿 선택용 속성
+        public bool IsFreeText => Type == AnnotationType.FreeText;
+        public bool IsHighlight => Type == AnnotationType.Highlight || Type == AnnotationType.Underline || Type == AnnotationType.SearchHighlight;
+
         public Color AnnotationColor { get; set; } = Colors.Yellow;
         public Brush Background { get; set; } = Brushes.Transparent;
 

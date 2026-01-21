@@ -99,25 +99,9 @@
                                 </Border>
 
                                 <Border Grid.Row="1"
-                                                BorderThickness="1,0,1,1">
-                                        <Border.Style>
-                                                <Style TargetType="Border">
-                                                        <Setter Property="BorderBrush"
-                                                                        Value="Transparent"/>
-                                                        <Setter Property="Background"
-                                                                        Value="Transparent"/>
-                                                        <Style.Triggers>
-                                                                <DataTrigger Binding="{Binding IsSelected}"
-                                                                                Value="True">
-                                                                        <Setter Property="BorderBrush"
-                                                                                        Value="Gray"/>
-                                                                        <Setter Property="Background"
-                                                                                        Value="#55FFFFFF"/>
-                                                                </DataTrigger>
-                                                        </Style.Triggers>
-                                                </Style>
-                                        </Border.Style>
-
+                                                BorderBrush="Gray"
+                                                BorderThickness="1"
+                                                Background="#EEFFFFFF">
                                         <TextBox Text="{Binding TextContent, UpdateSourceTrigger=PropertyChanged}"
                                                  FontFamily="{Binding FontFamily}"
                                                  FontSize="{Binding FontSize}"
@@ -539,10 +523,6 @@
                                                                                                 PreviewMouseMove="Page_MouseMove"
                                                                                                 PreviewMouseUp="Page_MouseUp"
                                                                                                 Background="Transparent">
-                                                                                                                                                <Grid.LayoutTransform>
-                                                                                                                                                        <ScaleTransform ScaleX="{Binding DataContext.SelectedDocument.Zoom, ElementName=RootWindow}"
-                                                                                                                                                                        ScaleY="{Binding DataContext.SelectedDocument.Zoom, ElementName=RootWindow}"/>
-                                                                                                                                                </Grid.LayoutTransform>
                                                                                         <Image Source="{Binding ImageSource}"
                                                                                                         Stretch="Uniform"
                                                                                                         HorizontalAlignment="Left"
@@ -566,10 +546,11 @@
                                                                                                                 Visibility="{Binding IsSelecting, Converter={StaticResource BooleanToVisibilityConverter}}"/>
                                                                                         </Canvas>
 
-                                                                                        <ItemsControl ItemsSource="{Binding Annotations}">
+                                                                                        <ItemsControl ItemsSource="{Binding Annotations}"
+                                                                                                        Panel.ZIndex="100">
                                                                                                 <ItemsControl.ItemsPanel>
                                                                                                         <ItemsPanelTemplate>
-                                                                                                                <Canvas/>
+                                                                                                                <Canvas Background="Transparent"/>
                                                                                                         </ItemsPanelTemplate>
                                                                                                 </ItemsControl.ItemsPanel>
                                                                                                 <ItemsControl.ItemContainerStyle>
@@ -582,51 +563,40 @@
                                                                                                 </ItemsControl.ItemContainerStyle>
                                                                                                 <ItemsControl.ItemTemplate>
                                                                                                         <DataTemplate>
-                                                                                                                <ContentControl Content="{Binding}">
-                                                                                                                        <ContentControl.Style>
-                                                                                                                                <Style TargetType="ContentControl">
-                                                                                                                                        <Style.Triggers>
-                                                                                                                                                <DataTrigger Binding="{Binding Type}"
-                                                                                                                                                                Value="FreeText">
-                                                                                                                                                        <Setter Property="ContentTemplate"
-                                                                                                                                                                        Value="{StaticResource FreeTextTemplate}"/>
-                                                                                                                                                </DataTrigger>
-                                                                                                                                                <DataTrigger Binding="{Binding Type}"
-                                                                                                                                                                Value="Highlight">
-                                                                                                                                                        <Setter Property="ContentTemplate"
-                                                                                                                                                                        Value="{StaticResource HighlightTemplate}"/>
-                                                                                                                                                </DataTrigger>
-                                                                                                                                                <DataTrigger Binding="{Binding Type}"
-                                                                                                                                                                Value="Underline">
-                                                                                                                                                        <Setter Property="ContentTemplate"
-                                                                                                                                                                        Value="{StaticResource UnderlineTemplate}"/>
-                                                                                                                                                </DataTrigger>
-                                                                                                                                                <DataTrigger Binding="{Binding Type}"
-                                                                                                                                                                Value="SearchHighlight">
-                                                                                                                                                        <Setter Property="ContentTemplate"
-                                                                                                                                                                        Value="{StaticResource SearchHighlightTemplate}"/>
-                                                                                                                                                </DataTrigger>
-                                                                                                                                                <DataTrigger Binding="{Binding Type}"
-                                                                                                                                                                Value="SignatureField">
-                                                                                                                                                        <Setter Property="ContentTemplate"
-                                                                                                                                                                        Value="{StaticResource SignatureFieldTemplate}"/>
-                                                                                                                                                </DataTrigger>
-                                                                                                                                                <DataTrigger Binding="{Binding Type}"
-                                                                                                                                                                Value="SignaturePlaceholder">
-                                                                                                                                                        <Setter Property="ContentTemplate"
-                                                                                                                                                                        Value="{StaticResource SignaturePlaceholderTemplate}"/>
-                                                                                                                                                </DataTrigger>
-                                                                                                                                        </Style.Triggers>
-                                                                                                                                </Style>
-                                                                                                                        </ContentControl.Style>
-                                                                                                                        <ContentControl.ContextMenu>
+                                                                                                                <Grid Width="{Binding Width}"
+                                                                                                                          Height="{Binding Height}">
+                                                                                                                        <Grid.ContextMenu>
                                                                                                                                 <ContextMenu>
                                                                                                                                         <MenuItem Header="삭제"
                                                                                                                                                         CommandParameter="{Binding}"
                                                                                                                                                         Click="BtnDeleteAnnotation_Click"/>
                                                                                                                                 </ContextMenu>
-                                                                                                                        </ContentControl.ContextMenu>
-                                                                                                                </ContentControl>
+                                                                                                                        </Grid.ContextMenu>
+                                                                                                                        <!-- FreeText 텍스트 박스 -->
+                                                                                                                        <Border BorderBrush="Gray"
+                                                                                                                                        BorderThickness="1"
+                                                                                                                                        Background="#EEFFFFFF"
+                                                                                                                                        Visibility="{Binding IsFreeText, Converter={StaticResource BooleanToVisibilityConverter}}">
+                                                                                                                                <TextBox Text="{Binding TextContent, UpdateSourceTrigger=PropertyChanged}"
+                                                                                                                                                 FontFamily="{Binding FontFamily}"
+                                                                                                                                                 FontSize="{Binding FontSize}"
+                                                                                                                                                 FontWeight="{Binding IsBold, Converter={StaticResource BoolToFontWeightConverter}}"
+                                                                                                                                                 Foreground="{Binding Foreground}"
+                                                                                                                                                 Background="Transparent"
+                                                                                                                                                 BorderThickness="0"
+                                                                                                                                                 AcceptsReturn="True"
+                                                                                                                                                 TextWrapping="Wrap"
+                                                                                                                                                 Padding="5"
+                                                                                                                                                 Loaded="AnnotationTextBox_Loaded"
+                                                                                                                                                 GotFocus="AnnotationTextBox_GotFocus"
+                                                                                                                                                 TextChanged="AnnotationTextBox_TextChanged"/>
+                                                                                                                        </Border>
+                                                                                                                        <!-- Highlight 형광펜 -->
+                                                                                                                        <Border Background="{Binding Background}"
+                                                                                                                                        Cursor="Hand"
+                                                                                                                                        PreviewMouseDown="Annotation_PreviewMouseDown"
+                                                                                                                                        Visibility="{Binding IsHighlight, Converter={StaticResource BooleanToVisibilityConverter}}"/>
+                                                                                                                </Grid>
                                                                                                         </DataTemplate>
                                                                                                 </ItemsControl.ItemTemplate>
                                                                                         </ItemsControl>
