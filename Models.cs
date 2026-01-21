@@ -69,23 +69,37 @@ namespace MinsPDFViewer
 
             if (disposing)
             {
-                if (Application.Current != null)
+                // [FIX] Lock 순서 변경: PdfiumLock을 먼저 잡고, 그 안에서 Dispatcher 호출
+                lock (PdfService.PdfiumLock)
                 {
-                    Application.Current.Dispatcher.Invoke(() =>
+                    try
                     {
-                        lock (PdfService.PdfiumLock)
+                        if (Application.Current != null)
                         {
-                            try
+                            Application.Current.Dispatcher.Invoke(() =>
                             {
-                                PdfDocument?.Dispose();
-                                PdfDocument = null;
-                                FileStream?.Close();
-                                FileStream?.Dispose();
-                                FileStream = null;
-                            }
-                            catch { }
+                                try
+                                {
+                                    PdfDocument?.Dispose();
+                                    PdfDocument = null;
+                                    FileStream?.Close();
+                                    FileStream?.Dispose();
+                                    FileStream = null;
+                                }
+                                catch { }
+                            });
                         }
-                    });
+                        else
+                        {
+                            // Application.Current가 null인 경우 (앱 종료 시)
+                            PdfDocument?.Dispose();
+                            PdfDocument = null;
+                            FileStream?.Close();
+                            FileStream?.Dispose();
+                            FileStream = null;
+                        }
+                    }
+                    catch { }
                 }
             }
         }
@@ -175,6 +189,10 @@ namespace MinsPDFViewer
             get; set;
         }
         public bool HasSignature
+        {
+            get; set;
+        }
+        public bool AnnotationsLoaded
         {
             get; set;
         }

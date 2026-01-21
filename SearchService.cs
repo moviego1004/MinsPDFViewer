@@ -79,13 +79,18 @@ namespace MinsPDFViewer
                         _lastPageIndex = i;
                         _lastCharIndex = findIndex + 1;
 
-                        // 하이라이트 없이 페이지 정보만 담은 더미 주석 반환
+                        // [FIX] 하이라이트 없이 페이지 정보만 담은 더미 주석 반환
                         // MainWindow에서 이 주석이 포함된 페이지로 스크롤함
                         var dummyAnnot = new PdfAnnotation { Type = AnnotationType.SearchHighlight };
 
+                        // UI 스레드에서 안전하게 추가
                         Application.Current.Dispatcher.Invoke(() =>
                         {
-                            document.Pages[i].Annotations.Add(dummyAnnot);
+                            // 중복 체크 후 추가
+                            if (!document.Pages[i].Annotations.Contains(dummyAnnot))
+                            {
+                                document.Pages[i].Annotations.Add(dummyAnnot);
+                            }
                         });
 
                         return dummyAnnot;
@@ -139,9 +144,14 @@ namespace MinsPDFViewer
 
                         var dummyAnnot = new PdfAnnotation { Type = AnnotationType.SearchHighlight };
 
+                        // [FIX] UI 스레드에서 안전하게 추가
                         Application.Current.Dispatcher.Invoke(() =>
                         {
-                            document.Pages[i].Annotations.Add(dummyAnnot);
+                            // 중복 체크 후 추가
+                            if (!document.Pages[i].Annotations.Contains(dummyAnnot))
+                            {
+                                document.Pages[i].Annotations.Add(dummyAnnot);
+                            }
                         });
 
                         return dummyAnnot;

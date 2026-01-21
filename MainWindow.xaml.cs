@@ -1,4 +1,4 @@
-﻿using System;
+﻿﻿using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
@@ -790,7 +790,14 @@ namespace MinsPDFViewer
                 {
                     for (int i = 0; i < targetDoc.Pages.Count; i++)
                     {
+                        if (targetDoc.IsDisposed)
+                            break;
+
                         var pageVM = targetDoc.Pages[i];
+                        byte[]? bitmapBytes = null;
+                        int bmpWidth = 0, bmpHeight = 0;
+
+                        // [FIX] Lock 안에서 비트맵만 렌더링하고, 바로 바이트로 변환
                         lock (PdfService.PdfiumLock)
                         {
                             if (targetDoc.PdfDocument == null)
@@ -799,25 +806,34 @@ namespace MinsPDFViewer
                             using (var ms = new MemoryStream())
                             {
                                 bitmap.Save(ms, System.Drawing.Imaging.ImageFormat.Bmp);
-                                var bytes = ms.ToArray();
-                                var ibuffer = Windows.Security.Cryptography.CryptographicBuffer.CreateFromByteArray(bytes);
-                                using (var softwareBitmap = new SoftwareBitmap(BitmapPixelFormat.Bgra8, bitmap.Width, bitmap.Height, BitmapAlphaMode.Premultiplied))
-                                {
-                                    softwareBitmap.CopyFromBuffer(ibuffer);
-                                    var ocrResult = _ocrEngine.RecognizeAsync(softwareBitmap).GetAwaiter().GetResult();
-                                    var wordList = new List<OcrWordInfo>();
-                                    foreach (var line in ocrResult.Lines)
-                                    {
-                                        foreach (var word in line.Words)
-                                        {
-                                            wordList.Add(new OcrWordInfo { Text = word.Text, BoundingBox = new Rect(word.BoundingRect.X, word.BoundingRect.Y, word.BoundingRect.Width, word.BoundingRect.Height) });
-                                        }
-                                    }
-                                    pageVM.OcrWords = wordList;
-                                }
+                                bitmapBytes = ms.ToArray();
+                                bmpWidth = bitmap.Width;
+                                bmpHeight = bitmap.Height;
                             }
                         }
-                        Application.Current.Dispatcher.Invoke(() => { PbStatus.Value = i + 1; });
+
+                        // Lock 밖에서 OCR 처리
+                        if (bitmapBytes != null)
+                        {
+                            var ibuffer = Windows.Security.Cryptography.CryptographicBuffer.CreateFromByteArray(bitmapBytes);
+                            using (var softwareBitmap = new SoftwareBitmap(BitmapPixelFormat.Bgra8, bmpWidth, bmpHeight, BitmapAlphaMode.Premultiplied))
+                            {
+                                softwareBitmap.CopyFromBuffer(ibuffer);
+                                var ocrResult = await _ocrEngine.RecognizeAsync(softwareBitmap);
+                                var wordList = new List<OcrWordInfo>();
+                                foreach (var line in ocrResult.Lines)
+                                {
+                                    foreach (var word in line.Words)
+                                    {
+                                        wordList.Add(new OcrWordInfo { Text = word.Text, BoundingBox = new Rect(word.BoundingRect.X, word.BoundingRect.Y, word.BoundingRect.Width, word.BoundingRect.Height) });
+                                    }
+                                }
+                                pageVM.OcrWords = wordList;
+                            }
+                        }
+
+                        // UI 업데이트는 비동기로
+                        await Application.Current.Dispatcher.InvokeAsync(() => { PbStatus.Value = i + 1; });
                     }
                 });
                 TxtStatus.Text = "OCR 완료.";
@@ -838,13 +854,49 @@ namespace MinsPDFViewer
         {
             if (SelectedDocument != null)
             {
+                string originalPath = SelectedDocument.FilePath;
+                string tempPath = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString() + ".pdf");
+                int currentPageIndex = GetCurrentPageIndex();
+
                 try
                 {
-                    await _pdfService.SavePdf(SelectedDocument, SelectedDocument.FilePath);
+                    // 1. 임시 파일에 저장 (파일 잠금 회피)
+                    await _pdfService.SavePdf(SelectedDocument, tempPath);
+
+                    // 2. 현재 문서 닫기 (파일 잠금 해제)
+                    var docToClose = SelectedDocument;
+                    docToClose.Dispose();
+                    Documents.Remove(docToClose);
+                    SelectedDocument = null;
+
+                    // 3. 원본 파일 덮어쓰기
+                    await Task.Run(() =>
+                    {
+                        File.Copy(tempPath, originalPath, true);
+                    });
+
+                    // 4. 페이지 위치 기억 및 문서 다시 열기
+                    _historyService.SetLastPage(originalPath, currentPageIndex);
+                    _historyService.SaveHistory();
+                    OpenPdfFromPath(originalPath);
+
+                    TxtStatus.Text = "저장 완료";
                 }
                 catch (Exception ex)
                 {
                     MessageBox.Show($"저장 오류: {ex.Message}");
+                    // 오류 발생 시 원본 파일이 존재하면 다시 열기 시도
+                    if (File.Exists(originalPath) && Documents.All(d => d.FilePath != originalPath))
+                    {
+                        OpenPdfFromPath(originalPath);
+                    }
+                }
+                finally
+                {
+                    if (File.Exists(tempPath))
+                    {
+                        try { File.Delete(tempPath); } catch { }
+                    }
                 }
             }
         }
