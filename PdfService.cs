@@ -233,8 +233,8 @@ namespace MinsPDFViewer
 
                                         double uiX = rect.left * (pageVM.Width / pageW);
                                         double uiY = (pageH - rect.top) * (pageVM.Height / pageH);
-                                        double uiW = (rect.right - rect.left) * (pageVM.Width / pageW);
-                                        double uiH = (rect.top - rect.bottom) * (pageVM.Height / pageH);
+                                        double uiW = Math.Abs(rect.right - rect.left) * (pageVM.Width / pageW);
+                                        double uiH = Math.Abs(rect.top - rect.bottom) * (pageVM.Height / pageH);
 
                                         string content = GetAnnotationStringValue(annot, "Contents");
                                         if (content.StartsWith("Title: ")) // Adobe Note 무시

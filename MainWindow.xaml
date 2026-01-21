@@ -6,6 +6,7 @@
         xmlns:local="clr-namespace:MinsPDFViewer"
         mc:Ignorable="d"
         Title="MinsPDFViewer"
+        x:Name="RootWindow"
         AllowDrop="True"
         Drop="Window_Drop"
         PreviewDragOver="Window_DragOver"
@@ -538,11 +539,10 @@
                                                                                                 MouseMove="Page_MouseMove"
                                                                                                 MouseUp="Page_MouseUp"
                                                                                                 Background="Transparent">
-                                                                                        <Grid.LayoutTransform>
-                                                                                                <ScaleTransform ScaleX="{Binding DataContext.SelectedDocument.Zoom, RelativeSource={RelativeSource AncestorType=Window}}"
-                                                                                                                ScaleY="{Binding DataContext.SelectedDocument.Zoom, RelativeSource={RelativeSource AncestorType=Window}}"/>
-                                                                                        </Grid.LayoutTransform>
-
+                                                                                                                                                <Grid.LayoutTransform>
+                                                                                                                                                        <ScaleTransform ScaleX="{Binding DataContext.SelectedDocument.Zoom, ElementName=RootWindow}"
+                                                                                                                                                                        ScaleY="{Binding DataContext.SelectedDocument.Zoom, ElementName=RootWindow}"/>
+                                                                                                                                                </Grid.LayoutTransform>
                                                                                         <Image Source="{Binding ImageSource}"
                                                                                                         Stretch="Uniform"
                                                                                                         HorizontalAlignment="Left"
