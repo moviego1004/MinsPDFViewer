@@ -858,6 +858,11 @@ namespace MinsPDFViewer
                 string tempPath = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString() + ".pdf");
                 int currentPageIndex = GetCurrentPageIndex();
 
+                // 현재 스크롤 위치 저장
+                var currentScrollViewer = GetCurrentScrollViewer();
+                double savedVOffset = currentScrollViewer?.VerticalOffset ?? 0;
+                double savedHOffset = currentScrollViewer?.HorizontalOffset ?? 0;
+
                 try
                 {
                     // 1. 임시 파일에 저장 (파일 잠금 회피)
@@ -879,6 +884,16 @@ namespace MinsPDFViewer
                     _historyService.SetLastPage(originalPath, currentPageIndex);
                     _historyService.SaveHistory();
                     OpenPdfFromPath(originalPath);
+
+                    // 5. 저장된 스크롤 오프셋으로 복원
+                    await Dispatcher.InvokeAsync(() => {
+                        var newScrollViewer = GetCurrentScrollViewer();
+                        if (newScrollViewer != null)
+                        {
+                            newScrollViewer.ScrollToVerticalOffset(savedVOffset);
+                            newScrollViewer.ScrollToHorizontalOffset(savedHOffset);
+                        }
+                    }, System.Windows.Threading.DispatcherPriority.Loaded);
 
                     TxtStatus.Text = "저장 완료";
                 }
