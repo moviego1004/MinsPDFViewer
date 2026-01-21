@@ -535,9 +535,9 @@
                                                                                                 Tag="{Binding PageIndex}"
                                                                                                 Loaded="PageGrid_Loaded"
                                                                                                 Unloaded="PageGrid_Unloaded"
-                                                                                                MouseDown="Page_MouseDown"
-                                                                                                MouseMove="Page_MouseMove"
-                                                                                                MouseUp="Page_MouseUp"
+                                                                                                PreviewMouseDown="Page_MouseDown"
+                                                                                                PreviewMouseMove="Page_MouseMove"
+                                                                                                PreviewMouseUp="Page_MouseUp"
                                                                                                 Background="Transparent">
                                                                                                                                                 <Grid.LayoutTransform>
                                                                                                                                                         <ScaleTransform ScaleX="{Binding DataContext.SelectedDocument.Zoom, ElementName=RootWindow}"

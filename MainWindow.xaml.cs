@@ -310,16 +310,6 @@ namespace MinsPDFViewer
 
         private void Page_MouseDown(object sender, MouseButtonEventArgs e)
         {
-            if (IsAnnotationObject(e.OriginalSource))
-                return;
-
-            if (_selectedAnnotation != null)
-            {
-                _selectedAnnotation.IsSelected = false;
-                _selectedAnnotation = null;
-                CheckToolbarVisibility();
-            }
-
             if (SelectedDocument == null)
                 return;
 
@@ -331,8 +321,14 @@ namespace MinsPDFViewer
             _dragStartPoint = e.GetPosition(grid);
             var pageVM = SelectedDocument.Pages[_activePageIndex];
 
+            // TEXT 도구일 때는 주석 위에서도 새 텍스트 박스 생성
             if (_currentTool == "TEXT")
             {
+                if (_selectedAnnotation != null)
+                {
+                    _selectedAnnotation.IsSelected = false;
+                    _selectedAnnotation = null;
+                }
                 var newAnnot = new PdfAnnotation { Type = AnnotationType.FreeText, X = _dragStartPoint.X, Y = _dragStartPoint.Y, Width = 150, Height = 50, FontSize = _defaultFontSize, FontFamily = _defaultFontFamily, Foreground = new SolidColorBrush(_defaultFontColor), IsBold = _defaultIsBold, TextContent = "", IsSelected = true };
                 pageVM.Annotations.Add(newAnnot);
                 _selectedAnnotation = newAnnot;
@@ -344,7 +340,44 @@ namespace MinsPDFViewer
                 return;
             }
 
-            if (_currentTool == "CURSOR" || _currentTool == "HIGHLIGHT")
+            // HIGHLIGHT 도구일 때는 주석 위에서도 선택 영역 시작
+            if (_currentTool == "HIGHLIGHT")
+            {
+                if (_selectedAnnotation != null)
+                {
+                    _selectedAnnotation.IsSelected = false;
+                    _selectedAnnotation = null;
+                }
+                foreach (var p in SelectedDocument.Pages)
+                {
+                    p.IsSelecting = false;
+                    p.SelectionWidth = 0;
+                    p.SelectionHeight = 0;
+                }
+                SelectionPopup.IsOpen = false;
+                pageVM.IsSelecting = true;
+                pageVM.SelectionX = _dragStartPoint.X;
+                pageVM.SelectionY = _dragStartPoint.Y;
+                pageVM.SelectionWidth = 0;
+                pageVM.SelectionHeight = 0;
+                grid.CaptureMouse();
+                CheckToolbarVisibility();
+                e.Handled = true;
+                return;
+            }
+
+            // CURSOR 도구일 때는 주석 클릭 시 조기 종료
+            if (IsAnnotationObject(e.OriginalSource))
+                return;
+
+            if (_selectedAnnotation != null)
+            {
+                _selectedAnnotation.IsSelected = false;
+                _selectedAnnotation = null;
+                CheckToolbarVisibility();
+            }
+
+            if (_currentTool == "CURSOR")
             {
                 foreach (var p in SelectedDocument.Pages)
                 {

@@ -352,6 +352,7 @@ namespace MinsPDFViewer
             public double Height { get; set; }
             public string TextContent { get; set; } = "";
             public double FontSize { get; set; }
+            public string FontFamily { get; set; } = "Malgun Gothic";
             public bool IsBold { get; set; }
             public Color ForegroundColor { get; set; }
             public Color BackgroundColor { get; set; }
@@ -395,6 +396,7 @@ namespace MinsPDFViewer
                             Height = ann.Height,
                             TextContent = ann.TextContent ?? "",
                             FontSize = ann.FontSize,
+                            FontFamily = ann.FontFamily ?? "Malgun Gothic",
                             IsBold = ann.IsBold,
                             // Brush에서 Color 추출
                             ForegroundColor = (ann.Foreground as SolidColorBrush)?.Color ?? Colors.Black,
@@ -419,10 +421,12 @@ namespace MinsPDFViewer
                     {
                         for (int i = 0; i < pagesSnapshot.Count; i++)
                         {
-                            if (i >= doc.PageCount) break;
-
                             var pageData = pagesSnapshot[i];
-                            var pdfPage = doc.Pages[i];
+                            int pdfPageIndex = pageData.OriginalPageIndex;
+
+                            if (pdfPageIndex < 0 || pdfPageIndex >= doc.PageCount) continue;
+
+                            var pdfPage = doc.Pages[pdfPageIndex];
 
                             // 1. 기존 주석 중 FreeText, Highlight, Underline 등 편집 가능한 타입 제거
                             if (pdfPage.Annotations != null)
@@ -480,7 +484,8 @@ namespace MinsPDFViewer
                                         if (fontSize < 1) fontSize = 10;
                                         
                                         var fontStyle = ann.IsBold ? XFontStyleEx.Bold : XFontStyleEx.Regular;
-                                        var font = new XFont("Malgun Gothic", fontSize, fontStyle);
+                                        var fontFamily = string.IsNullOrEmpty(ann.FontFamily) ? "Malgun Gothic" : ann.FontFamily;
+                                        var font = new XFont(fontFamily, fontSize, fontStyle);
                                         
                                         var c = ann.ForegroundColor;
                                         var brush = new XSolidBrush(XColor.FromArgb(c.A, c.R, c.G, c.B));
