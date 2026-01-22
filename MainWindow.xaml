@@ -115,6 +115,8 @@
                                                  Padding="5"
                                                  Loaded="AnnotationTextBox_Loaded"
                                                  GotFocus="AnnotationTextBox_GotFocus"
+                                                 LostFocus="AnnotationTextBox_LostFocus"
+                                                 PreviewKeyDown="AnnotationTextBox_PreviewKeyDown"
                                                  TextChanged="AnnotationTextBox_TextChanged"/>
                                 </Border>
 
@@ -204,17 +206,17 @@
                                                 GroupName="Tools"
                                                 Content="👆 선택"
                                                 IsChecked="True"
-                                                Click="Tool_Click"
+                                                Checked="Tool_Checked"
                                                 Margin="5,0"/>
                                 <RadioButton Name="RbHighlight"
                                                 GroupName="Tools"
                                                 Content="🖍 형광펜"
-                                                Click="Tool_Click"
+                                                Checked="Tool_Checked"
                                                 Margin="5,0"/>
                                 <RadioButton Name="RbText"
                                                 GroupName="Tools"
                                                 Content="📝 텍스트"
-                                                Click="Tool_Click"
+                                                Checked="Tool_Checked"
                                                 Margin="5,0"/>
                                 <Separator/>
                                 <Button Name="BtnZoomOut"
@@ -491,7 +493,8 @@
                                                                 Loaded="PdfListView_Loaded"
                                                                 Unloaded="PdfListView_Unloaded"
                                                                 Background="LightGray"
-                                                                BorderThickness="0">
+                                                                BorderThickness="0"
+                                                                PreviewMouseDown="ListView_PreviewMouseDown">
                                                         <ListView.ItemContainerStyle>
                                                                 <Style TargetType="ListViewItem">
                                                                         <Setter Property="Margin"
@@ -500,6 +503,12 @@
                                                                                         Value="Center"/>
                                                                         <Setter Property="Focusable"
                                                                                         Value="False"/>
+                                                                        <EventSetter Event="PreviewMouseDown"
+                                                                                     Handler="Page_MouseDown"/>
+                                                                        <EventSetter Event="PreviewMouseMove"
+                                                                                     Handler="Page_MouseMove"/>
+                                                                        <EventSetter Event="PreviewMouseUp"
+                                                                                     Handler="Page_MouseUp"/>
                                                                 </Style>
                                                         </ListView.ItemContainerStyle>
 
@@ -527,8 +536,7 @@
                                                                                                         Stretch="Uniform"
                                                                                                         HorizontalAlignment="Left"
                                                                                                         VerticalAlignment="Top"
-                                                                                                        RenderOptions.BitmapScalingMode="HighQuality"
-                                                                                                        SnapsToDevicePixels="True">
+                                                                                                        IsHitTestVisible="False">
                                                                                                 <Image.LayoutTransform>
                                                                                                         <RotateTransform Angle="{Binding Rotation}"/>
                                                                                                 </Image.LayoutTransform>
@@ -546,60 +554,10 @@
                                                                                                                 Visibility="{Binding IsSelecting, Converter={StaticResource BooleanToVisibilityConverter}}"/>
                                                                                         </Canvas>
 
-                                                                                        <ItemsControl ItemsSource="{Binding Annotations}"
-                                                                                                        Panel.ZIndex="100">
-                                                                                                <ItemsControl.ItemsPanel>
-                                                                                                        <ItemsPanelTemplate>
-                                                                                                                <Canvas Background="Transparent"/>
-                                                                                                        </ItemsPanelTemplate>
-                                                                                                </ItemsControl.ItemsPanel>
-                                                                                                <ItemsControl.ItemContainerStyle>
-                                                                                                        <Style TargetType="ContentPresenter">
-                                                                                                                <Setter Property="Canvas.Left"
-                                                                                                                                Value="{Binding X}"/>
-                                                                                                                <Setter Property="Canvas.Top"
-                                                                                                                                Value="{Binding Y}"/>
-                                                                                                        </Style>
-                                                                                                </ItemsControl.ItemContainerStyle>
-                                                                                                <ItemsControl.ItemTemplate>
-                                                                                                        <DataTemplate>
-                                                                                                                <Grid Width="{Binding Width}"
-                                                                                                                          Height="{Binding Height}">
-                                                                                                                        <Grid.ContextMenu>
-                                                                                                                                <ContextMenu>
-                                                                                                                                        <MenuItem Header="삭제"
-                                                                                                                                                        CommandParameter="{Binding}"
-                                                                                                                                                        Click="BtnDeleteAnnotation_Click"/>
-                                                                                                                                </ContextMenu>
-                                                                                                                        </Grid.ContextMenu>
-                                                                                                                        <!-- FreeText 텍스트 박스 -->
-                                                                                                                        <Border BorderBrush="Gray"
-                                                                                                                                        BorderThickness="1"
-                                                                                                                                        Background="#EEFFFFFF"
-                                                                                                                                        Visibility="{Binding IsFreeText, Converter={StaticResource BooleanToVisibilityConverter}}">
-                                                                                                                                <TextBox Text="{Binding TextContent, UpdateSourceTrigger=PropertyChanged}"
-                                                                                                                                                 FontFamily="{Binding FontFamily}"
-                                                                                                                                                 FontSize="{Binding FontSize}"
-                                                                                                                                                 FontWeight="{Binding IsBold, Converter={StaticResource BoolToFontWeightConverter}}"
-                                                                                                                                                 Foreground="{Binding Foreground}"
-                                                                                                                                                 Background="Transparent"
-                                                                                                                                                 BorderThickness="0"
-                                                                                                                                                 AcceptsReturn="True"
-                                                                                                                                                 TextWrapping="Wrap"
-                                                                                                                                                 Padding="5"
-                                                                                                                                                 Loaded="AnnotationTextBox_Loaded"
-                                                                                                                                                 GotFocus="AnnotationTextBox_GotFocus"
-                                                                                                                                                 TextChanged="AnnotationTextBox_TextChanged"/>
-                                                                                                                        </Border>
-                                                                                                                        <!-- Highlight 형광펜 -->
-                                                                                                                        <Border Background="{Binding Background}"
-                                                                                                                                        Cursor="Hand"
-                                                                                                                                        PreviewMouseDown="Annotation_PreviewMouseDown"
-                                                                                                                                        Visibility="{Binding IsHighlight, Converter={StaticResource BooleanToVisibilityConverter}}"/>
-                                                                                                                </Grid>
-                                                                                                        </DataTemplate>
-                                                                                                </ItemsControl.ItemTemplate>
-                                                                                        </ItemsControl>
+                                                                                        <Canvas x:Name="AnnotationCanvas"
+                                                                                                        HorizontalAlignment="Stretch"
+                                                                                                        VerticalAlignment="Stretch"
+                                                                                                        Loaded="AnnotationCanvas_Loaded"/>
                                                                                 </Grid>
                                                                         </Border>
                                                                 </DataTemplate>

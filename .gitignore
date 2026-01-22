@@ -217,7 +217,7 @@ csx/
 *.build.csdef
 
 # Microsoft Azure Emulator
-ecf/
+ecff/
 rcf/
 
 # Windows Store app package directories and files
@@ -486,3 +486,7 @@ $RECYCLE.BIN/
 *.exe
 *.dll
 *.zip
+
+# Ignore crash dumps and build logs
+crash_dump.txt
+build_output.txt

@@ -269,9 +269,17 @@ namespace MinsPDFViewer
             }
         }
 
+        private AnnotationType _type;
         public AnnotationType Type
         {
-            get; set;
+            get => _type;
+            set
+            {
+                _type = value;
+                OnPropertyChanged(nameof(Type));
+                OnPropertyChanged(nameof(IsFreeText));
+                OnPropertyChanged(nameof(IsHighlight));
+            }
         }
 
         // 템플릿 선택용 속성
