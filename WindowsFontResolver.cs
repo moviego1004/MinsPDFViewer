@@ -12,22 +12,20 @@ namespace MinsPDFViewer
 
         public FontResolverInfo? ResolveTypeface(string familyName, bool isBold, bool isItalic)
         {
-            // 폰트 이름이 무엇이든 요청이 오면 처리
-            // 실제로는 familyName에 따라 다른 파일을 지정할 수 있음
+            string lowerName = familyName.ToLowerInvariant();
 
-            // "Malgun Gothic" 또는 한글 처리를 위해 기본적으로 맑은 고딕으로 매핑
-            if (familyName.Contains("Malgun", StringComparison.OrdinalIgnoreCase) ||
-                familyName.Equals("맑은 고딕", StringComparison.OrdinalIgnoreCase))
+            // 한글 폰트는 모두 Malgun Gothic으로 매핑 (TTC 파일 이슈 회피)
+            if (lowerName.Contains("malgun") || lowerName == "맑은 고딕" ||
+                lowerName.Contains("gulim") || lowerName == "굴림" ||
+                lowerName.Contains("dotum") || lowerName == "돋움" ||
+                lowerName.Contains("batang") || lowerName == "바탕")
             {
-                if (isBold)
-                    return new FontResolverInfo("MalgunGothicBold");
+                if (isBold) return new FontResolverInfo("MalgunGothicBold");
                 return new FontResolverInfo("MalgunGothic");
             }
 
-            // 그 외 폰트는 Arial 등으로 대체하거나 시스템 폰트 로직 확장 가능
-            // 여기서는 편의상 모두 맑은 고딕 또는 Arial로 처리
-            if (isBold)
-                return new FontResolverInfo("ArialBold");
+            // 그 외 폰트
+            if (isBold) return new FontResolverInfo("ArialBold");
             return new FontResolverInfo("Arial");
         }
 
@@ -35,27 +33,28 @@ namespace MinsPDFViewer
         {
             switch (faceName)
             {
-                case "MalgunGothic":
-                    return LoadFontData("malgun.ttf");
-                case "MalgunGothicBold":
-                    return LoadFontData("malgunbd.ttf"); // 맑은 고딕 볼드
-                case "Arial":
-                    return LoadFontData("arial.ttf");
-                case "ArialBold":
-                    return LoadFontData("arialbd.ttf");
+                case "MalgunGothic": return LoadFontData("malgun.ttf");
+                case "MalgunGothicBold": return LoadFontData("malgunbd.ttf");
+                // Gulim, Dotum, Batang 요청이 와도 Malgun으로 처리하도록 ResolveTypeface에서 매핑했으므로
+                // 여기서는 case가 불릴 일이 없어야 하지만 안전장치로 추가
+                case "Gulim": 
+                case "Dotum": 
+                case "Batang": return LoadFontData("malgun.ttf");
+                
+                case "Arial": return LoadFontData("arial.ttf");
+                case "ArialBold": return LoadFontData("arialbd.ttf");
             }
-            return null;
+            return LoadFontData("arial.ttf"); // 기본 Fallback
         }
 
         private byte[]? LoadFontData(string fontFileName)
         {
-            // 윈도우 폰트 폴더 경로
             var fontPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Fonts), fontFileName);
-
-            if (File.Exists(fontPath))
-            {
-                return File.ReadAllBytes(fontPath);
-            }
+            if (File.Exists(fontPath)) return File.ReadAllBytes(fontPath);
+            // 파일이 없으면 맑은 고딕 시도
+            if (fontFileName != "malgun.ttf") return LoadFontData("malgun.ttf");
+            // 그래도 없으면 Arial
+            if (fontFileName != "arial.ttf") return LoadFontData("arial.ttf");
             return null;
         }
     }
