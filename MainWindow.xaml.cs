@@ -392,12 +392,19 @@ namespace MinsPDFViewer
         {
             try
             {
-                // 주석(핸들, 텍스트박스 등)을 클릭한 경우 포커스 유지 및 추가 처리 방지
-                if (IsAnnotationObject(e.OriginalSource)) return;
+                Log($"[DEBUG] Page_MouseDown called, _currentTool = {_currentTool}");
 
-                // 빈 공간 클릭 시 텍스트박스 포커스 해제
+                // 1. Check if we clicked on an annotation (including TextBox)
+                if (IsAnnotationObject(e.OriginalSource))
+                {
+                    Log("[DEBUG] Page_MouseDown: Clicked on Annotation - Ignoring");
+                    return;
+                }
+
+                // 2. Only if NOT clicking an annotation, clear focus from TextBox
                 if (Keyboard.FocusedElement is TextBox)
                 {
+                    Log("[DEBUG] Page_MouseDown: Clearing Focus");
                     Keyboard.ClearFocus();
                 }
 
@@ -428,6 +435,8 @@ namespace MinsPDFViewer
                     e.Handled = true; return;
                 }
                 
+                // Moved IsAnnotationObject check to top
+
                 if (_selectedAnnotation != null) { _selectedAnnotation.IsSelected = false; _selectedAnnotation = null; CheckToolbarVisibility(); }
                 if (_currentTool == "CURSOR")
                 {
@@ -442,17 +451,29 @@ namespace MinsPDFViewer
 
         private bool IsAnnotationObject(object source)
         {
-            if (source is DependencyObject dep)
+            if (!(source is DependencyObject current)) return false;
+
+            if (source is FrameworkContentElement fce)
+                current = fce.Parent;
+
+            while (current != null)
             {
-                DependencyObject current = dep;
-                while (current != null)
+                if (current is FrameworkElement fe && fe.DataContext is PdfAnnotation)
+                    return true;
+                if (current is Grid g && g.DataContext is PdfPageViewModel)
+                    break;
+
+                DependencyObject? parent = null;
+                try
                 {
-                    if (current is FrameworkElement fe && fe.DataContext is PdfAnnotation)
-                        return true;
-                    if (current is Grid g && g.DataContext is PdfPageViewModel)
-                        break;
-                    current = VisualTreeHelper.GetParent(current);
+                    parent = VisualTreeHelper.GetParent(current);
                 }
+                catch { }
+
+                if (parent == null && current is FrameworkElement fe2)
+                    parent = fe2.Parent;
+
+                current = parent;
             }
             return false;
         }
@@ -1007,7 +1028,7 @@ namespace MinsPDFViewer
 
         private void BtnDeleteAnnotation_Click(object sender, RoutedEventArgs e)
         {
-            if (_selectedAnnotation != null && SelectedDocument != null) {
+            if (_selectedAnnotation != null && SelectedDocument != null) { 
                 foreach (var p in SelectedDocument.Pages) if (p.Annotations.Contains(_selectedAnnotation)) { p.Annotations.Remove(_selectedAnnotation); _selectedAnnotation = null; CheckToolbarVisibility(); break; }
             } else if ((sender as MenuItem)?.CommandParameter is PdfAnnotation a && SelectedDocument != null) {
                 foreach (var p in SelectedDocument.Pages) if (p.Annotations.Contains(a)) { p.Annotations.Remove(a); break; }

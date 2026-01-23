@@ -26,7 +26,7 @@ namespace MinsPDFViewer
         public static readonly object PdfiumLock = new object();
         private const double RENDER_SCALE = 2.0;
 
-        // Pdfium P/Invoke declarations (omitted for brevity, assume same as before)
+        // Pdfium P/Invoke declarations
         private static class NativeMethods
         {
             [System.Runtime.InteropServices.DllImport("pdfium.dll", CallingConvention = System.Runtime.InteropServices.CallingConvention.Cdecl)]
@@ -156,9 +156,21 @@ namespace MinsPDFViewer
             });
         }
 
+        private static void Log(string message)
+        {
+            try
+            {
+                string logPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "debug.log");
+                string logMsg = $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}] [PdfService] {message}{Environment.NewLine}";
+                File.AppendAllText(logPath, logMsg);
+            }
+            catch { }
+        }
+
         public void RenderPageImage(PdfDocumentModel model, PdfPageViewModel pageVM)
         {
             if (model.IsDisposed || pageVM.IsBlankPage) return;
+            Log($"RenderPageImage started for Page {pageVM.PageIndex}");
             if (pageVM.ImageSource == null)
             {
                 BitmapSource? bmpSource = null;
@@ -170,13 +182,18 @@ namespace MinsPDFViewer
                         {
                             int renderW = (int)(pageVM.Width * RENDER_SCALE);
                             int renderH = (int)(pageVM.Height * RENDER_SCALE);
+                            Log($"RenderPageImage rendering... Size: {renderW}x{renderH}");
                             using (var bitmap = model.PdfDocument.Render(pageVM.OriginalPageIndex, renderW, renderH, (int)(96 * RENDER_SCALE), (int)(96 * RENDER_SCALE), PdfRenderFlags.Annotations))
                             {
                                 bmpSource = ToBitmapSource((DrawingBitmap)bitmap);
                                 bmpSource.Freeze();
                             }
+                            Log($"RenderPageImage rendering done.");
                         }
-                        catch { }
+                        catch (Exception ex)
+                        {
+                            Log($"[CRITICAL] RenderPageImage Error: {ex}");
+                        }
                     }
                 }
                 if (bmpSource != null) Application.Current.Dispatcher.Invoke(() => pageVM.ImageSource = bmpSource);
@@ -198,139 +215,155 @@ namespace MinsPDFViewer
             pageVM.AnnotationsLoaded = true;
             Task.Run(() =>
             {
-                try
+                lock (PdfiumLock)
                 {
-                    string path = pageVM.OriginalFilePath ?? model.FilePath;
-                    if (!File.Exists(path)) return;
-
-                    var extracted = new List<PdfAnnotation>();
-
-                    IntPtr doc = NativeMethods.FPDF_LoadDocument(path, null);
-                    if (doc == IntPtr.Zero) return;
-
                     try
                     {
-                        IntPtr page = NativeMethods.FPDF_LoadPage(doc, pageVM.OriginalPageIndex);
-                        if (page == IntPtr.Zero) return;
+                        Log($"LoadAnnotationsLazy started for Page {pageVM.PageIndex}");
+                        string path = pageVM.OriginalFilePath ?? model.FilePath;
+                        if (!File.Exists(path)) return;
+
+                        var extracted = new List<PdfAnnotation>();
+
+                        IntPtr doc = NativeMethods.FPDF_LoadDocument(path, null);
+                        if (doc == IntPtr.Zero)
+                        {
+                            Log($"LoadAnnotationsLazy: Failed to load document native {path}");
+                            return;
+                        }
 
                         try
                         {
-                            double pageW = NativeMethods.FPDF_GetPageWidth(page);
-                            double pageH = NativeMethods.FPDF_GetPageHeight(page);
-
-                            int annotCount = NativeMethods.FPDFPage_GetAnnotCount(page);
-                            for (int i = 0; i < annotCount; i++)
+                            IntPtr page = NativeMethods.FPDF_LoadPage(doc, pageVM.OriginalPageIndex);
+                            if (page == IntPtr.Zero)
                             {
-                                IntPtr annot = NativeMethods.FPDFPage_GetAnnot(page, i);
-                                if (annot == IntPtr.Zero) continue;
+                                Log($"LoadAnnotationsLazy: Failed to load page native {pageVM.OriginalPageIndex}");
+                                return;
+                            }
 
-                                try
+                            try
+                            {
+                                double pageW = NativeMethods.FPDF_GetPageWidth(page);
+                                double pageH = NativeMethods.FPDF_GetPageHeight(page);
+
+                                int annotCount = NativeMethods.FPDFPage_GetAnnotCount(page);
+                                Log($"LoadAnnotationsLazy: Page {pageVM.PageIndex} has {annotCount} annotations");
+
+                                for (int i = 0; i < annotCount; i++)
                                 {
-                                    int subtype = NativeMethods.FPDFAnnot_GetSubtype(annot);
+                                    IntPtr annot = NativeMethods.FPDFPage_GetAnnot(page, i);
+                                    if (annot == IntPtr.Zero) continue;
 
-                                    if (subtype == NativeMethods.FPDF_ANNOT_FREETEXT || 
-                                        subtype == NativeMethods.FPDF_ANNOT_HIGHLIGHT || 
-                                        subtype == NativeMethods.FPDF_ANNOT_UNDERLINE)
+                                    try
                                     {
-                                        var rect = new NativeMethods.FS_RECTF();
-                                        if (!NativeMethods.FPDFAnnot_GetRect(annot, ref rect)) continue;
+                                        int subtype = NativeMethods.FPDFAnnot_GetSubtype(annot);
 
-                                        double uiX = rect.left * (pageVM.Width / pageW);
-                                        double uiY = (pageH - rect.top) * (pageVM.Height / pageH);
-                                        double uiW = Math.Abs(rect.right - rect.left) * (pageVM.Width / pageW);
-                                        double uiH = Math.Abs(rect.top - rect.bottom) * (pageVM.Height / pageH);
-
-                                        string content = GetAnnotationStringValue(annot, "Contents");
-                                        if (content.StartsWith("Title: ")) // Adobe Note 무시
-                                            continue;
-
-                                        double fSize = 12;
-                                        Brush brush = Brushes.Black;
-                                        Brush background = Brushes.Transparent;
-                                        AnnotationType annType = AnnotationType.FreeText;
-
-                                        if (subtype == NativeMethods.FPDF_ANNOT_FREETEXT)
+                                        if (subtype == NativeMethods.FPDF_ANNOT_FREETEXT || 
+                                            subtype == NativeMethods.FPDF_ANNOT_HIGHLIGHT || 
+                                            subtype == NativeMethods.FPDF_ANNOT_UNDERLINE)
                                         {
-                                            annType = AnnotationType.FreeText;
-                                            string da = GetAnnotationStringValue(annot, "DA");
-                                            if (!string.IsNullOrEmpty(da))
-                                            {
-                                                var fsMatch = Regex.Match(da, @"([\d.]+)\s+Tf");
-                                                if (fsMatch.Success) double.TryParse(fsMatch.Groups[1].Value, out fSize);
+                                            var rect = new NativeMethods.FS_RECTF();
+                                            if (!NativeMethods.FPDFAnnot_GetRect(annot, ref rect)) continue;
 
-                                                var colMatch = Regex.Match(da, @"([\d.]+)\s+([\d.]+)\s+([\d.]+)\s+rg");
-                                                if (colMatch.Success)
+                                            double uiX = rect.left * (pageVM.Width / pageW);
+                                            double uiY = (pageH - rect.top) * (pageVM.Height / pageH);
+                                            double uiW = Math.Abs(rect.right - rect.left) * (pageVM.Width / pageW);
+                                            double uiH = Math.Abs(rect.top - rect.bottom) * (pageVM.Height / pageH);
+
+                                            string content = GetAnnotationStringValue(annot, "Contents");
+                                            if (content.StartsWith("Title: ")) // Adobe Note
+                                                continue;
+
+                                            double fSize = 12;
+                                            Brush brush = Brushes.Black;
+                                            Brush background = Brushes.Transparent;
+                                            AnnotationType annType = AnnotationType.FreeText;
+
+                                            if (subtype == NativeMethods.FPDF_ANNOT_FREETEXT)
+                                            {
+                                                annType = AnnotationType.FreeText;
+                                                string da = GetAnnotationStringValue(annot, "DA");
+                                                if (!string.IsNullOrEmpty(da))
                                                 {
-                                                    double.TryParse(colMatch.Groups[1].Value, out double r);
-                                                    double.TryParse(colMatch.Groups[2].Value, out double g);
-                                                    double.TryParse(colMatch.Groups[3].Value, out double b);
-                                                    var scb = new SolidColorBrush(Color.FromRgb((byte)(r * 255), (byte)(g * 255), (byte)(b * 255)));
-                                                    scb.Freeze();
-                                                    brush = scb;
+                                                    var fsMatch = Regex.Match(da, @"([\d.]+)\s+Tf");
+                                                    if (fsMatch.Success) double.TryParse(fsMatch.Groups[1].Value, out fSize);
+
+                                                    var colMatch = Regex.Match(da, @"([\d.]+)\s+([\d.]+)\s+([\d.]+)\s+rg");
+                                                    if (colMatch.Success)
+                                                    {
+                                                        double.TryParse(colMatch.Groups[1].Value, out double r);
+                                                        double.TryParse(colMatch.Groups[2].Value, out double g);
+                                                        double.TryParse(colMatch.Groups[3].Value, out double b);
+                                                        var scb = new SolidColorBrush(Color.FromRgb((byte)(r * 255), (byte)(g * 255), (byte)(b * 255)));
+                                                        scb.Freeze();
+                                                        brush = scb;
+                                                    }
                                                 }
                                             }
-                                        }
-                                        else if (subtype == NativeMethods.FPDF_ANNOT_HIGHLIGHT)
-                                        {
-                                            annType = AnnotationType.Highlight;
-                                            var bgBrush = new SolidColorBrush(Color.FromArgb(80, 255, 255, 0));
-                                            bgBrush.Freeze();
-                                            background = bgBrush;
-                                            uint r = 0, g = 0, b = 0, a = 0;
-                                            if (NativeMethods.FPDFAnnot_GetColor(annot, NativeMethods.FPDFANNOT_COLORTYPE_Color, ref r, ref g, ref b, ref a))
+                                            else if (subtype == NativeMethods.FPDF_ANNOT_HIGHLIGHT)
                                             {
-                                                var colorBrush = new SolidColorBrush(Color.FromArgb(80, (byte)r, (byte)g, (byte)b));
-                                                colorBrush.Freeze();
-                                                background = colorBrush;
+                                                annType = AnnotationType.Highlight;
+                                                var bgBrush = new SolidColorBrush(Color.FromArgb(80, 255, 255, 0));
+                                                bgBrush.Freeze();
+                                                background = bgBrush;
+                                                uint r = 0, g = 0, b = 0, a = 0;
+                                                if (NativeMethods.FPDFAnnot_GetColor(annot, NativeMethods.FPDFANNOT_COLORTYPE_Color, ref r, ref g, ref b, ref a))
+                                                {
+                                                    var colorBrush = new SolidColorBrush(Color.FromArgb(80, (byte)r, (byte)g, (byte)b));
+                                                    colorBrush.Freeze();
+                                                    background = colorBrush;
+                                                }
                                             }
-                                        }
-                                        else if (subtype == NativeMethods.FPDF_ANNOT_UNDERLINE)
-                                        {
-                                            annType = AnnotationType.Underline;
-                                        }
+                                            else if (subtype == NativeMethods.FPDF_ANNOT_UNDERLINE)
+                                            {
+                                                annType = AnnotationType.Underline;
+                                            }
 
-                                        extracted.Add(new PdfAnnotation
-                                        {
-                                            Type = annType,
-                                            X = uiX,
-                                            Y = uiY,
-                                            Width = uiW,
-                                            Height = uiH,
-                                            TextContent = content,
-                                            FontSize = fSize,
-                                            Foreground = brush,
-                                            Background = background
-                                        });
+                                            extracted.Add(new PdfAnnotation
+                                            {
+                                                Type = annType,
+                                                X = uiX,
+                                                Y = uiY,
+                                                Width = uiW,
+                                                Height = uiH,
+                                                TextContent = content,
+                                                FontSize = fSize,
+                                                Foreground = brush,
+                                                Background = background
+                                            });
+                                        }
+                                    }
+                                    finally
+                                    {
+                                        NativeMethods.FPDFPage_CloseAnnot(annot);
                                     }
                                 }
-                                finally
-                                {
-                                    NativeMethods.FPDFPage_CloseAnnot(annot);
-                                }
+                            }
+                            finally
+                            {
+                                NativeMethods.FPDF_ClosePage(page);
                             }
                         }
                         finally
                         {
-                            NativeMethods.FPDF_ClosePage(page);
+                            NativeMethods.FPDF_CloseDocument(doc);
                         }
-                    }
-                    finally
-                    {
-                        NativeMethods.FPDF_CloseDocument(doc);
-                    }
 
-                    if (extracted.Count > 0)
-                    {
-                        Application.Current.Dispatcher.Invoke(() =>
+                        if (extracted.Count > 0)
                         {
-                            if (pageVM.Annotations.Count == 0)
-                                foreach (var item in extracted) pageVM.Annotations.Add(item);
-                        });
+                            Application.Current.Dispatcher.Invoke(() =>
+                            {
+                                if (pageVM.Annotations.Count == 0)
+                                    foreach (var item in extracted) pageVM.Annotations.Add(item);
+                            });
+                        }
+                        Log($"LoadAnnotationsLazy finished for Page {pageVM.PageIndex}");
                     }
-                }
-                catch (Exception ex)
-                {
-                    System.Diagnostics.Debug.WriteLine($"Annotation Load Error: {ex.Message}");
+                    catch (Exception ex)
+                    {
+                        Log($"[CRITICAL] Annotation Load Error: {ex}");
+                        System.Diagnostics.Debug.WriteLine($"Annotation Load Error: {ex.Message}");
+                    }
                 }
             });
         }
