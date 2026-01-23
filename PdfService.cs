@@ -24,6 +24,7 @@ namespace MinsPDFViewer
     public class PdfService
     {
         public static readonly object PdfiumLock = new object();
+        private static readonly object _logLock = new object();
         private const double RENDER_SCALE = 2.0;
 
         // Pdfium P/Invoke declarations
@@ -72,9 +73,9 @@ namespace MinsPDFViewer
             public struct FS_RECTF
             {
                 public float left;
-                public float bottom;
-                public float right;
                 public float top;
+                public float right;
+                public float bottom;
             }
 
             public const int FPDF_ANNOT_UNKNOWN = 0;
@@ -419,12 +420,15 @@ namespace MinsPDFViewer
 
         private void LogToFile(string msg)
         {
-            try
+            lock (_logLock)
             {
-                string logPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "debug.log");
-                File.AppendAllText(logPath, $"[{DateTime.Now:HH:mm:ss.fff}] [PdfService] {msg}{Environment.NewLine}");
+                try
+                {
+                    string logPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "debug.log");
+                    File.AppendAllText(logPath, $"[{DateTime.Now:HH:mm:ss.fff}] [PdfService] {msg}{Environment.NewLine}");
+                }
+                catch { }
             }
-            catch { }
         }
 
         public async Task SavePdf(PdfDocumentModel model, string outputPath)
@@ -454,6 +458,8 @@ namespace MinsPDFViewer
                     {
                         if (ann.Type == AnnotationType.SearchHighlight ||
                             ann.Type == AnnotationType.SignaturePlaceholder) continue;
+
+                        LogToFile($"[DEBUG] Snapshotting Annot: Type={ann.Type}, Text='{ann.TextContent}', X={ann.X}, Y={ann.Y}");
 
                         var annData = new AnnotationSaveData
                         {
@@ -495,11 +501,26 @@ namespace MinsPDFViewer
                         for (int i = 0; i < sourceDoc.PageCount; i++)
                         {
                             var pdfPage = outputDoc.AddPage(sourceDoc.Pages[i]);
+                            
+                            // Clear existing annotations to avoid duplication
+                            pdfPage.Annotations.Clear();
+
                             // OCR 텍스트 레이어 추가 (Import 모드에서도 가능하면 그림)
                             if (i < pagesSnapshot.Count) DrawOcrText(outputDoc, pdfPage, pagesSnapshot[i].OcrWords, pagesSnapshot[i].Width, pagesSnapshot[i].Height);
                             
                             DrawAnnotationsOnPage(outputDoc, pdfPage, i, pagesSnapshot);
                         }
+
+                        // Set NeedAppearances to true to force viewers to regenerate annotation appearances
+                        var catalog = outputDoc.Internals.Catalog;
+                        var acroForm = catalog.Elements.GetDictionary("/AcroForm");
+                        if (acroForm == null)
+                        {
+                            acroForm = new PdfDictionary(outputDoc);
+                            catalog.Elements["/AcroForm"] = acroForm;
+                        }
+                        acroForm.Elements["/NeedAppearances"] = new PdfBoolean(true);
+
                         outputDoc.Save(outputPath);
                         standardSaveSuccess = true;
                         LogToFile("Standard save successful.");
@@ -632,18 +653,107 @@ namespace MinsPDFViewer
                         var form = new XForm(doc, new XRect(0, 0, ann.Width * scaleX, ann.Height * scaleY));
                         using (var gfx = XGraphics.FromForm(form))
                         {
-                            var font = new XFont("Malgun Gothic", ann.FontSize * scaleY, ann.IsBold ? XFontStyleEx.Bold : XFontStyleEx.Regular);
+                            // Try Noto Sans KR first, fallback to Malgun Gothic usually handled by system or font resolver
+                            var fontName = "Noto Sans KR"; 
+                            var font = new XFont(fontName, ann.FontSize * scaleY, ann.IsBold ? XFontStyleEx.Bold : XFontStyleEx.Regular);
+                            
+                            // If creation failed or needs fallback (simple check, though XFont usually doesn't throw immediately)
+                            if (font.FontFamily.Name != fontName) font = new XFont("Malgun Gothic", ann.FontSize * scaleY, ann.IsBold ? XFontStyleEx.Bold : XFontStyleEx.Regular);
+
                             var brush = new XSolidBrush(XColor.FromArgb(ann.ForegroundColor.A, ann.ForegroundColor.R, ann.ForegroundColor.G, ann.ForegroundColor.B));
-                            gfx.DrawString(ann.TextContent, font, brush, new XRect(0, 0, form.PixelWidth, form.PixelHeight), XStringFormats.TopLeft);
+                            gfx.DrawString(ann.TextContent, font, brush, new XRect(0, 0, ann.Width * scaleX, ann.Height * scaleY), XStringFormats.TopLeft);
                         }
 
-                        var apDict = new PdfDictionary(doc);
+                        // Add Resource Dictionary (/DR) so Pdfium can find the font
                         var pdfForm = GetPdfForm(form);
-                        if (pdfForm != null) apDict.Elements["/N"] = pdfForm.Reference;
-                        pdfAnnot.Elements["/AP"] = apDict;
+                        string fontKey = "/F1"; // Default fallback
+                        
+                        var dr = new PdfDictionary(doc);
+                        var fontDict = new PdfDictionary(doc);
+                        bool fontFound = false;
 
-                        string colorStr = $"{ann.ForegroundColor.R / 255.0:0.##} {ann.ForegroundColor.G / 255.0:0.##} {ann.ForegroundColor.B / 255.0:0.##} rg";
-                        pdfAnnot.Elements["/DA"] = new PdfString($"/MalgunGothic {ann.FontSize * scaleY:0.##} Tf {colorStr}");
+                        if (pdfForm != null)
+                        {
+                            var resources = pdfForm.Elements.GetDictionary("/Resources");
+                            if (resources != null)
+                            {
+                                var formFontDict = resources.Elements.GetDictionary("/Font");
+                                if (formFontDict != null && formFontDict.Elements.Count > 0)
+                                {
+                                    foreach (var key in formFontDict.Elements.Keys)
+                                    {
+                                        fontDict.Elements[key] = formFontDict.Elements[key];
+                                        fontKey = key;
+                                        fontFound = true;
+                                    }
+                                }
+                            }
+                        }
+
+                        // If PdfSharp didn't put the font in XForm resources, try to find it from the document
+                        if (!fontFound)
+                        {
+                            PdfDictionary? fallbackFont = null;
+                            foreach (var obj in doc.Internals.GetAllObjects())
+                            {
+                                if (obj is PdfDictionary d && d.Elements.GetName("/Type") == "/Font")
+                                {
+                                    var baseFont = d.Elements.GetName("/BaseFont");
+                                    var subtype = d.Elements.GetName("/Subtype");
+                                    
+                                    // High priority: Korean fonts we just added
+                                    if (baseFont.Contains("Noto") || baseFont.Contains("Malgun") || subtype == "/Type0")
+                                    {
+                                        fontDict.Elements["/F1"] = d.Reference;
+                                        fontKey = "/F1";
+                                        fontFound = true;
+                                        break; 
+                                    }
+                                    
+                                    // Lower priority fallback: any font
+                                    if (fallbackFont == null) fallbackFont = d;
+                                }
+                            }
+                            
+                            if (!fontFound && fallbackFont != null)
+                            {
+                                fontDict.Elements["/F1"] = fallbackFont.Reference;
+                                fontKey = "/F1";
+                                fontFound = true;
+                            }
+                        }
+
+                        // If STILL no font found (Clean PDF case), create a standard fallback font
+                        if (!fontFound)
+                        {
+                            var f = new PdfDictionary(doc);
+                            f.Elements["/Type"] = new PdfName("/Font");
+                            f.Elements["/Subtype"] = new PdfName("/Type1");
+                            f.Elements["/BaseFont"] = new PdfName("/Helvetica");
+                            f.Elements["/Encoding"] = new PdfName("/WinAnsiEncoding");
+                            doc.Internals.AddObject(f);
+                            fontDict.Elements["/F1"] = f.Reference;
+                            fontKey = "/F1";
+                            fontFound = true;
+                        }
+                        
+                        dr.Elements["/Font"] = fontDict;
+                        pdfAnnot.Elements["/DR"] = dr;
+
+                        if (pdfForm != null)
+                        {
+                            var apDict = new PdfDictionary(doc);
+                            apDict.Elements["/N"] = pdfForm.Reference;
+                            pdfAnnot.Elements["/AP"] = apDict;
+                        }
+
+                        // Use InvariantCulture to ensure dot decimal separator and prevent "Size 0" issues
+                        double finalFontSize = Math.Max(1.0, ann.FontSize * scaleY);
+                        string colorStr = string.Format(System.Globalization.CultureInfo.InvariantCulture, "{0:0.###} {1:0.###} {2:0.###} rg", 
+                            ann.ForegroundColor.R / 255.0, ann.ForegroundColor.G / 255.0, ann.ForegroundColor.B / 255.0);
+                        
+                        pdfAnnot.Elements["/DA"] = new PdfString(string.Format(System.Globalization.CultureInfo.InvariantCulture, 
+                            "{0} {1:0.###} Tf {2}", fontKey, finalFontSize, colorStr));
 
                         pdfPage.Annotations.Add(pdfAnnot);
                     }
@@ -659,12 +769,12 @@ namespace MinsPDFViewer
                             if (ann.Type == AnnotationType.Highlight)
                             {
                                 var brush = new XSolidBrush(XColor.FromArgb(ann.BackgroundColor.A, ann.BackgroundColor.R, ann.BackgroundColor.G, ann.BackgroundColor.B));
-                                gfx.DrawRectangle(brush, 0, 0, form.PixelWidth, form.PixelHeight);
+                                gfx.DrawRectangle(brush, 0, 0, ann.Width * scaleX, ann.Height * scaleY);
                             }
                             else
                             {
                                 var pen = new XPen(XColors.Black, 1 * scaleY);
-                                gfx.DrawLine(pen, 0, form.PixelHeight - 1, form.PixelWidth, form.PixelHeight - 1);
+                                gfx.DrawLine(pen, 0, (ann.Height * scaleY) - 1, ann.Width * scaleX, (ann.Height * scaleY) - 1);
                             }
                         }
                         var apDict = new PdfDictionary(doc);

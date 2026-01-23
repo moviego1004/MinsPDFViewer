@@ -16,6 +16,7 @@ namespace MinsPDFViewer
 
             // 한글 폰트는 모두 Malgun Gothic으로 매핑 (TTC 파일 이슈 회피)
             if (lowerName.Contains("malgun") || lowerName == "맑은 고딕" ||
+                lowerName.Contains("noto") ||
                 lowerName.Contains("gulim") || lowerName == "굴림" ||
                 lowerName.Contains("dotum") || lowerName == "돋움" ||
                 lowerName.Contains("batang") || lowerName == "바탕")

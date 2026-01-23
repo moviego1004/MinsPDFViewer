@@ -102,7 +102,7 @@
                                                 BorderBrush="Gray"
                                                 BorderThickness="1"
                                                 Background="#EEFFFFFF">
-                                        <TextBox Text="{Binding TextContent, UpdateSourceTrigger=PropertyChanged}"
+                                        <TextBox Text="{Binding TextContent, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
                                                  FontFamily="{Binding FontFamily}"
                                                  FontSize="{Binding FontSize}"
                                                  FontWeight="{Binding IsBold, Converter={StaticResource BoolToFontWeightConverter}}"

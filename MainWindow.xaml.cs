@@ -263,9 +263,10 @@ namespace MinsPDFViewer
 
         private FrameworkElement CreateAnnotationUI(PdfAnnotation ann)
         {
-            var cc = new ContentControl { DataContext = ann };
+            // [Fix] Must set BOTH DataContext (for outer bindings like Canvas.Left) AND Content (for inner DataTemplate)
+            var cc = new ContentControl { DataContext = ann, Content = ann, Focusable = false };
             
-            // Map types to templates defined in XAML Resources
+            // Set Resource Key based on type
             string templateKey = ann.Type switch
             {
                 AnnotationType.FreeText => "FreeTextTemplate",
@@ -755,19 +756,38 @@ namespace MinsPDFViewer
 
         private void AnnotationTextBox_Loaded(object sender, RoutedEventArgs e)
         {
-            if (sender is TextBox tb && tb.DataContext is PdfAnnotation ann)
+            var tb = sender as TextBox;
+            if (tb == null) return;
+
+            object dc = tb.DataContext;
+            Log($"[DEBUG] AnnotationTextBox_Loaded Fired. DataContext Type: {(dc != null ? dc.GetType().Name : "null")}");
+
+            if (dc is PdfAnnotation ann)
             {
+                // [Robustness] Force subscribe to ensure event fires
                 tb.TextChanged -= AnnotationTextBox_TextChanged;
                 tb.TextChanged += AnnotationTextBox_TextChanged;
+                
+                // [Sync] Ensure initial text is correct
+                if (ann.TextContent != tb.Text) tb.Text = ann.TextContent;
+
                 if (ann.IsSelected) tb.Focus();
+                Log($"[DEBUG] AnnotationTextBox_Loaded: TextBox loaded for '{ann.TextContent}'");
+            }
+            else
+            {
+                Log($"[CRITICAL] AnnotationTextBox_Loaded: DataContext is NOT PdfAnnotation! It is {dc}");
             }
         }
 
         private void AnnotationTextBox_TextChanged(object sender, TextChangedEventArgs e)
         {
+            Log("[DEBUG] AnnotationTextBox_TextChanged Fired (Raw)");
             if (sender is TextBox tb && tb.DataContext is PdfAnnotation ann)
             {
-                if (ann.TextContent != tb.Text) ann.TextContent = tb.Text;
+                // [Direct Sync] Always push text to model, bypassing binding if necessary
+                ann.TextContent = tb.Text;
+                Log($"[DEBUG] TextChanged: Model updated to '{ann.TextContent}'");
 
                 var formattedText = new FormattedText(tb.Text, CultureInfo.CurrentCulture, FlowDirection.LeftToRight,
                     new Typeface(new System.Windows.Media.FontFamily(ann.FontFamily), FontStyles.Normal, ann.IsBold ? FontWeights.Bold : FontWeights.Normal, FontStretches.Normal),
@@ -929,10 +949,28 @@ namespace MinsPDFViewer
 
         private async void BtnSave_Click(object sender, RoutedEventArgs e)
         {
-            Log($"[DEBUG] BtnSave_Click Entry. SelectedDoc={(SelectedDocument != null ? "Valid" : "Null")}");
+            // [Fix] Force update bindings by clearing focus (handling IME composition/active TextBox)
+            Keyboard.ClearFocus();
+            FocusManager.SetFocusedElement(this, this);
+
             if (SelectedDocument == null) return;
 
-            string originalPath = SelectedDocument.FilePath;
+            // [Audit Log] Check memory state before save
+            foreach (var p in SelectedDocument.Pages)
+            {
+                foreach (var a in p.Annotations)
+                {
+                    if (a.Type == AnnotationType.FreeText)
+                    {
+                        Log($"[DEBUG] Pre-Save Audit: Page={p.PageIndex}, Text='{a.TextContent}', Rect=({a.X},{a.Y},{a.Width},{a.Height})");
+                    }
+                }
+            }
+
+            // Capture the document to save in a local variable to prevent NRE if selection changes
+            var docToSave = SelectedDocument;
+
+            string originalPath = docToSave.FilePath;
             string tempPath = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString() + ".pdf");
             int currentPageIndex = GetCurrentPageIndex();
             var sv = GetCurrentScrollViewer();
@@ -942,25 +980,28 @@ namespace MinsPDFViewer
             try
             {
                 TxtStatus.Text = "저장 중...";
-                await _pdfService.SavePdf(SelectedDocument, tempPath);
+                await _pdfService.SavePdf(docToSave, tempPath);
                 
-                var docToClose = SelectedDocument;
-                docToClose.Dispose();
-                Documents.Remove(docToClose);
-                SelectedDocument = null;
+                docToSave.Dispose();
+                Documents.Remove(docToSave);
+                if (SelectedDocument == docToSave) SelectedDocument = null;
                 
                 await Task.Run(() => File.Copy(tempPath, originalPath, true));
                 
                 _historyService.SetLastPage(originalPath, currentPageIndex);
                 _historyService.SaveHistory();
                 
-                OpenPdfFromPath(originalPath);
+                await OpenPdfFromPath(originalPath);
                 
-                await Dispatcher.InvokeAsync(() => {
-                    var newSv = GetCurrentScrollViewer();
-                    newSv?.ScrollToVerticalOffset(vOffset);
-                    newSv?.ScrollToHorizontalOffset(hOffset);
-                }, System.Windows.Threading.DispatcherPriority.Loaded);
+                // Allow UI to update bindings
+                await Dispatcher.InvokeAsync(() => { }, System.Windows.Threading.DispatcherPriority.Loaded);
+
+                var newSv = GetCurrentScrollViewer();
+                if (newSv != null)
+                {
+                    newSv.ScrollToVerticalOffset(vOffset);
+                    newSv.ScrollToHorizontalOffset(hOffset);
+                }
                 
                 TxtStatus.Text = "저장 완료";
                 MessageBox.Show("저장되었습니다.");
@@ -1250,7 +1291,7 @@ namespace MinsPDFViewer
             return 0;
         }
 
-        public async void OpenPdfFromPath(string path)
+        public async Task OpenPdfFromPath(string path)
         {
             if (!File.Exists(path)) return;
             Log($"[DEBUG] OpenPdfFromPath: {path}");
