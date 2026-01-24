@@ -80,7 +80,7 @@ namespace MinsPDFViewer
             InitializeComponent();
             DataContext = this;
             _pdfService = new PdfService();
-            _searchService = new SearchService();
+            _searchService = new SearchService(_pdfService);
             _signatureService = new PdfSignatureService();
             _historyService = new HistoryService();
 
@@ -273,6 +273,7 @@ namespace MinsPDFViewer
                 AnnotationType.FreeText => "FreeTextTemplate",
                 AnnotationType.Highlight => "HighlightTemplate",
                 AnnotationType.Underline => "UnderlineTemplate",
+                AnnotationType.SearchHighlight => "SearchHighlightTemplate",
                 AnnotationType.SignaturePlaceholder => "SignaturePlaceholderTemplate",
                 AnnotationType.SignatureField => "SignatureFieldTemplate",
                 _ => null
@@ -299,7 +300,12 @@ namespace MinsPDFViewer
             {
                 if (SelectedDocument != null)
                 {
-                    Task.Run(() => _pdfService.RenderPageImage(SelectedDocument, pageVM));
+                    // Cancel any previous render for this page
+                    pageVM.CancelRender();
+                    var cts = new System.Threading.CancellationTokenSource();
+                    pageVM.RenderCts = cts;
+                    var doc = SelectedDocument;
+                    _pdfService.RenderPageAsync(doc, pageVM, cts.Token);
                 }
             }
         }
@@ -394,30 +400,41 @@ namespace MinsPDFViewer
         {
             try
             {
-                Log($"[DEBUG] Page_MouseDown called, _currentTool = {_currentTool}");
-
                 // 1. Check if we clicked on an annotation (including TextBox)
                 if (IsAnnotationObject(e.OriginalSource))
                 {
-                    Log("[DEBUG] Page_MouseDown: Clicked on Annotation - Ignoring");
                     return;
                 }
 
                 // 2. Only if NOT clicking an annotation, clear focus from TextBox
                 if (Keyboard.FocusedElement is TextBox)
                 {
-                    Log("[DEBUG] Page_MouseDown: Clearing Focus");
                     Keyboard.ClearFocus();
                 }
 
                 if (SelectedDocument == null) return;
-                var grid = sender as Grid ?? FindAncestor<Grid>(e.OriginalSource as DependencyObject);
+                
+                // Since we removed EventSetter from ListViewItem, sender should be the Grid from DataTemplate
+                var grid = sender as Grid;
                 if (grid == null) return;
+                
                 var pageVM = grid.DataContext as PdfPageViewModel;
                 if (pageVM == null) return;
+                
                 _activePageIndex = pageVM.PageIndex;
                 _dragStartPoint = e.GetPosition(grid);
 
+                // [Fix] Check if clicked area is a Signature Field (Fallback for missing Widget annotation)
+                if (_currentTool == "CURSOR")
+                {
+                    if (CheckSignatureFieldClick(pageVM, _dragStartPoint))
+                    {
+                        e.Handled = true;
+                        return;
+                    }
+                }
+
+                // [Text Tool Logic]
                 if (_currentTool == "TEXT")
                 {
                     if (_selectedAnnotation != null) _selectedAnnotation.IsSelected = false;
@@ -426,25 +443,61 @@ namespace MinsPDFViewer
                     var canvas = FindChild<Canvas>(grid, "AnnotationCanvas");
                     if (canvas != null) RefreshCanvas(canvas, pageVM);
                     _selectedAnnotation = newAnnot; _currentTool = "CURSOR"; RbCursor.IsChecked = true;
-                    UpdateToolbarFromAnnotation(_selectedAnnotation); CheckToolbarVisibility(); e.Handled = true; return;
+                    UpdateToolbarFromAnnotation(_selectedAnnotation); CheckToolbarVisibility(); 
+                    e.Handled = true; 
+                    return;
                 }
 
+                // [Highlight Tool Logic]
                 if (_currentTool == "HIGHLIGHT")
                 {
                     if (_selectedAnnotation != null) _selectedAnnotation.IsSelected = false;
-                    foreach (var p in SelectedDocument.Pages) { p.IsSelecting = false; p.IsHighlighting = false; p.SelectionWidth = 0; p.SelectionHeight = 0; }
-                    SelectionPopup.IsOpen = false; pageVM.IsSelecting = true; pageVM.IsHighlighting = true; pageVM.SelectionX = _dragStartPoint.X; pageVM.SelectionY = _dragStartPoint.Y; grid.CaptureMouse();
-                    e.Handled = true; return;
+                    
+                    // Clear selection on all pages
+                    foreach (var p in SelectedDocument.Pages) 
+                    { 
+                        p.IsSelecting = false; 
+                        p.IsHighlighting = false; 
+                        p.SelectionWidth = 0; 
+                        p.SelectionHeight = 0; 
+                    }
+                    
+                    SelectionPopup.IsOpen = false; 
+                    
+                    // Setup new selection
+                    pageVM.IsSelecting = true; 
+                    pageVM.IsHighlighting = true; 
+                    pageVM.SelectionX = _dragStartPoint.X; 
+                    pageVM.SelectionY = _dragStartPoint.Y; 
+                    pageVM.SelectionWidth = 0;
+                    pageVM.SelectionHeight = 0;
+                    
+                    // Capture mouse to ensure we get MouseMove/MouseUp events
+                    if (grid.CaptureMouse())
+                    {
+                        e.Handled = true;
+                    }
+                    return;
                 }
                 
-                // Moved IsAnnotationObject check to top
-
                 if (_selectedAnnotation != null) { _selectedAnnotation.IsSelected = false; _selectedAnnotation = null; CheckToolbarVisibility(); }
+                
+                // [Cursor Tool Logic - Selection]
                 if (_currentTool == "CURSOR")
                 {
                     foreach (var p in SelectedDocument.Pages) { p.IsSelecting = false; p.IsHighlighting = false; p.SelectionWidth = 0; p.SelectionHeight = 0; }
-                    SelectionPopup.IsOpen = false; pageVM.IsSelecting = true; pageVM.IsHighlighting = false; pageVM.SelectionX = _dragStartPoint.X; pageVM.SelectionY = _dragStartPoint.Y; grid.CaptureMouse();
-                    e.Handled = true;
+                    SelectionPopup.IsOpen = false; 
+                    pageVM.IsSelecting = true; 
+                    pageVM.IsHighlighting = false; 
+                    pageVM.SelectionX = _dragStartPoint.X; 
+                    pageVM.SelectionY = _dragStartPoint.Y; 
+                    pageVM.SelectionWidth = 0;
+                    pageVM.SelectionHeight = 0;
+
+                    if (grid.CaptureMouse())
+                    {
+                        e.Handled = true;
+                    }
                 }
                 CheckToolbarVisibility();
             }
@@ -480,7 +533,77 @@ namespace MinsPDFViewer
             return false;
         }
 
-        public void Page_MouseMove(object sender, MouseEventArgs e)
+        private bool CheckSignatureFieldClick(PdfPageViewModel pageVM, Point clickPoint)
+        {
+            if (SelectedDocument == null || !File.Exists(SelectedDocument.FilePath)) return false;
+
+            try
+            {
+                // UI Coordinate -> PDF Coordinate Logic
+                // clickPoint is relative to Grid (Page View).
+                // PDF Origin is Bottom-Left. UI is Top-Left.
+                
+                // Calculate Scale
+                double scaleX = pageVM.Width / pageVM.PdfPageWidthPoint;
+                double scaleY = pageVM.Height / pageVM.PdfPageHeightPoint;
+                
+                if (scaleX <= 0 || scaleY <= 0) return false;
+
+                double pdfX = clickPoint.X / scaleX;
+                double pdfY = pageVM.PdfPageHeightPoint - (clickPoint.Y / scaleY);
+
+                using (var doc = PdfReader.Open(SelectedDocument.FilePath, PdfDocumentOpenMode.Import))
+                {
+                    if (pageVM.OriginalPageIndex >= doc.PageCount) return false;
+                    
+                    var page = doc.Pages[pageVM.OriginalPageIndex];
+                    if (page.Annotations == null) return false;
+
+                    foreach (var annot in page.Annotations)
+                    {
+                        var pa = annot as PdfDictionary;
+                        if (pa != null && 
+                            pa.Elements.GetString("/Subtype") == "/Widget" && 
+                            pa.Elements.GetString("/FT") == "/Sig")
+                        {
+                            var rectArr = pa.Elements.GetArray("/Rect");
+                            if (rectArr != null && rectArr.Elements.Count == 4)
+                            {
+                                double rL = rectArr.Elements.GetReal(0);
+                                double rB = rectArr.Elements.GetReal(1);
+                                double rR = rectArr.Elements.GetReal(2);
+                                double rT = rectArr.Elements.GetReal(3);
+
+                                if (pdfX >= rL && pdfX <= rR && pdfY >= rB && pdfY <= rT)
+                                {
+                                    // Found matching signature field!
+                                    var dict = pa.Elements.GetDictionary("/V");
+                                    if (dict != null)
+                                    {
+                                        var res = new SignatureVerificationService().VerifySignature(SelectedDocument.FilePath, dict);
+                                        new SignatureResultWindow(res) { Owner = this }.ShowDialog();
+                                        return true;
+                                    }
+                                    else
+                                    {
+                                        // Empty signature field (click to sign?)
+                                        // For now, just return true to consume click or false to allow selection
+                                        // Let's allow selecting empty fields if needed, but here we assume verification.
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Log($"[CheckSignatureFieldClick] Error: {ex}");
+            }
+            return false;
+        }
+
+        private void Page_MouseMove(object sender, MouseEventArgs e)
         {
             if (_activePageIndex == -1 || SelectedDocument == null)
                 return;
@@ -994,7 +1117,9 @@ namespace MinsPDFViewer
                 TxtStatus.Text = "저장 중...";
                 await _pdfService.SavePdf(docToSave, tempPath);
                 
-                docToSave.Dispose();
+                // [Fix] Wait for file release before copying
+                await docToSave.CloseAsync();
+                
                 Documents.Remove(docToSave);
                 if (SelectedDocument == docToSave) SelectedDocument = null;
                 
@@ -1013,6 +1138,26 @@ namespace MinsPDFViewer
                 {
                     newSv.ScrollToVerticalOffset(vOffset);
                     newSv.ScrollToHorizontalOffset(hOffset);
+                    
+                    // [Fix] Force re-render visible pages after reload and scroll
+                    await Dispatcher.InvokeAsync(() => 
+                    {
+                        if (SelectedDocument != null)
+                        {
+                            int currentIdx = GetCurrentPageIndex();
+                            int start = Math.Max(0, currentIdx - 2);
+                            int end = Math.Min(SelectedDocument.Pages.Count - 1, currentIdx + 5);
+
+                            for (int i = start; i <= end; i++)
+                            {
+                                var p = SelectedDocument.Pages[i];
+                                var cts = new System.Threading.CancellationTokenSource();
+                                p.RenderCts?.Cancel();
+                                p.RenderCts = cts;
+                                _pdfService.RenderPageAsync(SelectedDocument, p, cts.Token);
+                            }
+                        }
+                    }, System.Windows.Threading.DispatcherPriority.ContextIdle);
                 }
                 
                 TxtStatus.Text = "저장 완료";
@@ -1219,20 +1364,66 @@ namespace MinsPDFViewer
                 try {
                     using (var doc = PdfReader.Open(SelectedDocument.FilePath, PdfDocumentOpenMode.Import)) {
                         PdfDictionary? dict = null;
-                        foreach (var page in doc.Pages) {
+                        int pageIndex = -1;
+                        
+                        // Find page index for annotation
+                        for (int i = 0; i < SelectedDocument.Pages.Count; i++) {
+                            if (SelectedDocument.Pages[i].Annotations.Contains(ann)) {
+                                pageIndex = i;
+                                break;
+                            }
+                        }
+
+                        if (pageIndex != -1 && pageIndex < doc.PageCount) {
+                            var page = doc.Pages[pageIndex];
                             if (page.Annotations != null) {
                                 for (int i=0; i<page.Annotations.Count; i++) {
                                     var pa = page.Annotations[i] as PdfDictionary;
-                                    if (pa != null && pa.Elements.GetString("/Subtype") == "/Widget" && pa.Elements.GetString("/FT") == "/Sig" && pa.Elements.GetString("/T") == ann.FieldName) {
-                                        dict = pa.Elements.GetDictionary("/V"); break;
+                                    if (pa != null && pa.Elements.GetString("/Subtype") == "/Widget" && pa.Elements.GetString("/FT") == "/Sig") {
+                                        // 1. Try match by Field Name
+                                        string fieldName = pa.Elements.GetString("/T");
+                                        if (fieldName == ann.FieldName) {
+                                            dict = pa.Elements.GetDictionary("/V"); break;
+                                        }
+                                        
+                                        // 2. Try match by Rect (if Name failed)
+                                        // Convert PDF Rect to UI coords or vice versa to check overlap
+                                        // Simple heuristic: Center point must be inside rect
+                                        var rectArr = pa.Elements.GetArray("/Rect");
+                                        if (rectArr != null && rectArr.Elements.Count == 4) {
+                                            double rL = rectArr.Elements.GetReal(0);
+                                            double rB = rectArr.Elements.GetReal(1);
+                                            double rR = rectArr.Elements.GetReal(2);
+                                            double rT = rectArr.Elements.GetReal(3);
+                                            
+                                            // Scale factors
+                                            var pageVM = SelectedDocument.Pages[pageIndex];
+                                            double scaleX = pageVM.Width / pageVM.PdfPageWidthPoint;
+                                            double scaleY = pageVM.Height / pageVM.PdfPageHeightPoint;
+                                            
+                                            // Check ann center in PDF coords
+                                            // Ann Y is from Top. PDF Y is from Bottom.
+                                            double annCenterX_UI = ann.X + (ann.Width / 2);
+                                            double annCenterY_UI = ann.Y + (ann.Height / 2);
+                                            
+                                            double annCenterX_PDF = annCenterX_UI / scaleX;
+                                            double annCenterY_PDF = pageVM.PdfPageHeightPoint - (annCenterY_UI / scaleY);
+                                            
+                                            if (annCenterX_PDF >= rL && annCenterX_PDF <= rR &&
+                                                annCenterY_PDF >= rB && annCenterY_PDF <= rT) {
+                                                dict = pa.Elements.GetDictionary("/V"); break;
+                                            }
+                                        }
                                     }
                                 }
                             }
-                            if (dict != null) break;
                         }
+
                         if (dict != null) {
                             var res = new SignatureVerificationService().VerifySignature(SelectedDocument.FilePath, dict);
                             new SignatureResultWindow(res) { Owner = this }.ShowDialog();
+                        } else {
+                            MessageBox.Show("서명 데이터를 찾을 수 없습니다.");
                         }
                     }
                 } catch (Exception ex) { MessageBox.Show($"검증 오류: {ex.Message}"); }
@@ -1240,10 +1431,27 @@ namespace MinsPDFViewer
         }
 
         private void BtnToggleSidebar_Click(object sender, RoutedEventArgs e) => SidebarBorder.Visibility = SidebarBorder.Visibility == Visibility.Visible ? Visibility.Collapsed : Visibility.Visible;
+        private void ScrollToPage(int pageIndex)
+        {
+            if (SelectedDocument == null || pageIndex < 0 || pageIndex >= SelectedDocument.Pages.Count) return;
+            
+            var sv = GetCurrentScrollViewer();
+            if (sv == null) return;
+
+            double targetOffset = 0;
+            for (int i = 0; i < pageIndex; i++)
+            {
+                var p = SelectedDocument.Pages[i];
+                // Item Height = PageHeight + Margin(20) + Border(2)
+                targetOffset += p.Height + 22;
+            }
+
+            sv.ScrollToVerticalOffset(targetOffset);
+        }
+
         private void BookmarkTree_SelectedItemChanged(object sender, RoutedPropertyChangedEventArgs<object> e) {
             if (e.NewValue is PdfBookmarkViewModel bm && SelectedDocument != null) {
-                var target = SelectedDocument.Pages.FirstOrDefault(p => p.PageIndex == bm.PageIndex);
-                if (target != null) GetCurrentListView()?.ScrollIntoView(target);
+                ScrollToPage(bm.PageIndex);
             }
         }
 
@@ -1281,7 +1489,7 @@ namespace MinsPDFViewer
         private void PdfListView_ScrollChanged(object sender, ScrollChangedEventArgs e) { if (SelectedDocument != null) TxtPageInfo.Text = $"{GetCurrentPageIndex() + 1} / {SelectedDocument.Pages.Count}"; }
         private void BtnAddBookmark_Click(object sender, RoutedEventArgs e) { if (SelectedDocument != null) SelectedDocument.Bookmarks.Add(new PdfBookmarkViewModel { Title = $"Page {GetCurrentPageIndex() + 1}", PageIndex = GetCurrentPageIndex() }); }
         private void BtnUpdateBookmarkPage_Click(object sender, RoutedEventArgs e) { if (BookmarkTree.SelectedItem is PdfBookmarkViewModel bm) { int idx = GetCurrentPageIndex(); bm.PageIndex = idx; if (bm.Title.StartsWith("새 책갈피")) bm.Title = $"새 책갈피 (p.{idx + 1})"; } }
-        private void BookmarkItem_PreviewMouseLeftButtonUp(object sender, MouseButtonEventArgs e) { if ((sender as FrameworkElement)?.DataContext is PdfBookmarkViewModel bm && SelectedDocument != null) { var t = SelectedDocument.Pages.FirstOrDefault(p => p.PageIndex == bm.PageIndex); if (t != null) GetCurrentListView()?.ScrollIntoView(t); } }
+        private void BookmarkItem_PreviewMouseLeftButtonUp(object sender, MouseButtonEventArgs e) { if ((sender as FrameworkElement)?.DataContext is PdfBookmarkViewModel bm && SelectedDocument != null) { ScrollToPage(bm.PageIndex); } }
         private void BtnDeleteBookmark_Click(object sender, RoutedEventArgs e) { var t = (sender as MenuItem)?.DataContext as PdfBookmarkViewModel ?? BookmarkTree.SelectedItem as PdfBookmarkViewModel; if (t != null && SelectedDocument != null) { if (SelectedDocument.Bookmarks.Contains(t)) SelectedDocument.Bookmarks.Remove(t); else t.Parent?.Children.Remove(t); } }
         private void BtnMoveBookmarkUp_Click(object sender, RoutedEventArgs e) { if (BookmarkTree.SelectedItem is PdfBookmarkViewModel bm) { var col = GetCurrentCollection(bm); int i = col?.IndexOf(bm) ?? -1; if (i > 0) col?.Move(i, i - 1); } }
         private void BtnMoveBookmarkDown_Click(object sender, RoutedEventArgs e) { if (BookmarkTree.SelectedItem is PdfBookmarkViewModel bm) { var col = GetCurrentCollection(bm); int i = col?.IndexOf(bm) ?? -1; if (i >= 0 && i < col.Count - 1) col?.Move(i, i + 1); } }
@@ -1291,16 +1499,26 @@ namespace MinsPDFViewer
 
         private int GetCurrentPageIndex()
         {
-            if (SelectedDocument == null) return 0;
+            if (SelectedDocument == null || SelectedDocument.Pages.Count == 0) return 0;
             var sv = GetCurrentScrollViewer();
             if (sv == null) return 0;
-            double off = sv.VerticalOffset; double acc = 0;
-            foreach (var p in SelectedDocument.Pages) {
-                double h = (p.Height * SelectedDocument.Zoom) + 20;
-                if (acc + h > off + 50) return p.PageIndex;
-                acc += h;
+
+            // [Fix] Calculate based on screen center
+            double targetY = sv.VerticalOffset + (sv.ViewportHeight / 2.0);
+            double currentY = 0;
+
+            foreach (var p in SelectedDocument.Pages)
+            {
+                // p.Height is already scaled by Zoom (updated in PropertyChanged handler)
+                // Add Margin (10 top + 10 bottom) + Border (1 top + 1 bottom) = 22 approx
+                double itemHeight = p.Height + 22;
+
+                if (currentY + itemHeight > targetY)
+                    return p.PageIndex;
+
+                currentY += itemHeight;
             }
-            return 0;
+            return SelectedDocument.Pages.Count - 1;
         }
 
         public async Task OpenPdfFromPath(string path)
@@ -1310,7 +1528,52 @@ namespace MinsPDFViewer
             var existing = Documents.FirstOrDefault(d => d.FilePath.Equals(path, StringComparison.OrdinalIgnoreCase));
             if (existing != null) { SelectedDocument = existing; return; }
             var doc = await _pdfService.LoadPdfAsync(path);
-            if (doc != null) { await _pdfService.InitializeDocumentAsync(doc); Documents.Add(doc); SelectedDocument = doc; }
+            if (doc != null) 
+            { 
+                // [Fix] Zoom changed event handler to update page sizes
+                doc.PropertyChanged += (s, e) =>
+                {
+                    if (e.PropertyName == nameof(PdfDocumentModel.Zoom))
+                    {
+                        // 1. Update dimensions for ALL pages (required for scrollbar)
+                        foreach (var p in doc.Pages)
+                        {
+                            p.Width = p.PdfPageWidthPoint * doc.Zoom;
+                            p.Height = p.PdfPageHeightPoint * doc.Zoom;
+                            
+                            // Optional: Clear ImageSource to force refresh? 
+                            // No, keep old image (blurry) until new one arrives to avoid flashing white.
+                        }
+
+                        // 2. Request re-render ONLY for visible pages (optimization)
+                        // Virtualization will handle the rest when scrolling, but we need to update current view immediately.
+                        int currentIdx = GetCurrentPageIndex();
+                        int start = Math.Max(0, currentIdx - 2);
+                        int end = Math.Min(doc.Pages.Count - 1, currentIdx + 5); // Render a bit more downwards
+
+                        for (int i = start; i <= end; i++)
+                        {
+                             var p = doc.Pages[i];
+                             var cts = new System.Threading.CancellationTokenSource();
+                             p.RenderCts?.Cancel();
+                             p.RenderCts = cts;
+                             _pdfService.RenderPageAsync(doc, p, cts.Token);
+                        }
+                    }
+                };
+                
+                await _pdfService.InitializeDocumentAsync(doc); 
+                
+                // Initial size calculation based on default Zoom (1.0)
+                foreach(var p in doc.Pages)
+                {
+                    p.Width = p.PdfPageWidthPoint * doc.Zoom;
+                    p.Height = p.PdfPageHeightPoint * doc.Zoom;
+                }
+                
+                Documents.Add(doc); 
+                SelectedDocument = doc; 
+            }
         }
 
         private void BtnOpen_Click(object sender, RoutedEventArgs e) { var dlg = new OpenFileDialog { Filter = "PDF Files|*.pdf" }; if (dlg.ShowDialog() == true) OpenPdfFromPath(dlg.FileName); }
@@ -1335,7 +1598,34 @@ namespace MinsPDFViewer
         private void Window_PreviewMouseUp(object sender, MouseButtonEventArgs e) { if (_isPanning) { _isPanning = false; GetCurrentListView()?.ReleaseMouseCapture(); e.Handled = true; } }
         private void Window_PreviewMouseWheel(object sender, MouseWheelEventArgs e) { } // No-op, handled by PdfListView_PreviewMouseWheel
         private void BtnAddBlankPage_Click(object sender, RoutedEventArgs e) => MessageBox.Show("준비 중");
-        private void BtnDeletePage_Click(object sender, RoutedEventArgs e) => MessageBox.Show("준비 중");
+        private void BtnDeletePage_Click(object sender, RoutedEventArgs e)
+        {
+            if (SelectedDocument == null || SelectedDocument.Pages.Count == 0) return;
+
+            int currentPageIndex = GetCurrentPageIndex();
+            if (currentPageIndex < 0 || currentPageIndex >= SelectedDocument.Pages.Count) return;
+
+            var result = MessageBox.Show($"{currentPageIndex + 1}페이지를 삭제하시겠습니까?", "페이지 삭제", MessageBoxButton.YesNo, MessageBoxImage.Warning);
+            if (result == MessageBoxResult.Yes)
+            {
+                var pageVM = SelectedDocument.Pages[currentPageIndex];
+                
+                // 리소스 정리
+                pageVM.Unload();
+                
+                // 컬렉션에서 제거
+                SelectedDocument.Pages.RemoveAt(currentPageIndex);
+                
+                // 페이지 인덱스 갱신 (UI용)
+                for (int i = 0; i < SelectedDocument.Pages.Count; i++)
+                {
+                    SelectedDocument.Pages[i].PageIndex = i;
+                }
+                
+                // 상태바 갱신
+                TxtPageInfo.Text = $"{Math.Min(currentPageIndex + 1, SelectedDocument.Pages.Count)} / {SelectedDocument.Pages.Count}";
+            }
+        }
         private void BtnRotateLeft_Click(object sender, RoutedEventArgs e) { if (SelectedDocument != null) foreach (var p in SelectedDocument.Pages) p.Rotation = (p.Rotation + 270) % 360; }
         private void BtnRotateRight_Click(object sender, RoutedEventArgs e) { if (SelectedDocument != null) foreach (var p in SelectedDocument.Pages) p.Rotation = (p.Rotation + 90) % 360; }
 

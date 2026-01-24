@@ -422,7 +422,7 @@
                                                                                         </TextBox.Style>
                                                                                 </TextBox>
                                                                         </Grid>
-                                                                        <TextBlock Text="{Binding PageIndex, StringFormat=' (p.{0})'}"
+                                                                        <TextBlock Text="{Binding PageNumber, StringFormat=' (p.{0})'}"
                                                                                         Foreground="Gray"
                                                                                         FontSize="10"
                                                                                         VerticalAlignment="Center"
@@ -495,23 +495,16 @@
                                                                 Background="LightGray"
                                                                 BorderThickness="0"
                                                                 PreviewMouseDown="ListView_PreviewMouseDown">
-                                                        <ListView.ItemContainerStyle>
-                                                                <Style TargetType="ListViewItem">
-                                                                        <Setter Property="Margin"
-                                                                                        Value="10"/>
-                                                                        <Setter Property="HorizontalContentAlignment"
-                                                                                        Value="Center"/>
-                                                                        <Setter Property="Focusable"
-                                                                                        Value="False"/>
-                                                                        <EventSetter Event="PreviewMouseDown"
-                                                                                     Handler="Page_MouseDown"/>
-                                                                        <EventSetter Event="PreviewMouseMove"
-                                                                                     Handler="Page_MouseMove"/>
-                                                                        <EventSetter Event="PreviewMouseUp"
-                                                                                     Handler="Page_MouseUp"/>
-                                                                </Style>
-                                                        </ListView.ItemContainerStyle>
-
+                                                                                <ListView.ItemContainerStyle>
+                                                                                        <Style TargetType="ListViewItem">
+                                                                                                <Setter Property="Margin"
+                                                                                                                Value="10"/>
+                                                                                                <Setter Property="HorizontalContentAlignment"
+                                                                                                                Value="Center"/>
+                                                                                                <Setter Property="Focusable"
+                                                                                                                Value="False"/>
+                                                                                        </Style>
+                                                                                </ListView.ItemContainerStyle>
                                                         <ListView.ItemTemplate>
                                                                 <DataTemplate>
                                                                         <Border BorderBrush="Black"

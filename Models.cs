@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.ComponentModel;
+using System.Threading;
 using System.Windows;
 using System.Windows.Media;
 using PdfiumViewer;
@@ -55,6 +56,28 @@ namespace MinsPDFViewer
         public ObservableCollection<PdfPageViewModel> Pages { get; set; } = new ObservableCollection<PdfPageViewModel>();
         public ObservableCollection<PdfBookmarkViewModel> Bookmarks { get; set; } = new ObservableCollection<PdfBookmarkViewModel>();
 
+        public async Task CloseAsync()
+        {
+            if (IsDisposed) return;
+            IsDisposed = true;
+
+            await Task.Run(() =>
+            {
+                lock (PdfService.PdfiumLock)
+                {
+                    try
+                    {
+                        PdfDocument?.Dispose();
+                        PdfDocument = null;
+                        FileStream?.Close();
+                        FileStream?.Dispose();
+                        FileStream = null;
+                    }
+                    catch { }
+                }
+            });
+        }
+
         public void Dispose()
         {
             Dispose(true);
@@ -69,37 +92,47 @@ namespace MinsPDFViewer
 
             if (disposing)
             {
-                // [FIX] Lock 순서 변경: PdfiumLock을 먼저 잡고, 그 안에서 Dispatcher 호출
-                lock (PdfService.PdfiumLock)
+                // [FIX] Avoid blocking UI thread or deadlocks during Dispose
+                // Do not lock PdfiumLock here if possible, or ensure it's safe.
+                // Pdfium operations must be locked, but Dispose of PdfDocument might need it.
+                
+                // Offload to background or handle carefully. 
+                // Since PdfDocument.Dispose() might access native resources, we lock.
+                
+                Action disposeAction = () =>
                 {
-                    try
+                    lock (PdfService.PdfiumLock)
                     {
-                        if (Application.Current != null)
+                        try
                         {
-                            Application.Current.Dispatcher.Invoke(() =>
-                            {
-                                try
-                                {
-                                    PdfDocument?.Dispose();
-                                    PdfDocument = null;
-                                    FileStream?.Close();
-                                    FileStream?.Dispose();
-                                    FileStream = null;
-                                }
-                                catch { }
-                            });
-                        }
-                        else
-                        {
-                            // Application.Current가 null인 경우 (앱 종료 시)
                             PdfDocument?.Dispose();
                             PdfDocument = null;
                             FileStream?.Close();
                             FileStream?.Dispose();
                             FileStream = null;
                         }
+                        catch { }
                     }
-                    catch { }
+                };
+
+                if (Application.Current != null)
+                {
+                    if (Application.Current.Dispatcher.CheckAccess())
+                    {
+                         // Already on UI thread, just run (but be careful of lock)
+                         // Ideally, dispose native resources in background?
+                         // PdfiumViewer.PdfDocument.Dispose() is not thread-bound usually.
+                         // Let's run it directly or in Task.Run to avoid UI freeze if lock is held by renderer.
+                         Task.Run(disposeAction);
+                    }
+                    else
+                    {
+                        disposeAction();
+                    }
+                }
+                else
+                {
+                    disposeAction();
                 }
             }
         }
@@ -140,7 +173,9 @@ namespace MinsPDFViewer
         public string MediaBoxInfo { get; set; } = "";
         public void Unload()
         {
+            CancelRender();
             ImageSource = null;
+            IsHighResRendered = false;
         }
         public int PageIndex
         {
@@ -195,6 +230,22 @@ namespace MinsPDFViewer
         public bool AnnotationsLoaded
         {
             get; set;
+        }
+
+        public bool IsHighResRendered { get; set; }
+
+        private CancellationTokenSource? _renderCts;
+        public CancellationTokenSource? RenderCts
+        {
+            get => _renderCts;
+            set => _renderCts = value;
+        }
+
+        public void CancelRender()
+        {
+            _renderCts?.Cancel();
+            _renderCts?.Dispose();
+            _renderCts = null;
         }
 
         private ImageSource? _imageSource;
@@ -425,8 +476,11 @@ namespace MinsPDFViewer
             {
                 _pageIndex = value;
                 OnPropertyChanged(nameof(PageIndex));
+                OnPropertyChanged(nameof(PageNumber));
             }
         }
+
+        public int PageNumber => PageIndex + 1;
 
         private bool _isExpanded = true;
         public bool IsExpanded

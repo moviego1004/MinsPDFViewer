@@ -5,7 +5,9 @@
       "Bash(dotnet:*)",
       "Bash(Select-String -Pattern \"\\(error|Build succeeded|Build FAILED\\)\")",
       "Bash(findstr:*)",
-      "Bash(Select-String \"error|succeed|fail\")"
+      "Bash(Select-String \"error|succeed|fail\")",
+      "Bash(ls:*)",
+      "Bash(dir /s /b \"c:\\\\Users\\\\mins\\\\Dev\\\\MinsPDFViewer\")"
     ]
   }
 }

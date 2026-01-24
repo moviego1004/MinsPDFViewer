@@ -1,17 +1,19 @@
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Reflection;
 using System.Text;
 using System.Text.RegularExpressions;
+using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using PdfiumViewer;
 using PdfSharp.Drawing;
-using PdfSharp.Drawing.Layout; 
+using PdfSharp.Drawing.Layout;
 using PdfSharp.Pdf;
 using PdfSharp.Pdf.IO;
 using PdfSharp.Pdf.Annotations;
@@ -21,11 +23,298 @@ using DrawingRectangle = System.Drawing.Rectangle;
 
 namespace MinsPDFViewer
 {
+    /// <summary>
+    /// Render request for the LIFO queue. Most recently added requests are processed first,
+    /// ensuring that the currently visible page is rendered before pages that scrolled past.
+    /// </summary>
+    internal class RenderRequest
+    {
+        public PdfDocumentModel Model { get; set; } = null!;
+        public PdfPageViewModel PageVM { get; set; } = null!;
+        public CancellationToken CancellationToken { get; set; }
+        public long Timestamp { get; set; }
+        public double Zoom { get; set; } = 1.0;
+    }
+
     public class PdfService
     {
         public static readonly object PdfiumLock = new object();
         private static readonly object _logLock = new object();
-        private const double RENDER_SCALE = 2.0;
+        private const int PAGE_CACHE_SIZE = 50;
+
+        // LIFO render queue: most recent requests are processed first
+        private static readonly ConcurrentStack<RenderRequest> _renderStack = new ConcurrentStack<RenderRequest>();
+        private static readonly SemaphoreSlim _renderSignal = new SemaphoreSlim(0);
+        private static readonly Thread _renderWorker;
+        private static volatile bool _shutdownRequested = false;
+
+        // Separate annotation queue - lower priority than page rendering
+        private static readonly ConcurrentQueue<RenderRequest> _annotationQueue = new ConcurrentQueue<RenderRequest>();
+        private static readonly SemaphoreSlim _annotationSignal = new SemaphoreSlim(0);
+        private static readonly Thread _annotationWorker;
+
+        static PdfService()
+        {
+            _renderWorker = new Thread(RenderWorkerLoop)
+            {
+                IsBackground = true,
+                Name = "PdfRenderWorker",
+                Priority = ThreadPriority.AboveNormal
+            };
+            _renderWorker.Start();
+
+            _annotationWorker = new Thread(AnnotationWorkerLoop)
+            {
+                IsBackground = true,
+                Name = "PdfAnnotationWorker",
+                Priority = ThreadPriority.BelowNormal
+            };
+            _annotationWorker.Start();
+        }
+
+        /// <summary>
+        /// Dedicated annotation worker processes annotation loading at lower priority,
+        /// ensuring it doesn't block page rendering.
+        /// </summary>
+        private static void AnnotationWorkerLoop()
+        {
+            while (!_shutdownRequested)
+            {
+                _annotationSignal.Wait();
+                if (_shutdownRequested) break;
+
+                while (_annotationQueue.TryDequeue(out var req))
+                {
+                    if (req.CancellationToken.IsCancellationRequested || req.Model.IsDisposed)
+                        continue;
+
+                    // Wait if render worker is active (renders have priority)
+                    while (!_renderStack.IsEmpty && !req.CancellationToken.IsCancellationRequested)
+                        Thread.Sleep(50);
+
+                    if (req.CancellationToken.IsCancellationRequested) continue;
+
+                    LoadAnnotationsLazy(req.Model, req.PageVM, req.CancellationToken);
+                }
+            }
+        }
+
+        /// <summary>
+        /// Two-pass render worker: First pass renders ALL visible pages at low-res (fast),
+        /// second pass upgrades them to high-res. This ensures all visible pages show content
+        /// immediately when jumping to a distant page.
+        /// </summary>
+        private static void RenderWorkerLoop()
+        {
+            while (!_shutdownRequested)
+            {
+                _renderSignal.Wait();
+                if (_shutdownRequested) break;
+
+                // Drain all pending requests from the stack
+                var batch = new List<RenderRequest>();
+                while (_renderStack.TryPop(out var req))
+                {
+                    batch.Add(req);
+                }
+
+                if (batch.Count == 0) continue;
+
+                // Drain excess semaphore signals to avoid unnecessary wake-ups
+                while (_renderSignal.CurrentCount > 0 && _renderSignal.Wait(0)) { }
+
+                // Filter out cancelled requests
+                var activeBatch = new List<RenderRequest>();
+                foreach (var req in batch)
+                {
+                    if (!req.CancellationToken.IsCancellationRequested && !req.Model.IsDisposed)
+                        activeBatch.Add(req);
+                }
+
+                if (activeBatch.Count == 0) continue;
+
+                // [Optimization] Limit processing to the most recent requests (e.g., 20 pages).
+                // When zooming or fast scrolling, hundreds of requests might accumulate.
+                // We only care about what's likely visible now (the top of the stack).
+                if (activeBatch.Count > 20)
+                {
+                    // activeBatch is ordered by LIFO (index 0 is newest).
+                    // Keep first 20, discard rest.
+                    activeBatch = activeBatch.Take(20).ToList();
+                }
+
+                // PASS 1: Fast low-res render for ALL visible pages first
+                // This ensures all pages show content within milliseconds
+                foreach (var req in activeBatch)
+                {
+                    if (req.CancellationToken.IsCancellationRequested || req.Model.IsDisposed)
+                        continue;
+                    ExecuteFastRender(req);
+                }
+
+                // Check if new requests arrived (user scrolled again) - if so, skip high-res
+                if (!_renderStack.IsEmpty) continue;
+
+                // PASS 2: High-res render for all pages
+                foreach (var req in activeBatch)
+                {
+                    if (req.CancellationToken.IsCancellationRequested || req.Model.IsDisposed)
+                        continue;
+
+                    // If new requests arrived during high-res pass, abort remaining
+                    if (!_renderStack.IsEmpty) break;
+
+                    ExecuteHighResRender(req);
+                }
+            }
+        }
+
+        /// <summary>
+        /// Phase 1: Fast low-res render only. Shows content immediately at reduced quality.
+        /// </summary>
+        private static void ExecuteFastRender(RenderRequest req)
+        {
+            var model = req.Model;
+            var pageVM = req.PageVM;
+            var ct = req.CancellationToken;
+
+            if (ct.IsCancellationRequested || model.IsDisposed) return;
+
+            BitmapSource? fastBmp = null;
+            lock (PdfiumLock)
+            {
+                if (ct.IsCancellationRequested || model.IsDisposed || model.PdfDocument == null) return;
+                try
+                {
+                    // [Dynamic Scale] Use 1:1 scale for fast render (capped at 1.5x for performance)
+                    // This fixes the "blurry" issue by matching screen pixels initially.
+                    double scale = Math.Min(req.Zoom, 1.5);
+                    int fastW = Math.Max(1, (int)(pageVM.Width * scale));
+                    int fastH = Math.Max(1, (int)(pageVM.Height * scale));
+                    using (var bitmap = model.PdfDocument.Render(pageVM.OriginalPageIndex, fastW, fastH, (int)(96 * scale), (int)(96 * scale), PdfRenderFlags.Annotations))
+                    {
+                        fastBmp = ToBitmapSource((DrawingBitmap)bitmap);
+                        fastBmp.Freeze();
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Log($"[ERROR] Fast render failed for page {pageVM.PageIndex}: {ex.Message}");
+                }
+            }
+
+            if (ct.IsCancellationRequested) return;
+
+            // Show low-res immediately (non-blocking dispatch)
+            if (fastBmp != null)
+            {
+                var bmp = fastBmp;
+                Application.Current.Dispatcher.BeginInvoke(() =>
+                {
+                    if (!ct.IsCancellationRequested && pageVM.ImageSource == null)
+                        pageVM.ImageSource = bmp;
+                });
+            }
+        }
+
+        /// <summary>
+        /// Phase 2: High-res render. Upgrades the page to full quality and enqueues annotation loading.
+        /// </summary>
+        private static void ExecuteHighResRender(RenderRequest req)
+        {
+            var model = req.Model;
+            var pageVM = req.PageVM;
+            var ct = req.CancellationToken;
+
+            if (ct.IsCancellationRequested || model.IsDisposed) return;
+
+            BitmapSource? highBmp = null;
+            lock (PdfiumLock)
+            {
+                if (ct.IsCancellationRequested || model.IsDisposed || model.PdfDocument == null) return;
+                try
+                {
+                    // [Dynamic Scale] Render at 1.5x zoom for crisp text (Supersampling)
+                    double scale = req.Zoom * 1.5;
+                    int hiW = (int)(pageVM.Width * scale);
+                    int hiH = (int)(pageVM.Height * scale);
+                    using (var bitmap = model.PdfDocument.Render(pageVM.OriginalPageIndex, hiW, hiH, (int)(96 * scale), (int)(96 * scale), PdfRenderFlags.Annotations))
+                    {
+                        highBmp = ToBitmapSource((DrawingBitmap)bitmap);
+                        highBmp.Freeze();
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Log($"[ERROR] High-res render failed for page {pageVM.PageIndex}: {ex.Message}");
+                }
+            }
+
+            if (ct.IsCancellationRequested) return;
+
+            if (highBmp != null)
+            {
+                string cacheKey = GetCacheKey(model.FilePath, pageVM.OriginalPageIndex);
+                AddToCache(cacheKey, highBmp);
+                var bmp = highBmp;
+                Application.Current.Dispatcher.BeginInvoke(() =>
+                {
+                    if (!ct.IsCancellationRequested)
+                    {
+                        pageVM.ImageSource = bmp;
+                        pageVM.IsHighResRendered = true;
+                    }
+                });
+            }
+
+            // Enqueue annotation loading on separate low-priority worker
+            if (!ct.IsCancellationRequested)
+            {
+                _annotationQueue.Enqueue(req);
+                _annotationSignal.Release();
+            }
+        }
+
+        // Page image cache (key: filePath_pageIndex, value: frozen BitmapSource)
+        private static readonly LinkedList<string> _cacheOrder = new LinkedList<string>();
+        private static readonly Dictionary<string, BitmapSource> _pageCache = new Dictionary<string, BitmapSource>();
+        private static readonly object _cacheLock = new object();
+
+        private static string GetCacheKey(string filePath, int pageIndex) => $"{filePath}_{pageIndex}";
+
+        private static void AddToCache(string key, BitmapSource bitmap)
+        {
+            lock (_cacheLock)
+            {
+                if (_pageCache.ContainsKey(key))
+                {
+                    _cacheOrder.Remove(key);
+                }
+                _pageCache[key] = bitmap;
+                _cacheOrder.AddFirst(key);
+
+                while (_cacheOrder.Count > PAGE_CACHE_SIZE)
+                {
+                    var last = _cacheOrder.Last!.Value;
+                    _cacheOrder.RemoveLast();
+                    _pageCache.Remove(last);
+                }
+            }
+        }
+
+        private static BitmapSource? GetFromCache(string key)
+        {
+            lock (_cacheLock)
+            {
+                if (_pageCache.TryGetValue(key, out var bmp))
+                {
+                    _cacheOrder.Remove(key);
+                    _cacheOrder.AddFirst(key);
+                    return bmp;
+                }
+            }
+            return null;
+        }
 
         // Pdfium P/Invoke declarations
         private static class NativeMethods
@@ -84,8 +373,118 @@ namespace MinsPDFViewer
             public const int FPDF_ANNOT_FREETEXT = 3;
             public const int FPDF_ANNOT_HIGHLIGHT = 9;
             public const int FPDF_ANNOT_UNDERLINE = 10;
+            public const int FPDF_ANNOT_WIDGET = 12;
 
             public const int FPDFANNOT_COLORTYPE_Color = 0;
+
+            [System.Runtime.InteropServices.DllImport("pdfium.dll", CallingConvention = System.Runtime.InteropServices.CallingConvention.Cdecl)]
+            public static extern IntPtr FPDFText_LoadPage(IntPtr page);
+
+            [System.Runtime.InteropServices.DllImport("pdfium.dll", CallingConvention = System.Runtime.InteropServices.CallingConvention.Cdecl)]
+            public static extern void FPDFText_ClosePage(IntPtr text_page);
+
+            [System.Runtime.InteropServices.DllImport("pdfium.dll", CallingConvention = System.Runtime.InteropServices.CallingConvention.Cdecl)]
+            public static extern IntPtr FPDFText_FindStart(IntPtr text_page, [System.Runtime.InteropServices.MarshalAs(System.Runtime.InteropServices.UnmanagedType.LPWStr)] string findwhat, ulong flags, int start_index);
+
+            [System.Runtime.InteropServices.DllImport("pdfium.dll", CallingConvention = System.Runtime.InteropServices.CallingConvention.Cdecl)]
+            public static extern bool FPDFText_FindNext(IntPtr handle);
+
+            [System.Runtime.InteropServices.DllImport("pdfium.dll", CallingConvention = System.Runtime.InteropServices.CallingConvention.Cdecl)]
+            public static extern void FPDFText_FindClose(IntPtr handle);
+
+            [System.Runtime.InteropServices.DllImport("pdfium.dll", CallingConvention = System.Runtime.InteropServices.CallingConvention.Cdecl)]
+            public static extern int FPDFText_GetSchResultIndex(IntPtr handle);
+
+            [System.Runtime.InteropServices.DllImport("pdfium.dll", CallingConvention = System.Runtime.InteropServices.CallingConvention.Cdecl)]
+            public static extern int FPDFText_GetSchCount(IntPtr handle);
+
+            [System.Runtime.InteropServices.DllImport("pdfium.dll", CallingConvention = System.Runtime.InteropServices.CallingConvention.Cdecl)]
+            public static extern int FPDFText_CountRects(IntPtr text_page, int start_index, int count);
+
+            [System.Runtime.InteropServices.DllImport("pdfium.dll", CallingConvention = System.Runtime.InteropServices.CallingConvention.Cdecl)]
+            public static extern bool FPDFText_GetRect(IntPtr text_page, int rect_index, ref double left, ref double top, ref double right, ref double bottom);
+
+            public const int FPDF_MATCHCASE = 0x00000001;
+            public const int FPDF_MATCHWHOLEWORD = 0x00000002;
+        }
+
+        public List<Rect> FindTextRects(string filePath, int pageIndex, string keyword)
+        {
+            var results = new List<Rect>();
+            if (!File.Exists(filePath)) return results;
+
+            lock (PdfiumLock)
+            {
+                IntPtr doc = NativeMethods.FPDF_LoadDocument(filePath, null);
+                if (doc == IntPtr.Zero) return results;
+
+                try
+                {
+                    IntPtr page = NativeMethods.FPDF_LoadPage(doc, pageIndex);
+                    if (page == IntPtr.Zero) return results;
+
+                    try
+                    {
+                        IntPtr textPage = NativeMethods.FPDFText_LoadPage(page);
+                        if (textPage == IntPtr.Zero) return results;
+
+                        try
+                        {
+                            IntPtr search = NativeMethods.FPDFText_FindStart(textPage, keyword, NativeMethods.FPDF_MATCHCASE, 0);
+                            if (search != IntPtr.Zero)
+                            {
+                                try
+                                {
+                                    while (NativeMethods.FPDFText_FindNext(search))
+                                    {
+                                        int charIndex = NativeMethods.FPDFText_GetSchResultIndex(search);
+                                        int charCount = NativeMethods.FPDFText_GetSchCount(search);
+                                        
+                                        int rectCount = NativeMethods.FPDFText_CountRects(textPage, charIndex, charCount);
+                                        for (int i = 0; i < rectCount; i++)
+                                        {
+                                            double left = 0, top = 0, right = 0, bottom = 0;
+                                            if (NativeMethods.FPDFText_GetRect(textPage, i, ref left, ref top, ref right, ref bottom))
+                                            {
+                                                // PDF coordinates (0,0 is bottom-left) to UI coordinates logic is handled by caller or here?
+                                                // Let's return raw PDF coordinates here, caller (SearchService) will convert.
+                                                // However, FPDFText_GetRect returns page coordinates.
+                                                // Pdfium coordinates: origin bottom-left.
+                                                // We will return generic Rect(left, top, width, height) but keep in mind Y is inverted relative to UI.
+                                                
+                                                results.Add(new Rect(left, top, right - left, top - bottom)); 
+                                                // Note: top > bottom in PDF coords usually.
+                                                // But let's verify: FPDFText_GetRect returns (left, top, right, bottom).
+                                                // Wait, standard PDF: Y increases upwards.
+                                                // FPDFText_GetRect usually follows PDF coord system.
+                                                // Width = right - left
+                                                // Height = top - bottom (since top is higher Y value)
+                                            }
+                                        }
+                                    }
+                                }
+                                finally
+                                {
+                                    NativeMethods.FPDFText_FindClose(search);
+                                }
+                            }
+                        }
+                        finally
+                        {
+                            NativeMethods.FPDFText_ClosePage(textPage);
+                        }
+                    }
+                    finally
+                    {
+                        NativeMethods.FPDF_ClosePage(page);
+                    }
+                }
+                finally
+                {
+                    NativeMethods.FPDF_CloseDocument(doc);
+                }
+            }
+            return results;
         }
 
         public async Task<PdfDocumentModel?> LoadPdfAsync(string filePath)
@@ -168,10 +567,54 @@ namespace MinsPDFViewer
             catch { }
         }
 
+        /// <summary>
+        /// Enqueues a two-phase render via LIFO stack.
+        /// The most recently requested page is rendered first, so jumping to page 400
+        /// renders that page immediately instead of waiting for intermediate pages.
+        /// </summary>
+        public void RenderPageAsync(PdfDocumentModel model, PdfPageViewModel pageVM, CancellationToken ct)
+        {
+            if (model.IsDisposed || pageVM.IsBlankPage) return;
+
+            // Check cache first
+            string cacheKey = GetCacheKey(model.FilePath, pageVM.OriginalPageIndex);
+            var cached = GetFromCache(cacheKey);
+            if (cached != null)
+            {
+                Application.Current.Dispatcher.BeginInvoke(() =>
+                {
+                    pageVM.ImageSource = cached;
+                    pageVM.IsHighResRendered = true;
+                });
+                // Enqueue annotation loading on low-priority worker
+                _annotationQueue.Enqueue(new RenderRequest
+                {
+                    Model = model,
+                    PageVM = pageVM,
+                    CancellationToken = ct,
+                    Timestamp = Environment.TickCount64,
+                    Zoom = model.Zoom
+                });
+                _annotationSignal.Release();
+                return;
+            }
+
+            // Push to LIFO stack - most recent pages are rendered first
+            _renderStack.Push(new RenderRequest
+            {
+                Model = model,
+                PageVM = pageVM,
+                CancellationToken = ct,
+                Timestamp = Environment.TickCount64,
+                Zoom = model.Zoom
+            });
+            _renderSignal.Release();
+        }
+
+        // Keep legacy method for compatibility with other callers (save, OCR, etc.)
         public void RenderPageImage(PdfDocumentModel model, PdfPageViewModel pageVM)
         {
             if (model.IsDisposed || pageVM.IsBlankPage) return;
-            Log($"RenderPageImage started for Page {pageVM.PageIndex}");
             if (pageVM.ImageSource == null)
             {
                 BitmapSource? bmpSource = null;
@@ -181,15 +624,14 @@ namespace MinsPDFViewer
                     {
                         try
                         {
-                            int renderW = (int)(pageVM.Width * RENDER_SCALE);
-                            int renderH = (int)(pageVM.Height * RENDER_SCALE);
-                            Log($"RenderPageImage rendering... Size: {renderW}x{renderH}");
-                            using (var bitmap = model.PdfDocument.Render(pageVM.OriginalPageIndex, renderW, renderH, (int)(96 * RENDER_SCALE), (int)(96 * RENDER_SCALE), PdfRenderFlags.Annotations))
+                            double scale = model.Zoom * 1.5;
+                            int renderW = (int)(pageVM.Width * scale);
+                            int renderH = (int)(pageVM.Height * scale);
+                            using (var bitmap = model.PdfDocument.Render(pageVM.OriginalPageIndex, renderW, renderH, (int)(96 * scale), (int)(96 * scale), PdfRenderFlags.Annotations))
                             {
                                 bmpSource = ToBitmapSource((DrawingBitmap)bitmap);
                                 bmpSource.Freeze();
                             }
-                            Log($"RenderPageImage rendering done.");
                         }
                         catch (Exception ex)
                         {
@@ -210,166 +652,185 @@ namespace MinsPDFViewer
             finally { bitmap.UnlockBits(bitmapData); }
         }
 
-        private void LoadAnnotationsLazy(PdfDocumentModel model, PdfPageViewModel pageVM)
+        private static void LoadAnnotationsLazy(PdfDocumentModel model, PdfPageViewModel pageVM, CancellationToken ct = default)
         {
             if (pageVM.AnnotationsLoaded) return;
             pageVM.AnnotationsLoaded = true;
-            Task.Run(() =>
+
+            if (ct.IsCancellationRequested || model.IsDisposed)
             {
-                lock (PdfiumLock)
+                pageVM.AnnotationsLoaded = false;
+                return;
+            }
+
+            // Wait until no render requests are pending (renders have priority)
+            while (!_renderStack.IsEmpty && !ct.IsCancellationRequested)
+                Thread.Sleep(30);
+
+            if (ct.IsCancellationRequested || model.IsDisposed)
+            {
+                pageVM.AnnotationsLoaded = false;
+                return;
+            }
+
+            lock (PdfiumLock)
+            {
+                if (ct.IsCancellationRequested || model.IsDisposed)
                 {
+                    pageVM.AnnotationsLoaded = false;
+                    return;
+                }
+                try
+                {
+                    string path = pageVM.OriginalFilePath ?? model.FilePath;
+                    if (!File.Exists(path)) return;
+
+                    var extracted = new List<PdfAnnotation>();
+
+                    IntPtr doc = NativeMethods.FPDF_LoadDocument(path, null);
+                    if (doc == IntPtr.Zero) return;
+
                     try
                     {
-                        Log($"LoadAnnotationsLazy started for Page {pageVM.PageIndex}");
-                        string path = pageVM.OriginalFilePath ?? model.FilePath;
-                        if (!File.Exists(path)) return;
-
-                        var extracted = new List<PdfAnnotation>();
-
-                        IntPtr doc = NativeMethods.FPDF_LoadDocument(path, null);
-                        if (doc == IntPtr.Zero)
-                        {
-                            Log($"LoadAnnotationsLazy: Failed to load document native {path}");
-                            return;
-                        }
+                        IntPtr page = NativeMethods.FPDF_LoadPage(doc, pageVM.OriginalPageIndex);
+                        if (page == IntPtr.Zero) return;
 
                         try
                         {
-                            IntPtr page = NativeMethods.FPDF_LoadPage(doc, pageVM.OriginalPageIndex);
-                            if (page == IntPtr.Zero)
+                            double pageW = NativeMethods.FPDF_GetPageWidth(page);
+                            double pageH = NativeMethods.FPDF_GetPageHeight(page);
+
+                            int annotCount = NativeMethods.FPDFPage_GetAnnotCount(page);
+
+                            for (int i = 0; i < annotCount; i++)
                             {
-                                Log($"LoadAnnotationsLazy: Failed to load page native {pageVM.OriginalPageIndex}");
-                                return;
-                            }
+                                IntPtr annot = NativeMethods.FPDFPage_GetAnnot(page, i);
+                                if (annot == IntPtr.Zero) continue;
 
-                            try
-                            {
-                                double pageW = NativeMethods.FPDF_GetPageWidth(page);
-                                double pageH = NativeMethods.FPDF_GetPageHeight(page);
-
-                                int annotCount = NativeMethods.FPDFPage_GetAnnotCount(page);
-                                Log($"LoadAnnotationsLazy: Page {pageVM.PageIndex} has {annotCount} annotations");
-
-                                for (int i = 0; i < annotCount; i++)
+                                try
                                 {
-                                    IntPtr annot = NativeMethods.FPDFPage_GetAnnot(page, i);
-                                    if (annot == IntPtr.Zero) continue;
+                                    int subtype = NativeMethods.FPDFAnnot_GetSubtype(annot);
 
-                                    try
+                                    if (subtype == NativeMethods.FPDF_ANNOT_FREETEXT ||
+                                        subtype == NativeMethods.FPDF_ANNOT_HIGHLIGHT ||
+                                        subtype == NativeMethods.FPDF_ANNOT_UNDERLINE ||
+                                        subtype == NativeMethods.FPDF_ANNOT_WIDGET)
                                     {
-                                        int subtype = NativeMethods.FPDFAnnot_GetSubtype(annot);
+                                        var rect = new NativeMethods.FS_RECTF();
+                                        if (!NativeMethods.FPDFAnnot_GetRect(annot, ref rect)) continue;
 
-                                        if (subtype == NativeMethods.FPDF_ANNOT_FREETEXT || 
-                                            subtype == NativeMethods.FPDF_ANNOT_HIGHLIGHT || 
-                                            subtype == NativeMethods.FPDF_ANNOT_UNDERLINE)
+                                        double uiX = rect.left * (pageVM.Width / pageW);
+                                        double uiY = (pageH - rect.top) * (pageVM.Height / pageH);
+                                        double uiW = Math.Abs(rect.right - rect.left) * (pageVM.Width / pageW);
+                                        double uiH = Math.Abs(rect.top - rect.bottom) * (pageVM.Height / pageH);
+
+                                        string content = GetAnnotationStringValue(annot, "Contents");
+                                        // Adobe Note check skipped for Widget
+                                        if (subtype != NativeMethods.FPDF_ANNOT_WIDGET && content.StartsWith("Title: ")) 
+                                            continue;
+
+                                        double fSize = 12;
+                                        Brush brush = Brushes.Black;
+                                        Brush background = Brushes.Transparent;
+                                        AnnotationType annType = AnnotationType.FreeText;
+                                        string fieldName = "";
+
+                                        if (subtype == NativeMethods.FPDF_ANNOT_FREETEXT)
                                         {
-                                            var rect = new NativeMethods.FS_RECTF();
-                                            if (!NativeMethods.FPDFAnnot_GetRect(annot, ref rect)) continue;
-
-                                            double uiX = rect.left * (pageVM.Width / pageW);
-                                            double uiY = (pageH - rect.top) * (pageVM.Height / pageH);
-                                            double uiW = Math.Abs(rect.right - rect.left) * (pageVM.Width / pageW);
-                                            double uiH = Math.Abs(rect.top - rect.bottom) * (pageVM.Height / pageH);
-
-                                            string content = GetAnnotationStringValue(annot, "Contents");
-                                            if (content.StartsWith("Title: ")) // Adobe Note
-                                                continue;
-
-                                            double fSize = 12;
-                                            Brush brush = Brushes.Black;
-                                            Brush background = Brushes.Transparent;
-                                            AnnotationType annType = AnnotationType.FreeText;
-
-                                            if (subtype == NativeMethods.FPDF_ANNOT_FREETEXT)
+                                            // ... (Existing FreeText logic) ...
+                                            annType = AnnotationType.FreeText;
+                                            string da = GetAnnotationStringValue(annot, "DA");
+                                            if (!string.IsNullOrEmpty(da))
                                             {
-                                                annType = AnnotationType.FreeText;
-                                                string da = GetAnnotationStringValue(annot, "DA");
-                                                if (!string.IsNullOrEmpty(da))
-                                                {
-                                                    var fsMatch = Regex.Match(da, @"([\d.]+)\s+Tf");
-                                                    if (fsMatch.Success) double.TryParse(fsMatch.Groups[1].Value, out fSize);
+                                                var fsMatch = Regex.Match(da, @"([\d.]+)\s+Tf");
+                                                if (fsMatch.Success) double.TryParse(fsMatch.Groups[1].Value, out fSize);
 
-                                                    var colMatch = Regex.Match(da, @"([\d.]+)\s+([\d.]+)\s+([\d.]+)\s+rg");
-                                                    if (colMatch.Success)
-                                                    {
-                                                        double.TryParse(colMatch.Groups[1].Value, out double r);
-                                                        double.TryParse(colMatch.Groups[2].Value, out double g);
-                                                        double.TryParse(colMatch.Groups[3].Value, out double b);
-                                                        var scb = new SolidColorBrush(Color.FromRgb((byte)(r * 255), (byte)(g * 255), (byte)(b * 255)));
-                                                        scb.Freeze();
-                                                        brush = scb;
-                                                    }
+                                                var colMatch = Regex.Match(da, @"([\d.]+)\s+([\d.]+)\s+([\d.]+)\s+rg");
+                                                if (colMatch.Success)
+                                                {
+                                                    double.TryParse(colMatch.Groups[1].Value, out double r);
+                                                    double.TryParse(colMatch.Groups[2].Value, out double g);
+                                                    double.TryParse(colMatch.Groups[3].Value, out double b);
+                                                    var scb = new SolidColorBrush(Color.FromRgb((byte)(r * 255), (byte)(g * 255), (byte)(b * 255)));
+                                                    scb.Freeze();
+                                                    brush = scb;
                                                 }
                                             }
-                                            else if (subtype == NativeMethods.FPDF_ANNOT_HIGHLIGHT)
-                                            {
-                                                annType = AnnotationType.Highlight;
-                                                var bgBrush = new SolidColorBrush(Color.FromArgb(80, 255, 255, 0));
-                                                bgBrush.Freeze();
-                                                background = bgBrush;
-                                                uint r = 0, g = 0, b = 0, a = 0;
-                                                if (NativeMethods.FPDFAnnot_GetColor(annot, NativeMethods.FPDFANNOT_COLORTYPE_Color, ref r, ref g, ref b, ref a))
-                                                {
-                                                    var colorBrush = new SolidColorBrush(Color.FromArgb(80, (byte)r, (byte)g, (byte)b));
-                                                    colorBrush.Freeze();
-                                                    background = colorBrush;
-                                                }
-                                            }
-                                            else if (subtype == NativeMethods.FPDF_ANNOT_UNDERLINE)
-                                            {
-                                                annType = AnnotationType.Underline;
-                                            }
-
-                                            extracted.Add(new PdfAnnotation
-                                            {
-                                                Type = annType,
-                                                X = uiX,
-                                                Y = uiY,
-                                                Width = uiW,
-                                                Height = uiH,
-                                                TextContent = content,
-                                                FontSize = fSize,
-                                                Foreground = brush,
-                                                Background = background
-                                            });
                                         }
-                                    }
-                                    finally
-                                    {
-                                        NativeMethods.FPDFPage_CloseAnnot(annot);
+                                        else if (subtype == NativeMethods.FPDF_ANNOT_HIGHLIGHT)
+                                        {
+                                            annType = AnnotationType.Highlight;
+                                            var bgBrush = new SolidColorBrush(Color.FromArgb(80, 255, 255, 0));
+                                            bgBrush.Freeze();
+                                            background = bgBrush;
+                                            uint r = 0, g = 0, b = 0, a = 0;
+                                            if (NativeMethods.FPDFAnnot_GetColor(annot, NativeMethods.FPDFANNOT_COLORTYPE_Color, ref r, ref g, ref b, ref a))
+                                            {
+                                                var colorBrush = new SolidColorBrush(Color.FromArgb(80, (byte)r, (byte)g, (byte)b));
+                                                colorBrush.Freeze();
+                                                background = colorBrush;
+                                            }
+                                        }
+                                        else if (subtype == NativeMethods.FPDF_ANNOT_UNDERLINE)
+                                        {
+                                            annType = AnnotationType.Underline;
+                                        }
+                                        else if (subtype == NativeMethods.FPDF_ANNOT_WIDGET)
+                                        {
+                                            annType = AnnotationType.SignatureField;
+                                            // Try to get Field Name (T)
+                                            // Note: GetStringValue might not work for 'T' if it's inherited, but worth a try for simple cases
+                                            fieldName = GetAnnotationStringValue(annot, "T");
+                                        }
+
+                                        extracted.Add(new PdfAnnotation
+                                        {
+                                            Type = annType,
+                                            X = uiX,
+                                            Y = uiY,
+                                            Width = uiW,
+                                            Height = uiH,
+                                            TextContent = content,
+                                            FontSize = fSize,
+                                            Foreground = brush,
+                                            Background = background,
+                                            FieldName = fieldName
+                                        });
                                     }
                                 }
-                            }
-                            finally
-                            {
-                                NativeMethods.FPDF_ClosePage(page);
+                                finally
+                                {
+                                    NativeMethods.FPDFPage_CloseAnnot(annot);
+                                }
                             }
                         }
                         finally
                         {
-                            NativeMethods.FPDF_CloseDocument(doc);
+                            NativeMethods.FPDF_ClosePage(page);
                         }
-
-                        if (extracted.Count > 0)
-                        {
-                            Application.Current.Dispatcher.Invoke(() =>
-                            {
-                                if (pageVM.Annotations.Count == 0)
-                                    foreach (var item in extracted) pageVM.Annotations.Add(item);
-                            });
-                        }
-                        Log($"LoadAnnotationsLazy finished for Page {pageVM.PageIndex}");
                     }
-                    catch (Exception ex)
+                    finally
                     {
-                        Log($"[CRITICAL] Annotation Load Error: {ex}");
-                        System.Diagnostics.Debug.WriteLine($"Annotation Load Error: {ex.Message}");
+                        NativeMethods.FPDF_CloseDocument(doc);
+                    }
+
+                    if (extracted.Count > 0)
+                    {
+                        Application.Current.Dispatcher.BeginInvoke(() =>
+                        {
+                            if (pageVM.Annotations.Count == 0)
+                                foreach (var item in extracted) pageVM.Annotations.Add(item);
+                        });
                     }
                 }
-            });
+                catch (Exception ex)
+                {
+                    Log($"[CRITICAL] Annotation Load Error: {ex}");
+                }
+            }
         }
 
-        private string GetAnnotationStringValue(IntPtr annot, string key)
+        private static string GetAnnotationStringValue(IntPtr annot, string key)
         {
             ulong len = NativeMethods.FPDFAnnot_GetStringValue(annot, key, IntPtr.Zero, 0);
             if (len == 0) return "";
@@ -411,6 +872,27 @@ namespace MinsPDFViewer
             public Color BackgroundColor { get; set; }
         }
 
+        private class BookmarkSaveData
+        {
+            public string Title { get; set; } = "";
+            public int OriginalPageIndex { get; set; }
+            public List<BookmarkSaveData> Children { get; set; } = new List<BookmarkSaveData>();
+        }
+
+        private BookmarkSaveData MapBookmarkSnapshot(PdfBookmarkViewModel vm)
+        {
+            var data = new BookmarkSaveData
+            {
+                Title = vm.Title,
+                OriginalPageIndex = vm.PageIndex
+            };
+            foreach (var child in vm.Children)
+            {
+                data.Children.Add(MapBookmarkSnapshot(child));
+            }
+            return data;
+        }
+
         private PdfFormXObject? GetPdfForm(XForm form)
         {
             var prop = typeof(XForm).GetProperty("PdfForm", BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public);
@@ -440,6 +922,8 @@ namespace MinsPDFViewer
 
             // 1. [UI 스레드] 데이터 스냅샷
             List<PageSaveData> pagesSnapshot = new List<PageSaveData>();
+            List<BookmarkSaveData> bookmarksSnapshot = new List<BookmarkSaveData>();
+
             await Application.Current.Dispatcher.InvokeAsync(() =>
             {
                 foreach (var p in model.Pages)
@@ -459,8 +943,6 @@ namespace MinsPDFViewer
                         if (ann.Type == AnnotationType.SearchHighlight ||
                             ann.Type == AnnotationType.SignaturePlaceholder) continue;
 
-                        LogToFile($"[DEBUG] Snapshotting Annot: Type={ann.Type}, Text='{ann.TextContent}', X={ann.X}, Y={ann.Y}");
-
                         var annData = new AnnotationSaveData
                         {
                             Type = ann.Type,
@@ -479,8 +961,14 @@ namespace MinsPDFViewer
                     }
                     pagesSnapshot.Add(pageData);
                 }
+
+                // Bookmark Snapshot
+                foreach (var bm in model.Bookmarks)
+                {
+                    bookmarksSnapshot.Add(MapBookmarkSnapshot(bm));
+                }
             });
-            LogToFile($"Snapshot created. Pages: {pagesSnapshot.Count}");
+            LogToFile($"Snapshot created. Pages: {pagesSnapshot.Count}, Bookmarks: {bookmarksSnapshot.Count}");
 
             await Task.Run(() =>
             {
@@ -490,28 +978,46 @@ namespace MinsPDFViewer
 
                 bool standardSaveSuccess = false;
 
+                // Page Mapping for Bookmarks: OriginalPageIndex -> New PdfPage
+                Dictionary<int, PdfPage> pageMapping = new Dictionary<int, PdfPage>();
+
                 // 1. Standard Save (Import)
                 try
                 {
                     using (var sourceDoc = PdfReader.Open(tempWorkPath, PdfDocumentOpenMode.Import))
                     using (var outputDoc = new PdfSharp.Pdf.PdfDocument()) 
                     {
-                        LogToFile($"Document opened for Import. PageCount: {sourceDoc.PageCount}");
+                        LogToFile($"Document opened for Import. PageCount: {sourceDoc.PageCount}, SnapshotCount: {pagesSnapshot.Count}");
 
-                        for (int i = 0; i < sourceDoc.PageCount; i++)
+                        // [Fix] Iterate through UI pages snapshot
+                        for (int i = 0; i < pagesSnapshot.Count; i++)
                         {
-                            var pdfPage = outputDoc.AddPage(sourceDoc.Pages[i]);
-                            
-                            // Clear existing annotations to avoid duplication
-                            pdfPage.Annotations.Clear();
+                            var pageData = pagesSnapshot[i];
+                            int originalIdx = pageData.OriginalPageIndex;
 
-                            // OCR 텍스트 레이어 추가 (Import 모드에서도 가능하면 그림)
-                            if (i < pagesSnapshot.Count) DrawOcrText(outputDoc, pdfPage, pagesSnapshot[i].OcrWords, pagesSnapshot[i].Width, pagesSnapshot[i].Height);
-                            
-                            DrawAnnotationsOnPage(outputDoc, pdfPage, i, pagesSnapshot);
+                            if (originalIdx >= 0 && originalIdx < sourceDoc.PageCount)
+                            {
+                                var pdfPage = outputDoc.AddPage(sourceDoc.Pages[originalIdx]);
+                                pageMapping[originalIdx] = pdfPage; // Register mapping
+
+                                // Clear existing annotations to avoid duplication
+                                pdfPage.Annotations.Clear();
+
+                                // OCR Text Layer
+                                DrawOcrText(outputDoc, pdfPage, pageData.OcrWords, pageData.Width, pageData.Height);
+                                
+                                // Annotations
+                                DrawAnnotationsOnPage(outputDoc, pdfPage, i, pagesSnapshot);
+                            }
                         }
 
-                        // Set NeedAppearances to true to force viewers to regenerate annotation appearances
+                        // Restore Bookmarks
+                        foreach (var bm in bookmarksSnapshot)
+                        {
+                            AddBookmarkToPdf(outputDoc.Outlines, bm, pageMapping);
+                        }
+
+                        // Set NeedAppearances
                         var catalog = outputDoc.Internals.Catalog;
                         var acroForm = catalog.Elements.GetDictionary("/AcroForm");
                         if (acroForm == null)
@@ -536,43 +1042,51 @@ namespace MinsPDFViewer
                 {
                     try
                     {
-                        // PdfiumViewer로 열어서 이미지로 변환
+                        // Reset Mapping for fallback
+                        pageMapping.Clear();
+
                         using (var pdfiumDoc = PdfiumViewer.PdfDocument.Load(tempWorkPath))
                         using (var outputDoc = new PdfSharp.Pdf.PdfDocument())
                         {
                             LogToFile("Starting fallback save (Rasterization).");
-                            for (int i = 0; i < pdfiumDoc.PageCount; i++)
+                            
+                            // [Fix] Iterate through snapshot pages only
+                            for (int i = 0; i < pagesSnapshot.Count; i++)
                             {
-                                var size = pdfiumDoc.PageSizes[i];
-                                // 고해상도 렌더링 (2배)
-                                using (var bitmap = pdfiumDoc.Render(i, (int)size.Width * 2, (int)size.Height * 2, 192, 192, PdfRenderFlags.Annotations))
-                                using (var ms = new MemoryStream())
+                                var pageData = pagesSnapshot[i];
+                                int originalIdx = pageData.OriginalPageIndex;
+
+                                if (originalIdx >= 0 && originalIdx < pdfiumDoc.PageCount)
                                 {
-                                    bitmap.Save(ms, System.Drawing.Imaging.ImageFormat.Png);
-                                    ms.Position = 0;
-
-                                    var page = outputDoc.AddPage();
-                                    page.Width = size.Width;
-                                    page.Height = size.Height;
-
-                                    using (var gfx = XGraphics.FromPdfPage(page))
-                                    using (var xImage = XImage.FromStream(ms))
+                                    var size = pdfiumDoc.PageSizes[originalIdx];
+                                    using (var bitmap = pdfiumDoc.Render(originalIdx, (int)size.Width * 2, (int)size.Height * 2, 192, 192, PdfRenderFlags.Annotations))
+                                    using (var ms = new MemoryStream())
                                     {
-                                        // 1. 이미지 그리기
-                                        gfx.DrawImage(xImage, 0, 0, page.Width, page.Height);
-                                        
-                                        // 2. OCR 텍스트 그리기 (Searchable)
-                                        if (i < pagesSnapshot.Count)
+                                        bitmap.Save(ms, System.Drawing.Imaging.ImageFormat.Png);
+                                        ms.Position = 0;
+
+                                        var page = outputDoc.AddPage();
+                                        page.Width = size.Width;
+                                        page.Height = size.Height;
+                                        pageMapping[originalIdx] = page; // Register mapping
+
+                                        using (var gfx = XGraphics.FromPdfPage(page))
+                                        using (var xImage = XImage.FromStream(ms))
                                         {
-                                            var pData = pagesSnapshot[i];
-                                            DrawOcrText(outputDoc, page, pData.OcrWords, pData.Width, pData.Height);
+                                            gfx.DrawImage(xImage, 0, 0, page.Width, page.Height);
+                                            DrawOcrText(outputDoc, page, pageData.OcrWords, pageData.Width, pageData.Height);
+                                            DrawAnnotationsOnPage(outputDoc, page, i, pagesSnapshot);
                                         }
-                                        
-                                        // 3. 주석 그리기
-                                        DrawAnnotationsOnPage(outputDoc, page, i, pagesSnapshot);
                                     }
                                 }
                             }
+
+                            // Restore Bookmarks (Fallback)
+                            foreach (var bm in bookmarksSnapshot)
+                            {
+                                AddBookmarkToPdf(outputDoc.Outlines, bm, pageMapping);
+                            }
+
                             outputDoc.Save(outputPath);
                             LogToFile("Fallback save successful.");
                         }
@@ -586,6 +1100,32 @@ namespace MinsPDFViewer
 
                 try { if (File.Exists(tempWorkPath)) File.Delete(tempWorkPath); } catch { }
             });
+        }
+
+        private void AddBookmarkToPdf(PdfOutlineCollection collection, BookmarkSaveData bmData, Dictionary<int, PdfPage> mapping)
+        {
+            // Find destination page
+            PdfPage? destPage = null;
+            if (mapping.ContainsKey(bmData.OriginalPageIndex))
+            {
+                destPage = mapping[bmData.OriginalPageIndex];
+            }
+            else
+            {
+                // If the target page was deleted, try to find the nearest previous page?
+                // Or just don't add destination (just a title).
+                // Or map to first page if lost.
+                // Let's search for nearest valid page >= OriginalIndex?
+                // Actually, if page is deleted, bookmark to it might be invalid.
+                // We'll skip destination if invalid, but keep title.
+            }
+
+            var outline = destPage != null ? collection.Add(bmData.Title, destPage, true) : collection.Add(bmData.Title, null, true);
+            
+            foreach (var child in bmData.Children)
+            {
+                AddBookmarkToPdf(outline.Outlines, child, mapping);
+            }
         }
 
         private void DrawOcrText(PdfSharp.Pdf.PdfDocument doc, PdfPage page, List<OcrWordInfo> words, double viewWidth, double viewHeight)
