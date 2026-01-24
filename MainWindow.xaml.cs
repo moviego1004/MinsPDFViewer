@@ -431,8 +431,8 @@ namespace MinsPDFViewer
                 if (_currentTool == "HIGHLIGHT")
                 {
                     if (_selectedAnnotation != null) _selectedAnnotation.IsSelected = false;
-                    foreach (var p in SelectedDocument.Pages) { p.IsSelecting = false; p.SelectionWidth = 0; p.SelectionHeight = 0; }
-                    SelectionPopup.IsOpen = false; pageVM.IsSelecting = true; pageVM.SelectionX = _dragStartPoint.X; pageVM.SelectionY = _dragStartPoint.Y; grid.CaptureMouse();
+                    foreach (var p in SelectedDocument.Pages) { p.IsSelecting = false; p.IsHighlighting = false; p.SelectionWidth = 0; p.SelectionHeight = 0; }
+                    SelectionPopup.IsOpen = false; pageVM.IsSelecting = true; pageVM.IsHighlighting = true; pageVM.SelectionX = _dragStartPoint.X; pageVM.SelectionY = _dragStartPoint.Y; grid.CaptureMouse();
                     e.Handled = true; return;
                 }
                 
@@ -441,8 +441,8 @@ namespace MinsPDFViewer
                 if (_selectedAnnotation != null) { _selectedAnnotation.IsSelected = false; _selectedAnnotation = null; CheckToolbarVisibility(); }
                 if (_currentTool == "CURSOR")
                 {
-                    foreach (var p in SelectedDocument.Pages) { p.IsSelecting = false; p.SelectionWidth = 0; p.SelectionHeight = 0; }
-                    SelectionPopup.IsOpen = false; pageVM.IsSelecting = true; pageVM.SelectionX = _dragStartPoint.X; pageVM.SelectionY = _dragStartPoint.Y; grid.CaptureMouse();
+                    foreach (var p in SelectedDocument.Pages) { p.IsSelecting = false; p.IsHighlighting = false; p.SelectionWidth = 0; p.SelectionHeight = 0; }
+                    SelectionPopup.IsOpen = false; pageVM.IsSelecting = true; pageVM.IsHighlighting = false; pageVM.SelectionX = _dragStartPoint.X; pageVM.SelectionY = _dragStartPoint.Y; grid.CaptureMouse();
                     e.Handled = true;
                 }
                 CheckToolbarVisibility();
@@ -530,8 +530,15 @@ namespace MinsPDFViewer
                 {
                     _selectedPageIndex = _activePageIndex;
                     AddAnnotation(Colors.Yellow, AnnotationType.Highlight);
+                    var grid = sender as Grid ?? FindAncestor<Grid>(sender as DependencyObject);
+                    if (grid != null)
+                    {
+                        var canvas = FindChild<Canvas>(grid, "AnnotationCanvas");
+                        if (canvas != null) RefreshCanvas(canvas, pageVM);
+                    }
                 }
                 pageVM.IsSelecting = false;
+                pageVM.IsHighlighting = false;
             }
             else if (pageVM.IsSelecting && _currentTool == "CURSOR")
             {

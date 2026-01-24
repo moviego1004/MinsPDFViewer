@@ -208,25 +208,47 @@ namespace MinsPDFViewer
         }
 
         public ObservableCollection<PdfAnnotation> Annotations { get; set; } = new ObservableCollection<PdfAnnotation>();
+
+        private bool _isSelecting;
         public bool IsSelecting
         {
-            get; set;
+            get => _isSelecting;
+            set { _isSelecting = value; OnPropertyChanged(nameof(IsSelecting)); }
         }
+
+        private bool _isHighlighting;
+        public bool IsHighlighting
+        {
+            get => _isHighlighting;
+            set { _isHighlighting = value; OnPropertyChanged(nameof(IsHighlighting)); }
+        }
+
+        private double _selectionX;
         public double SelectionX
         {
-            get; set;
+            get => _selectionX;
+            set { _selectionX = value; OnPropertyChanged(nameof(SelectionX)); }
         }
+
+        private double _selectionY;
         public double SelectionY
         {
-            get; set;
+            get => _selectionY;
+            set { _selectionY = value; OnPropertyChanged(nameof(SelectionY)); }
         }
+
+        private double _selectionWidth;
         public double SelectionWidth
         {
-            get; set;
+            get => _selectionWidth;
+            set { _selectionWidth = value; OnPropertyChanged(nameof(SelectionWidth)); }
         }
+
+        private double _selectionHeight;
         public double SelectionHeight
         {
-            get; set;
+            get => _selectionHeight;
+            set { _selectionHeight = value; OnPropertyChanged(nameof(SelectionHeight)); }
         }
 
         public event PropertyChangedEventHandler? PropertyChanged;

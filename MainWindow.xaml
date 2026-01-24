@@ -548,10 +548,22 @@
                                                                                                                 Canvas.Top="{Binding SelectionY}"
                                                                                                                 Width="{Binding SelectionWidth}"
                                                                                                                 Height="{Binding SelectionHeight}"
-                                                                                                                BorderBrush="Blue"
-                                                                                                                BorderThickness="1"
-                                                                                                                Background="#300000FF"
-                                                                                                                Visibility="{Binding IsSelecting, Converter={StaticResource BooleanToVisibilityConverter}}"/>
+                                                                                                                Visibility="{Binding IsSelecting, Converter={StaticResource BooleanToVisibilityConverter}}">
+                                                                                                        <Border.Style>
+                                                                                                                <Style TargetType="Border">
+                                                                                                                        <Setter Property="BorderBrush" Value="Blue"/>
+                                                                                                                        <Setter Property="BorderThickness" Value="1"/>
+                                                                                                                        <Setter Property="Background" Value="#300000FF"/>
+                                                                                                                        <Style.Triggers>
+                                                                                                                                <DataTrigger Binding="{Binding IsHighlighting}" Value="True">
+                                                                                                                                        <Setter Property="BorderBrush" Value="Transparent"/>
+                                                                                                                                        <Setter Property="BorderThickness" Value="0"/>
+                                                                                                                                        <Setter Property="Background" Value="#50FFFF00"/>
+                                                                                                                                </DataTrigger>
+                                                                                                                        </Style.Triggers>
+                                                                                                                </Style>
+                                                                                                        </Border.Style>
+                                                                                                </Border>
                                                                                         </Canvas>
 
                                                                                         <Canvas x:Name="AnnotationCanvas"
