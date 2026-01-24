@@ -58,6 +58,7 @@ namespace MinsPDFViewer
 
         private bool _isDraggingAnnotation = false;
         private Point _annotationDragStartOffset;
+        private Grid? _dragGrid = null;
         private bool _isUpdatingUiFromSelection = false;
 
         private string _defaultFontFamily = "Malgun Gothic";
@@ -491,7 +492,8 @@ namespace MinsPDFViewer
 
             if (_currentTool == "CURSOR" && _isDraggingAnnotation && _selectedAnnotation != null)
             {
-                var currentPoint = e.GetPosition(relativeTo);
+                var dragRelativeTo = (_dragGrid as IInputElement) ?? relativeTo;
+                var currentPoint = e.GetPosition(dragRelativeTo);
                 double newX = currentPoint.X - _annotationDragStartOffset.X;
                 double newY = currentPoint.Y - _annotationDragStartOffset.Y;
                 if (newX < 0) newX = 0;
@@ -560,6 +562,7 @@ namespace MinsPDFViewer
             }
             _activePageIndex = -1;
             _isDraggingAnnotation = false;
+            _dragGrid = null;
             e.Handled = true;
             CheckToolbarVisibility();
         }
@@ -689,6 +692,7 @@ namespace MinsPDFViewer
                 {
                     _currentTool = "CURSOR";
                     _isDraggingAnnotation = true;
+                    _dragGrid = parentGrid;
                     var container = GetParentContentPresenter(border);
                     _annotationDragStartOffset = container != null ? e.GetPosition(container) : e.GetPosition(border);
                     parentGrid.CaptureMouse();
@@ -895,6 +899,7 @@ namespace MinsPDFViewer
                 {
                     _annotationDragStartOffset = e.GetPosition(element);
                     _isDraggingAnnotation = true;
+                    _dragGrid = parentGrid;
                     parentGrid.CaptureMouse();
                     e.Handled = true;
                 }
