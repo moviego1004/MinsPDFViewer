@@ -22,8 +22,10 @@ namespace MinsPDFViewer
         private const int EstimatedSignatureSize = 8192;
         private const char PlaceholderChar = 'A';
 
-        public void SignPdf(string sourcePath, string destPath, SignatureConfig config, int pageIndex, XRect? customRect)
+        public void SignPdf(string sourcePath, string destPath, SignatureConfig config, int pageIndex, SignaturePdfRect? customRect)
         {
+            PdfSharpRuntime.EnsureInitialized();
+
             if (config == null || config.PrivateKey == null || config.Certificate == null)
                 throw new ArgumentException("서명 설정이 올바르지 않습니다.");
 
@@ -39,9 +41,10 @@ namespace MinsPDFViewer
 
                 if (customRect.HasValue && customRect.Value.Width > 0 && customRect.Value.Height > 0)
                 {
-                    targetRect = customRect.Value;
-                    stampWidth = targetRect.Width;
-                    stampHeight = targetRect.Height;
+                    var rect = customRect.Value;
+                    targetRect = new XRect(rect.X, rect.Y, rect.Width, rect.Height);
+                    stampWidth = rect.Width;
+                    stampHeight = rect.Height;
                 }
                 else
                 {

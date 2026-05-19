@@ -2,12 +2,11 @@ using System;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.ComponentModel;
+using System.Linq;
 using System.Threading;
 using System.Windows;
 using System.Windows.Media;
 using PdfiumViewer;
-// [충돌 방지] PdfSharp의 PdfDocument는 명시적으로 별칭 사용
-using PdfSharpDoc = PdfSharp.Pdf.PdfDocument;
 
 namespace MinsPDFViewer
 {
@@ -55,11 +54,17 @@ namespace MinsPDFViewer
 
         public ObservableCollection<PdfPageViewModel> Pages { get; set; } = new ObservableCollection<PdfPageViewModel>();
         public ObservableCollection<PdfBookmarkViewModel> Bookmarks { get; set; } = new ObservableCollection<PdfBookmarkViewModel>();
+        public bool HasBookmarkChanges { get; set; }
 
         public async Task CloseAsync()
         {
             if (IsDisposed) return;
             IsDisposed = true;
+
+            foreach (var page in Pages.ToList())
+            {
+                page.Unload();
+            }
 
             await Task.Run(() =>
             {
@@ -449,12 +454,6 @@ namespace MinsPDFViewer
         {
             get; set;
         }
-    }
-
-    // [수정] PdfDocument 명확화
-    public class GenericPdfAnnotation : PdfSharp.Pdf.Annotations.PdfAnnotation
-    {
-        public GenericPdfAnnotation(PdfSharpDoc document) : base(document) { }
     }
 
     public class PdfBookmarkViewModel : INotifyPropertyChanged

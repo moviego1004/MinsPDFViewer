@@ -1,13 +1,13 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Diagnostics;
 using System.Threading.Tasks;
 using System.Windows;
 using PdfiumViewer; // Docnet 대체
 using Windows.Globalization;
 using Windows.Graphics.Imaging;
 using Windows.Media.Ocr;
-using Windows.Security.Cryptography;
 
 namespace MinsPDFViewer
 {
@@ -44,72 +44,77 @@ namespace MinsPDFViewer
 
             await Task.Run(async () =>
             {
-                // OCR용 별도 로드를 하지 않고 기존 모델의 PdfDocument 사용 (스레드 안전 주의)
                 int pageCount = 0;
                 lock (PdfService.PdfiumLock)
                 {
                     if (document.PdfDocument == null)
                         return;
-                    pageCount = document.PdfDocument.PageCount;
+                    pageCount = Math.Min(document.PdfDocument.PageCount, document.Pages.Count);
                 }
 
                 for (int i = 0; i < pageCount; i++)
                 {
                     if (document.IsDisposed)
                         break;
+
                     var pageVM = document.Pages[i];
                     byte[]? rawBytes = null;
                     int w = 0, h = 0;
 
-                    // 3.0배 고해상도 렌더링
-                    lock (PdfService.PdfiumLock)
+                    try
                     {
-                        if (document.PdfDocument == null)
-                            break;
-                        w = (int)(pageVM.Width * 3.0);
-                        h = (int)(pageVM.Height * 3.0);
-                        // 96 DPI * 3 = 288
-                        using (var bitmap = document.PdfDocument.Render(i, w, h, 288, 288, PdfRenderFlags.None))
-                        using (var ms = new MemoryStream())
+                        // Windows OCR accuracy improves noticeably with 2.5x-3x input.
+                        const double renderScale = 3.0;
+                        w = Math.Max(1, (int)Math.Round(pageVM.Width * renderScale));
+                        h = Math.Max(1, (int)Math.Round(pageVM.Height * renderScale));
+
+                        lock (PdfService.PdfiumLock)
                         {
-                            // BGRA32 포맷으로 저장
+                            if (document.PdfDocument == null)
+                                break;
+
+                            using var bitmap = document.PdfDocument.Render(i, w, h, 288, 288, PdfRenderFlags.Annotations);
+                            using var ms = new MemoryStream();
                             bitmap.Save(ms, System.Drawing.Imaging.ImageFormat.Bmp);
                             rawBytes = ms.ToArray();
-                            // BMP 헤더가 포함되어 있음. OCR 엔진은 SoftwareBitmap 필요.
-                            // Windows Runtime Buffer로 변환
                         }
-                    }
 
-                    if (rawBytes != null && rawBytes.Length > 0)
-                    {
-                        // 좌표 역보정 비율
-                        double scaleFactor = (double)w / pageVM.Width;
+                        if (rawBytes == null || rawBytes.Length == 0)
+                            continue;
 
-                        // BMP 바이트에서 SoftwareBitmap 생성 (헤더 자동 처리 안됨, 이미지 디코더 사용 권장)
-                        // 여기서는 간편하게 MemoryStream -> BitmapDecoder 사용
-                        using (var ms = new MemoryStream(rawBytes))
+                        double scaleX = w / pageVM.Width;
+                        double scaleY = h / pageVM.Height;
+
+                        using var imageStream = new MemoryStream(rawBytes);
+                        var decoder = await BitmapDecoder.CreateAsync(imageStream.AsRandomAccessStream());
+                        using var softwareBitmap = await decoder.GetSoftwareBitmapAsync(
+                            BitmapPixelFormat.Bgra8,
+                            BitmapAlphaMode.Premultiplied);
+
+                        var ocrResult = await _ocrEngine.RecognizeAsync(softwareBitmap);
+                        var wordList = new List<OcrWordInfo>();
+
+                        foreach (var line in ocrResult.Lines)
                         {
-                            var decoder = await BitmapDecoder.CreateAsync(ms.AsRandomAccessStream());
-                            using (var softwareBitmap = await decoder.GetSoftwareBitmapAsync())
+                            foreach (var word in line.Words)
                             {
-                                var ocrResult = await _ocrEngine.RecognizeAsync(softwareBitmap);
-                                var wordList = new List<OcrWordInfo>();
-
-                                foreach (var line in ocrResult.Lines)
-                                {
-                                    foreach (var word in line.Words)
-                                    {
-                                        double normX = word.BoundingRect.X / scaleFactor;
-                                        double normY = word.BoundingRect.Y / scaleFactor;
-                                        double normW = word.BoundingRect.Width / scaleFactor;
-                                        double normH = word.BoundingRect.Height / scaleFactor;
-                                        wordList.Add(new OcrWordInfo { Text = word.Text, BoundingBox = new Rect(normX, normY, normW, normH) });
-                                    }
-                                }
-                                pageVM.OcrWords = wordList;
+                                double normX = word.BoundingRect.X / scaleX;
+                                double normY = word.BoundingRect.Y / scaleY;
+                                double normW = word.BoundingRect.Width / scaleX;
+                                double normH = word.BoundingRect.Height / scaleY;
+                                wordList.Add(new OcrWordInfo { Text = word.Text, BoundingBox = new Rect(normX, normY, normW, normH) });
                             }
                         }
+
+                        pageVM.OcrWords = wordList;
+                        Debug.WriteLine($"OCR page {i + 1}/{pageCount}: {wordList.Count} words");
                     }
+                    catch (Exception ex)
+                    {
+                        Debug.WriteLine($"OCR page {i + 1} failed: {ex}");
+                        throw;
+                    }
+
                     progress?.Report(i + 1);
                 }
             });

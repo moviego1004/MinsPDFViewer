@@ -49,6 +49,26 @@ namespace MinsPDFViewer
         }
     }
 
+    public readonly struct SignaturePdfRect
+    {
+        public SignaturePdfRect(double x, double y, double width, double height)
+        {
+            X = x;
+            Y = y;
+            Width = width;
+            Height = height;
+        }
+
+        public double X { get; }
+        public double Y { get; }
+        public double Width { get; }
+        public double Height { get; }
+        public double Right => X + Width;
+        public double Top => Y + Height;
+        public double CenterX => X + (Width / 2);
+        public double CenterY => Y + (Height / 2);
+    }
+
     // [신규] 서명 검증 결과 모델
     public class SignatureValidationResult
     {

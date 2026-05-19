@@ -53,8 +53,10 @@ Section "Install"
     File "${BUILD_DIR}\${APP_EXE}"
     
     ; 2. 필수 DLL 복사 (pdfium.dll 등)
-    ; pdfium.dll은 Docnet.Core가 사용하는 핵심 엔진이므로 필수입니다.
-   ; File "${BUILD_DIR}\pdfium.dll"
+    ; PdfiumViewer는 x64 폴더 안에 있는 pdfium.dll을 로드합니다.
+    SetOutPath "$INSTDIR\x64"
+    File "${BUILD_DIR}\x64\pdfium.dll"
+    SetOutPath "$INSTDIR"
 
     ; [추가] 단일 파일이 아닐 경우, 나머지 DLL들도 모두 복사
     File "${BUILD_DIR}\*.dll" 
@@ -91,6 +93,8 @@ SectionEnd
 Section "Uninstall"
 
     Delete "$INSTDIR\${APP_EXE}"
+    Delete "$INSTDIR\x64\pdfium.dll"
+    RMDir "$INSTDIR\x64"
     Delete "$INSTDIR\pdfium.dll"
     Delete "$INSTDIR\Uninstall.exe"
     

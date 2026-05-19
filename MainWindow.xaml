@@ -406,7 +406,8 @@
                                                                                 <TextBox Text="{Binding Title, UpdateSourceTrigger=PropertyChanged}"
                                                                                                 VerticalAlignment="Center"
                                                                                                 KeyDown="BookmarkRename_KeyDown"
-                                                                                                LostFocus="BookmarkRename_LostFocus">
+                                                                                                LostFocus="BookmarkRename_LostFocus"
+                                                                                                IsVisibleChanged="BookmarkRename_IsVisibleChanged">
                                                                                         <TextBox.Style>
                                                                                                 <Style TargetType="TextBox">
                                                                                                         <Setter Property="Visibility"

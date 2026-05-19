@@ -30,7 +30,7 @@ namespace MinsPDFViewer
 
         public void ResetSearch()
         {
-            _currentPageIndex = 0;
+            _currentPageIndex = -1;
             _currentMatchIndex = -1;
             _currentMatches.Clear();
             _cancelSearch = false;

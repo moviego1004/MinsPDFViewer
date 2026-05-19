@@ -14,12 +14,6 @@ using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using Microsoft.Win32;
 using PdfiumViewer;
-using PdfSharp.Drawing;
-using PdfSharp.Pdf;
-using PdfSharp.Pdf.IO;
-using Windows.Globalization;
-using Windows.Graphics.Imaging;
-using Windows.Media.Ocr;
 
 namespace MinsPDFViewer
 {
@@ -28,7 +22,8 @@ namespace MinsPDFViewer
         private readonly PdfService _pdfService;
         private readonly SearchService _searchService;
         private readonly PdfSignatureService _signatureService;
-        private OcrEngine? _ocrEngine;
+        private readonly SignatureVerificationService _signatureVerificationService;
+        private readonly OcrService _ocrService;
         private readonly HistoryService _historyService;
 
         public System.Collections.ObjectModel.ObservableCollection<PdfDocumentModel> Documents
@@ -82,11 +77,9 @@ namespace MinsPDFViewer
             _pdfService = new PdfService();
             _searchService = new SearchService(_pdfService);
             _signatureService = new PdfSignatureService();
+            _signatureVerificationService = new SignatureVerificationService();
+            _ocrService = new OcrService();
             _historyService = new HistoryService();
-
-            // Force bind events to ensure they work even if XAML binding fails
-            BtnSave.Click += BtnSave_Click;
-            BtnSaveAs.Click += BtnSaveAs_Click;
 
             // Setup global logging and exception handling
             Log("=== Application Starting ===");
@@ -94,19 +87,6 @@ namespace MinsPDFViewer
             this.Dispatcher.UnhandledException += (s, e) => {
                 Log($"[CRITICAL] DispatcherUnhandledException: {e.Exception}");
             };
-
-            try
-            {
-                if (PdfSharp.Fonts.GlobalFontSettings.FontResolver == null)
-                    PdfSharp.Fonts.GlobalFontSettings.FontResolver = new WindowsFontResolver();
-            }
-            catch { }
-
-            try
-            {
-                _ocrEngine = OcrEngine.TryCreateFromLanguage(new Language("ko-KR")) ?? OcrEngine.TryCreateFromUserProfileLanguages();
-            }
-            catch { }
 
             CbFont.ItemsSource = new string[] { "Malgun Gothic", "Gulim", "Dotum", "Batang" };
             CbFont.SelectedIndex = 0;
@@ -552,48 +532,16 @@ namespace MinsPDFViewer
                 double pdfX = clickPoint.X / scaleX;
                 double pdfY = pageVM.PdfPageHeightPoint - (clickPoint.Y / scaleY);
 
-                using (var doc = PdfReader.Open(SelectedDocument.FilePath, PdfDocumentOpenMode.Import))
+                var result = _signatureVerificationService.VerifySignatureAtPoint(
+                    SelectedDocument.FilePath,
+                    pageVM.OriginalPageIndex,
+                    pdfX,
+                    pdfY);
+
+                if (result != null)
                 {
-                    if (pageVM.OriginalPageIndex >= doc.PageCount) return false;
-                    
-                    var page = doc.Pages[pageVM.OriginalPageIndex];
-                    if (page.Annotations == null) return false;
-
-                    foreach (var annot in page.Annotations)
-                    {
-                        var pa = annot as PdfDictionary;
-                        if (pa != null && 
-                            pa.Elements.GetString("/Subtype") == "/Widget" && 
-                            pa.Elements.GetString("/FT") == "/Sig")
-                        {
-                            var rectArr = pa.Elements.GetArray("/Rect");
-                            if (rectArr != null && rectArr.Elements.Count == 4)
-                            {
-                                double rL = rectArr.Elements.GetReal(0);
-                                double rB = rectArr.Elements.GetReal(1);
-                                double rR = rectArr.Elements.GetReal(2);
-                                double rT = rectArr.Elements.GetReal(3);
-
-                                if (pdfX >= rL && pdfX <= rR && pdfY >= rB && pdfY <= rT)
-                                {
-                                    // Found matching signature field!
-                                    var dict = pa.Elements.GetDictionary("/V");
-                                    if (dict != null)
-                                    {
-                                        var res = new SignatureVerificationService().VerifySignature(SelectedDocument.FilePath, dict);
-                                        new SignatureResultWindow(res) { Owner = this }.ShowDialog();
-                                        return true;
-                                    }
-                                    else
-                                    {
-                                        // Empty signature field (click to sign?)
-                                        // For now, just return true to consume click or false to allow selection
-                                        // Let's allow selecting empty fields if needed, but here we assume verification.
-                                    }
-                                }
-                            }
-                        }
-                    }
+                    new SignatureResultWindow(result) { Owner = this }.ShowDialog();
+                    return true;
                 }
             }
             catch (Exception ex)
@@ -702,11 +650,18 @@ namespace MinsPDFViewer
             {
                 try
                 {
-                    lock (PdfService.PdfiumLock)
-                    {
-                        if (doc.PdfDocument == null) return "";
-                        return ""; // Simplified for now
-                    }
+                    if (pageIndex < 0 || pageIndex >= doc.Pages.Count)
+                        return string.Empty;
+
+                    var page = doc.Pages[pageIndex];
+                    return _pdfService.ExtractTextInRect(
+                        doc.FilePath,
+                        page.OriginalPageIndex,
+                        uiRect,
+                        page.Width,
+                        page.Height,
+                        page.PdfPageWidthPoint,
+                        page.PdfPageHeightPoint);
                 }
                 catch { return ""; }
             });
@@ -864,13 +819,28 @@ namespace MinsPDFViewer
                         double pdfX = targetPage.CropX + (ann.X * scaleX);
                         double pdfY = (targetPage.CropY + effectivePdfHeight) - ((ann.Y + ann.Height) * scaleY);
 
-                        XRect pdfRect = new XRect(pdfX, pdfY, ann.Width * scaleX, ann.Height * scaleY);
+                        var pdfRect = new SignaturePdfRect(pdfX, pdfY, ann.Width * scaleX, ann.Height * scaleY);
                         string tempPath = Path.GetTempFileName();
-                        await _pdfService.SavePdf(SelectedDocument, tempPath);
-                        _signatureService.SignPdf(tempPath, saveDlg.FileName, config, pageIndex, pdfRect);
-                        if (File.Exists(tempPath)) File.Delete(tempPath);
+                        string signedPath = saveDlg.FileName;
+
+                        try
+                        {
+                            await _pdfService.SavePdf(SelectedDocument, tempPath);
+                            _signatureService.SignPdf(tempPath, signedPath, config, pageIndex, pdfRect);
+                        }
+                        finally
+                        {
+                            if (File.Exists(tempPath)) File.Delete(tempPath);
+                        }
+
                         targetPage.Annotations.Remove(ann);
-                        MessageBox.Show($"전자서명 완료!\n저장됨: {saveDlg.FileName}");
+                        _historyService.SetLastPage(signedPath, pageIndex);
+                        _historyService.SaveHistory();
+
+                        await ReloadPdfFromPathAsync(signedPath, pageIndex);
+
+                        TxtStatus.Text = "전자서명 완료";
+                        MessageBox.Show($"전자서명 완료!\n저장됨: {signedPath}");
                     }
                     catch (Exception ex) { MessageBox.Show($"서명 실패: {ex.Message}"); }
                 }
@@ -1031,55 +1001,56 @@ namespace MinsPDFViewer
 
         private async void BtnOCR_Click(object sender, RoutedEventArgs e)
         {
-            if (_ocrEngine == null) { MessageBox.Show("OCR 미지원"); return; }
-            if (SelectedDocument == null) return;
+            Log("[DEBUG] OCR button clicked.");
+
+            if (!_ocrService.IsAvailable)
+            {
+                Log("[DEBUG] OCR engine is not available.");
+                MessageBox.Show("OCR 엔진을 초기화하지 못했습니다. Windows 언어 설정에서 한국어 OCR 기능이 설치되어 있는지 확인해 주세요.");
+                return;
+            }
+
+            var document = SelectedDocument;
+            if (document == null)
+            {
+                Log("[DEBUG] OCR skipped: no selected document.");
+                MessageBox.Show("OCR을 실행할 PDF를 먼저 열어 주세요.");
+                return;
+            }
+
             BtnOCR.IsEnabled = false;
             PbStatus.Visibility = Visibility.Visible;
-            PbStatus.Maximum = SelectedDocument.Pages.Count;
+            PbStatus.Maximum = document.Pages.Count;
             PbStatus.Value = 0;
-            TxtStatus.Text = "OCR 분석 중...";
+            TxtStatus.Text = $"OCR 분석 중... ({_ocrService.CurrentLanguage})";
+            Mouse.OverrideCursor = Cursors.Wait;
             try
             {
-                await Task.Run(async () =>
+                await Dispatcher.InvokeAsync(() => { }, System.Windows.Threading.DispatcherPriority.Render);
+
+                var progress = new Progress<int>(value =>
                 {
-                    for (int i = 0; i < SelectedDocument.Pages.Count; i++)
-                    {
-                        if (SelectedDocument.IsDisposed) break;
-                        var pageVM = SelectedDocument.Pages[i];
-                        byte[]? bitmapBytes = null;
-                        int bmpWidth = 0, bmpHeight = 0;
-                        lock (PdfService.PdfiumLock)
-                        {
-                            if (SelectedDocument.PdfDocument == null) continue;
-                            using (var bitmap = SelectedDocument.PdfDocument.Render(i, (int)pageVM.Width, (int)pageVM.Height, 96, 96, PdfRenderFlags.None))
-                            using (var ms = new MemoryStream())
-                            {
-                                bitmap.Save(ms, System.Drawing.Imaging.ImageFormat.Bmp);
-                                bitmapBytes = ms.ToArray();
-                                bmpWidth = bitmap.Width; bmpHeight = bitmap.Height;
-                            }
-                        }
-                        if (bitmapBytes != null)
-                        {
-                            var ibuffer = Windows.Security.Cryptography.CryptographicBuffer.CreateFromByteArray(bitmapBytes);
-                            using (var softwareBitmap = new SoftwareBitmap(BitmapPixelFormat.Bgra8, bmpWidth, bmpHeight, BitmapAlphaMode.Premultiplied))
-                            {
-                                softwareBitmap.CopyFromBuffer(ibuffer);
-                                var ocrResult = await _ocrEngine.RecognizeAsync(softwareBitmap);
-                                var wordList = new List<OcrWordInfo>();
-                                foreach (var line in ocrResult.Lines)
-                                    foreach (var word in line.Words)
-                                        wordList.Add(new OcrWordInfo { Text = word.Text, BoundingBox = new Rect(word.BoundingRect.X, word.BoundingRect.Y, word.BoundingRect.Width, word.BoundingRect.Height) });
-                                pageVM.OcrWords = wordList;
-                            }
-                        }
-                        await Application.Current.Dispatcher.InvokeAsync(() => { PbStatus.Value = i + 1; });
-                    }
+                    PbStatus.Value = value;
+                    TxtStatus.Text = $"OCR 분석 중... {value}/{document.Pages.Count}";
                 });
-                TxtStatus.Text = "OCR 완료.";
+                await _ocrService.RunOcrAsync(document, progress);
+
+                int wordCount = document.Pages.Sum(p => p.OcrWords?.Count ?? 0);
+                TxtStatus.Text = $"OCR 완료. {wordCount:N0}개 단어 - 저장하면 검색 가능한 PDF로 반영됩니다.";
+                Log($"[DEBUG] OCR completed. Pages={document.Pages.Count}, Words={wordCount}, Language={_ocrService.CurrentLanguage}");
             }
-            catch (Exception ex) { Log($"[CRITICAL] OCR Error: {ex}"); TxtStatus.Text = "오류 발생"; }
-            finally { BtnOCR.IsEnabled = true; PbStatus.Visibility = Visibility.Collapsed; }
+            catch (Exception ex)
+            {
+                Log($"[CRITICAL] OCR Error: {ex}");
+                TxtStatus.Text = "OCR 오류 발생";
+                MessageBox.Show($"OCR 처리 중 오류가 발생했습니다.\n\n{ex.Message}");
+            }
+            finally
+            {
+                Mouse.OverrideCursor = null;
+                BtnOCR.IsEnabled = true;
+                PbStatus.Visibility = Visibility.Collapsed;
+            }
         }
 
         private async void BtnSave_Click(object sender, RoutedEventArgs e)
@@ -1117,21 +1088,16 @@ namespace MinsPDFViewer
                 TxtStatus.Text = "저장 중...";
                 await _pdfService.SavePdf(docToSave, tempPath);
                 
-                // [Fix] Wait for file release before copying
-                await docToSave.CloseAsync();
-                
-                Documents.Remove(docToSave);
-                if (SelectedDocument == docToSave) SelectedDocument = null;
+                // [Fix] Close every tab for this path so reload cannot select stale document state.
+                await CloseOpenDocumentsForPathAsync(originalPath);
                 
                 await Task.Run(() => File.Copy(tempPath, originalPath, true));
+                PdfService.ClearPageCacheForFile(originalPath);
                 
                 _historyService.SetLastPage(originalPath, currentPageIndex);
                 _historyService.SaveHistory();
                 
-                await OpenPdfFromPath(originalPath);
-                
-                // Allow UI to update bindings
-                await Dispatcher.InvokeAsync(() => { }, System.Windows.Threading.DispatcherPriority.Loaded);
+                await ReloadPdfFromPathAsync(originalPath, currentPageIndex);
 
                 var newSv = GetCurrentScrollViewer();
                 if (newSv != null)
@@ -1176,12 +1142,38 @@ namespace MinsPDFViewer
 
         private async void BtnSaveAs_Click(object sender, RoutedEventArgs e)
         {
+            Keyboard.ClearFocus();
+            FocusManager.SetFocusedElement(this, this);
+
             if (SelectedDocument == null) return;
             var dlg = new SaveFileDialog { Filter = "PDF Files|*.pdf", FileName = Path.GetFileNameWithoutExtension(SelectedDocument.FilePath) + "_annotated" };
             if (dlg.ShowDialog() == true)
             {
-                try { 
-                    await _pdfService.SavePdf(SelectedDocument, dlg.FileName);
+                var docToSave = SelectedDocument;
+                string savePath = dlg.FileName;
+                int currentPageIndex = GetCurrentPageIndex();
+                var sv = GetCurrentScrollViewer();
+                double vOffset = sv?.VerticalOffset ?? 0;
+                double hOffset = sv?.HorizontalOffset ?? 0;
+
+                try {
+                    TxtStatus.Text = "다른 이름으로 저장 중...";
+                    await _pdfService.SavePdf(docToSave, savePath);
+                    PdfService.ClearPageCacheForFile(savePath);
+
+                    _historyService.SetLastPage(savePath, currentPageIndex);
+                    _historyService.SaveHistory();
+
+                    await ReloadPdfFromPathAsync(savePath, currentPageIndex);
+
+                    var newSv = GetCurrentScrollViewer();
+                    if (newSv != null)
+                    {
+                        newSv.ScrollToVerticalOffset(vOffset);
+                        newSv.ScrollToHorizontalOffset(hOffset);
+                    }
+
+                    TxtStatus.Text = "저장 완료";
                     MessageBox.Show("저장되었습니다.");
                 } catch (Exception ex) { Log($"[CRITICAL] SaveAs Error: {ex}"); MessageBox.Show($"저장 실패: {ex.Message}"); }
             }
@@ -1362,69 +1354,39 @@ namespace MinsPDFViewer
             if (SelectedDocument == null || !(sender is FrameworkElement el) || !(el.DataContext is PdfAnnotation ann)) return;
             if (ann.Type == AnnotationType.SignatureField) {
                 try {
-                    using (var doc = PdfReader.Open(SelectedDocument.FilePath, PdfDocumentOpenMode.Import)) {
-                        PdfDictionary? dict = null;
-                        int pageIndex = -1;
-                        
-                        // Find page index for annotation
-                        for (int i = 0; i < SelectedDocument.Pages.Count; i++) {
-                            if (SelectedDocument.Pages[i].Annotations.Contains(ann)) {
-                                pageIndex = i;
-                                break;
-                            }
+                    int pageIndex = -1;
+                    PdfPageViewModel? pageVM = null;
+                    for (int i = 0; i < SelectedDocument.Pages.Count; i++) {
+                        if (SelectedDocument.Pages[i].Annotations.Contains(ann)) {
+                            pageIndex = i;
+                            pageVM = SelectedDocument.Pages[i];
+                            break;
                         }
+                    }
 
-                        if (pageIndex != -1 && pageIndex < doc.PageCount) {
-                            var page = doc.Pages[pageIndex];
-                            if (page.Annotations != null) {
-                                for (int i=0; i<page.Annotations.Count; i++) {
-                                    var pa = page.Annotations[i] as PdfDictionary;
-                                    if (pa != null && pa.Elements.GetString("/Subtype") == "/Widget" && pa.Elements.GetString("/FT") == "/Sig") {
-                                        // 1. Try match by Field Name
-                                        string fieldName = pa.Elements.GetString("/T");
-                                        if (fieldName == ann.FieldName) {
-                                            dict = pa.Elements.GetDictionary("/V"); break;
-                                        }
-                                        
-                                        // 2. Try match by Rect (if Name failed)
-                                        // Convert PDF Rect to UI coords or vice versa to check overlap
-                                        // Simple heuristic: Center point must be inside rect
-                                        var rectArr = pa.Elements.GetArray("/Rect");
-                                        if (rectArr != null && rectArr.Elements.Count == 4) {
-                                            double rL = rectArr.Elements.GetReal(0);
-                                            double rB = rectArr.Elements.GetReal(1);
-                                            double rR = rectArr.Elements.GetReal(2);
-                                            double rT = rectArr.Elements.GetReal(3);
-                                            
-                                            // Scale factors
-                                            var pageVM = SelectedDocument.Pages[pageIndex];
-                                            double scaleX = pageVM.Width / pageVM.PdfPageWidthPoint;
-                                            double scaleY = pageVM.Height / pageVM.PdfPageHeightPoint;
-                                            
-                                            // Check ann center in PDF coords
-                                            // Ann Y is from Top. PDF Y is from Bottom.
-                                            double annCenterX_UI = ann.X + (ann.Width / 2);
-                                            double annCenterY_UI = ann.Y + (ann.Height / 2);
-                                            
-                                            double annCenterX_PDF = annCenterX_UI / scaleX;
-                                            double annCenterY_PDF = pageVM.PdfPageHeightPoint - (annCenterY_UI / scaleY);
-                                            
-                                            if (annCenterX_PDF >= rL && annCenterX_PDF <= rR &&
-                                                annCenterY_PDF >= rB && annCenterY_PDF <= rT) {
-                                                dict = pa.Elements.GetDictionary("/V"); break;
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
+                    if (pageIndex == -1 || pageVM == null) {
+                        MessageBox.Show("서명 데이터를 찾을 수 없습니다.");
+                        return;
+                    }
 
-                        if (dict != null) {
-                            var res = new SignatureVerificationService().VerifySignature(SelectedDocument.FilePath, dict);
-                            new SignatureResultWindow(res) { Owner = this }.ShowDialog();
-                        } else {
-                            MessageBox.Show("서명 데이터를 찾을 수 없습니다.");
-                        }
+                    double scaleX = pageVM.PdfPageWidthPoint / pageVM.Width;
+                    double scaleY = pageVM.PdfPageHeightPoint / pageVM.Height;
+                    var pdfRect = new SignaturePdfRect(
+                        ann.X * scaleX,
+                        pageVM.PdfPageHeightPoint - ((ann.Y + ann.Height) * scaleY),
+                        ann.Width * scaleX,
+                        ann.Height * scaleY);
+
+                    var result = _signatureVerificationService.VerifySignatureForAnnotation(
+                        SelectedDocument.FilePath,
+                        pageIndex,
+                        ann.FieldName,
+                        pdfRect);
+
+                    if (result != null) {
+                        new SignatureResultWindow(result) { Owner = this }.ShowDialog();
+                    } else {
+                        MessageBox.Show("서명 데이터를 찾을 수 없습니다.");
                     }
                 } catch (Exception ex) { MessageBox.Show($"검증 오류: {ex.Message}"); }
             }
@@ -1434,7 +1396,9 @@ namespace MinsPDFViewer
         private void ScrollToPage(int pageIndex)
         {
             if (SelectedDocument == null || pageIndex < 0 || pageIndex >= SelectedDocument.Pages.Count) return;
-            
+
+            RenderPagesAround(pageIndex);
+
             var sv = GetCurrentScrollViewer();
             if (sv == null) return;
 
@@ -1447,6 +1411,29 @@ namespace MinsPDFViewer
             }
 
             sv.ScrollToVerticalOffset(targetOffset);
+
+            Dispatcher.BeginInvoke(new Action(() =>
+            {
+                if (SelectedDocument == null || pageIndex < 0 || pageIndex >= SelectedDocument.Pages.Count) return;
+                GetCurrentListView()?.ScrollIntoView(SelectedDocument.Pages[pageIndex]);
+                RenderPagesAround(pageIndex, 2, 4);
+            }), System.Windows.Threading.DispatcherPriority.ContextIdle);
+        }
+
+        private void RenderPagesAround(int pageIndex, int pagesBefore = 1, int pagesAfter = 2)
+        {
+            if (SelectedDocument == null) return;
+
+            int start = Math.Max(0, pageIndex - pagesBefore);
+            int end = Math.Min(SelectedDocument.Pages.Count - 1, pageIndex + pagesAfter);
+            for (int i = start; i <= end; i++)
+            {
+                var page = SelectedDocument.Pages[i];
+                page.RenderCts?.Cancel();
+                var cts = new System.Threading.CancellationTokenSource();
+                page.RenderCts = cts;
+                _pdfService.RenderPageAsync(SelectedDocument, page, cts.Token);
+            }
         }
 
         private void BookmarkTree_SelectedItemChanged(object sender, RoutedPropertyChangedEventArgs<object> e) {
@@ -1478,23 +1465,53 @@ namespace MinsPDFViewer
             GetCurrentCollection(src)?.Remove(src);
             if (target == null) { SelectedDocument.Bookmarks.Add(src); src.Parent = null; }
             else { target.Children.Add(src); src.Parent = target; target.IsExpanded = true; }
+            MarkBookmarksChanged();
             e.Handled = true;
         }
         private bool IsChildOf(PdfBookmarkViewModel c, PdfBookmarkViewModel p) { var cur = c.Parent; while (cur != null) { if (cur == p) return true; cur = cur.Parent; } return false; }
         private static T? FindAncestor<T>(DependencyObject cur) where T : DependencyObject { while (cur != null) { if (cur is T t) return t; cur = VisualTreeHelper.GetParent(cur); } return null; }
+        private void MarkBookmarksChanged()
+        {
+            if (SelectedDocument != null) SelectedDocument.HasBookmarkChanges = true;
+        }
+
         private void BookmarkTree_KeyDown(object sender, KeyEventArgs e) { if (e.Key == Key.F2 && BookmarkTree.SelectedItem is PdfBookmarkViewModel bm) bm.IsEditing = true; }
         private void BtnRenameBookmark_Click(object sender, RoutedEventArgs e) { if (BookmarkTree.SelectedItem is PdfBookmarkViewModel bm) bm.IsEditing = true; }
-        private void BookmarkRename_KeyDown(object sender, KeyEventArgs e) { if (e.Key == Key.Enter && (sender as TextBox)?.DataContext is PdfBookmarkViewModel bm) { bm.IsEditing = false; e.Handled = true; } }
-        private void BookmarkRename_LostFocus(object sender, RoutedEventArgs e) { if ((sender as TextBox)?.DataContext is PdfBookmarkViewModel bm) bm.IsEditing = false; }
+        private void BookmarkRename_KeyDown(object sender, KeyEventArgs e) { if (e.Key == Key.Enter && (sender as TextBox)?.DataContext is PdfBookmarkViewModel bm) { bm.IsEditing = false; MarkBookmarksChanged(); e.Handled = true; } }
+        private void BookmarkRename_LostFocus(object sender, RoutedEventArgs e) { if ((sender as TextBox)?.DataContext is PdfBookmarkViewModel bm) { bm.IsEditing = false; MarkBookmarksChanged(); } }
+        private void BookmarkRename_IsVisibleChanged(object sender, DependencyPropertyChangedEventArgs e)
+        {
+            if (e.NewValue is true && sender is TextBox textBox)
+            {
+                Dispatcher.BeginInvoke(new Action(() =>
+                {
+                    textBox.Focus();
+                    textBox.SelectAll();
+                }), System.Windows.Threading.DispatcherPriority.Input);
+            }
+        }
         private void PdfListView_ScrollChanged(object sender, ScrollChangedEventArgs e) { if (SelectedDocument != null) TxtPageInfo.Text = $"{GetCurrentPageIndex() + 1} / {SelectedDocument.Pages.Count}"; }
-        private void BtnAddBookmark_Click(object sender, RoutedEventArgs e) { if (SelectedDocument != null) SelectedDocument.Bookmarks.Add(new PdfBookmarkViewModel { Title = $"Page {GetCurrentPageIndex() + 1}", PageIndex = GetCurrentPageIndex() }); }
-        private void BtnUpdateBookmarkPage_Click(object sender, RoutedEventArgs e) { if (BookmarkTree.SelectedItem is PdfBookmarkViewModel bm) { int idx = GetCurrentPageIndex(); bm.PageIndex = idx; if (bm.Title.StartsWith("새 책갈피")) bm.Title = $"새 책갈피 (p.{idx + 1})"; } }
+        private void BtnAddBookmark_Click(object sender, RoutedEventArgs e)
+        {
+            if (SelectedDocument == null) return;
+
+            var bookmark = new PdfBookmarkViewModel
+            {
+                Title = "새 책갈피",
+                PageIndex = GetCurrentPageIndex(),
+                IsEditing = true
+            };
+            SelectedDocument.Bookmarks.Add(bookmark);
+            MarkBookmarksChanged();
+            BookmarkTree.UpdateLayout();
+        }
+        private void BtnUpdateBookmarkPage_Click(object sender, RoutedEventArgs e) { if (BookmarkTree.SelectedItem is PdfBookmarkViewModel bm) { int idx = GetCurrentPageIndex(); bm.PageIndex = idx; if (bm.Title.StartsWith("새 책갈피")) bm.Title = $"새 책갈피 (p.{idx + 1})"; MarkBookmarksChanged(); } }
         private void BookmarkItem_PreviewMouseLeftButtonUp(object sender, MouseButtonEventArgs e) { if ((sender as FrameworkElement)?.DataContext is PdfBookmarkViewModel bm && SelectedDocument != null) { ScrollToPage(bm.PageIndex); } }
-        private void BtnDeleteBookmark_Click(object sender, RoutedEventArgs e) { var t = (sender as MenuItem)?.DataContext as PdfBookmarkViewModel ?? BookmarkTree.SelectedItem as PdfBookmarkViewModel; if (t != null && SelectedDocument != null) { if (SelectedDocument.Bookmarks.Contains(t)) SelectedDocument.Bookmarks.Remove(t); else t.Parent?.Children.Remove(t); } }
-        private void BtnMoveBookmarkUp_Click(object sender, RoutedEventArgs e) { if (BookmarkTree.SelectedItem is PdfBookmarkViewModel bm) { var col = GetCurrentCollection(bm); int i = col?.IndexOf(bm) ?? -1; if (i > 0) col?.Move(i, i - 1); } }
-        private void BtnMoveBookmarkDown_Click(object sender, RoutedEventArgs e) { if (BookmarkTree.SelectedItem is PdfBookmarkViewModel bm) { var col = GetCurrentCollection(bm); int i = col?.IndexOf(bm) ?? -1; if (i >= 0 && i < col.Count - 1) col?.Move(i, i + 1); } }
-        private void BtnIndentBookmark_Click(object sender, RoutedEventArgs e) { if (BookmarkTree.SelectedItem is PdfBookmarkViewModel bm) { var col = GetCurrentCollection(bm); int i = col?.IndexOf(bm) ?? -1; if (i > 0) { var p = col[i - 1]; col.Remove(bm); p.Children.Add(bm); bm.Parent = p; p.IsExpanded = true; } } }
-        private void BtnOutdentBookmark_Click(object sender, RoutedEventArgs e) { if (BookmarkTree.SelectedItem is PdfBookmarkViewModel bm && bm.Parent != null) { var oldP = bm.Parent; var list = (oldP.Parent == null) ? SelectedDocument.Bookmarks : oldP.Parent.Children; int i = list.IndexOf(oldP); if (i >= 0) { oldP.Children.Remove(bm); list.Insert(i + 1, bm); bm.Parent = oldP.Parent; } } }
+        private void BtnDeleteBookmark_Click(object sender, RoutedEventArgs e) { var t = (sender as MenuItem)?.DataContext as PdfBookmarkViewModel ?? BookmarkTree.SelectedItem as PdfBookmarkViewModel; if (t != null && SelectedDocument != null) { if (SelectedDocument.Bookmarks.Contains(t)) SelectedDocument.Bookmarks.Remove(t); else t.Parent?.Children.Remove(t); MarkBookmarksChanged(); } }
+        private void BtnMoveBookmarkUp_Click(object sender, RoutedEventArgs e) { if (BookmarkTree.SelectedItem is PdfBookmarkViewModel bm) { var col = GetCurrentCollection(bm); int i = col?.IndexOf(bm) ?? -1; if (i > 0) { col?.Move(i, i - 1); MarkBookmarksChanged(); } } }
+        private void BtnMoveBookmarkDown_Click(object sender, RoutedEventArgs e) { if (BookmarkTree.SelectedItem is PdfBookmarkViewModel bm) { var col = GetCurrentCollection(bm); int i = col?.IndexOf(bm) ?? -1; if (i >= 0 && i < col.Count - 1) { col?.Move(i, i + 1); MarkBookmarksChanged(); } } }
+        private void BtnIndentBookmark_Click(object sender, RoutedEventArgs e) { if (BookmarkTree.SelectedItem is PdfBookmarkViewModel bm) { var col = GetCurrentCollection(bm); int i = col?.IndexOf(bm) ?? -1; if (i > 0) { var p = col[i - 1]; col.Remove(bm); p.Children.Add(bm); bm.Parent = p; p.IsExpanded = true; MarkBookmarksChanged(); } } }
+        private void BtnOutdentBookmark_Click(object sender, RoutedEventArgs e) { if (BookmarkTree.SelectedItem is PdfBookmarkViewModel bm && bm.Parent != null) { var oldP = bm.Parent; var list = (oldP.Parent == null) ? SelectedDocument.Bookmarks : oldP.Parent.Children; int i = list.IndexOf(oldP); if (i >= 0) { oldP.Children.Remove(bm); list.Insert(i + 1, bm); bm.Parent = oldP.Parent; MarkBookmarksChanged(); } } }
         private System.Collections.ObjectModel.ObservableCollection<PdfBookmarkViewModel>? GetCurrentCollection(PdfBookmarkViewModel bm) => SelectedDocument == null ? null : bm.Parent == null ? SelectedDocument.Bookmarks : bm.Parent.Children;
 
         private int GetCurrentPageIndex()
@@ -1573,6 +1590,57 @@ namespace MinsPDFViewer
                 
                 Documents.Add(doc); 
                 SelectedDocument = doc; 
+            }
+        }
+
+        private async Task ReloadPdfFromPathAsync(string path, int pageIndex = 0)
+        {
+            await CloseOpenDocumentsForPathAsync(path);
+            PdfService.ClearPageCacheForFile(path);
+
+            _cachedScrollViewer = null;
+            MainTabControl.SelectedItem = null;
+            MainTabControl.Items.Refresh();
+            await Dispatcher.InvokeAsync(() => { }, System.Windows.Threading.DispatcherPriority.ContextIdle);
+
+            await OpenPdfFromPath(path);
+
+            await Dispatcher.InvokeAsync(() => { }, System.Windows.Threading.DispatcherPriority.Loaded);
+            MainTabControl.Items.Refresh();
+
+            if (SelectedDocument == null)
+                return;
+
+            int targetPageIndex = Math.Max(0, Math.Min(pageIndex, SelectedDocument.Pages.Count - 1));
+            ScrollToPage(targetPageIndex);
+            RenderPagesAround(targetPageIndex);
+        }
+
+        private async Task CloseOpenDocumentsForPathAsync(string path)
+        {
+            PdfService.ClearPageCacheForFile(path);
+
+            var existingDocuments = Documents
+                .Where(d => d.FilePath.Equals(path, StringComparison.OrdinalIgnoreCase))
+                .ToList();
+
+            foreach (var document in existingDocuments)
+            {
+                if (SelectedDocument == document)
+                {
+                    SelectedDocument = null;
+                    MainTabControl.SelectedItem = null;
+                }
+
+                await document.CloseAsync();
+                Documents.Remove(document);
+            }
+
+            if (existingDocuments.Count > 0)
+            {
+                _cachedScrollViewer = null;
+                MainTabControl.Items.Refresh();
+                await Dispatcher.InvokeAsync(() => { }, System.Windows.Threading.DispatcherPriority.ContextIdle);
             }
         }
 

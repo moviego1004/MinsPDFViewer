@@ -7,11 +7,68 @@ using Org.BouncyCastle.Cms;
 using Org.BouncyCastle.X509;
 using PdfSharp.Pdf;
 using PdfSharp.Pdf.Advanced;
+using PdfSharp.Pdf.IO;
 
 namespace MinsPDFViewer
 {
     public class SignatureVerificationService
     {
+        public SignatureValidationResult? VerifySignatureAtPoint(string filePath, int pageIndex, double pdfX, double pdfY)
+        {
+            using (var doc = PdfReader.Open(filePath, PdfDocumentOpenMode.Import))
+            {
+                if (pageIndex < 0 || pageIndex >= doc.PageCount)
+                    return null;
+
+                var page = doc.Pages[pageIndex];
+                if (page.Annotations == null)
+                    return null;
+
+                foreach (var annot in page.Annotations)
+                {
+                    if (TryGetSignatureDictionaryAtPoint(annot as PdfDictionary, pdfX, pdfY, out var sigDict))
+                        return VerifySignature(filePath, sigDict);
+                }
+            }
+
+            return null;
+        }
+
+        public SignatureValidationResult? VerifySignatureForAnnotation(
+            string filePath,
+            int pageIndex,
+            string? fieldName,
+            SignaturePdfRect annotationRect)
+        {
+            using (var doc = PdfReader.Open(filePath, PdfDocumentOpenMode.Import))
+            {
+                if (pageIndex < 0 || pageIndex >= doc.PageCount)
+                    return null;
+
+                var page = doc.Pages[pageIndex];
+                if (page.Annotations == null)
+                    return null;
+
+                foreach (var annot in page.Annotations)
+                {
+                    var field = annot as PdfDictionary;
+                    if (!IsSignatureWidget(field))
+                        continue;
+
+                    if (!string.IsNullOrWhiteSpace(fieldName) && field!.Elements.GetString("/T") == fieldName)
+                    {
+                        var dict = field.Elements.GetDictionary("/V");
+                        return dict == null ? null : VerifySignature(filePath, dict);
+                    }
+
+                    if (TryGetSignatureDictionaryAtPoint(field, annotationRect.CenterX, annotationRect.CenterY, out var sigDict))
+                        return VerifySignature(filePath, sigDict);
+                }
+            }
+
+            return null;
+        }
+
         public SignatureValidationResult VerifySignature(string filePath, PdfDictionary sigDict)
         {
             var result = new SignatureValidationResult();
@@ -132,6 +189,43 @@ namespace MinsPDFViewer
                 return dn;
             }
             catch { return dn; }
+        }
+
+        private static bool TryGetSignatureDictionaryAtPoint(
+            PdfDictionary? field,
+            double pdfX,
+            double pdfY,
+            out PdfDictionary sigDict)
+        {
+            sigDict = null!;
+            if (!IsSignatureWidget(field))
+                return false;
+
+            var rectArr = field!.Elements.GetArray("/Rect");
+            if (rectArr == null || rectArr.Elements.Count != 4)
+                return false;
+
+            double left = rectArr.Elements.GetReal(0);
+            double bottom = rectArr.Elements.GetReal(1);
+            double right = rectArr.Elements.GetReal(2);
+            double top = rectArr.Elements.GetReal(3);
+
+            if (pdfX < left || pdfX > right || pdfY < bottom || pdfY > top)
+                return false;
+
+            var dict = field.Elements.GetDictionary("/V");
+            if (dict == null)
+                return false;
+
+            sigDict = dict;
+            return true;
+        }
+
+        private static bool IsSignatureWidget(PdfDictionary? field)
+        {
+            return field != null
+                && field.Elements.GetString("/Subtype") == "/Widget"
+                && field.Elements.GetString("/FT") == "/Sig";
         }
     }
 }

@@ -3,7 +3,6 @@ using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
-using System.Reflection;
 using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading;
@@ -12,12 +11,6 @@ using System.Windows;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using PdfiumViewer;
-using PdfSharp.Drawing;
-using PdfSharp.Drawing.Layout;
-using PdfSharp.Pdf;
-using PdfSharp.Pdf.IO;
-using PdfSharp.Pdf.Annotations;
-using PdfSharp.Pdf.Advanced;
 using DrawingBitmap = System.Drawing.Bitmap;
 using DrawingRectangle = System.Drawing.Rectangle;
 
@@ -275,12 +268,71 @@ namespace MinsPDFViewer
             }
         }
 
-        // Page image cache (key: filePath_pageIndex, value: frozen BitmapSource)
+        // Page image cache (key: file identity + pageIndex, value: frozen BitmapSource)
         private static readonly LinkedList<string> _cacheOrder = new LinkedList<string>();
         private static readonly Dictionary<string, BitmapSource> _pageCache = new Dictionary<string, BitmapSource>();
         private static readonly object _cacheLock = new object();
 
-        private static string GetCacheKey(string filePath, int pageIndex) => $"{filePath}_{pageIndex}";
+        private static string NormalizeCachePath(string filePath)
+        {
+            try
+            {
+                return Path.GetFullPath(filePath);
+            }
+            catch
+            {
+                return filePath;
+            }
+        }
+
+        private static string GetCacheKey(string filePath, int pageIndex)
+        {
+            string normalizedPath = NormalizeCachePath(filePath);
+            long lastWriteTicks = 0;
+            long length = 0;
+
+            try
+            {
+                var info = new FileInfo(normalizedPath);
+                if (info.Exists)
+                {
+                    lastWriteTicks = info.LastWriteTimeUtc.Ticks;
+                    length = info.Length;
+                }
+            }
+            catch { }
+
+            return $"{normalizedPath}|{lastWriteTicks}|{length}|{pageIndex}";
+        }
+
+        public static void ClearPageCacheForFile(string filePath)
+        {
+            string normalizedPath = NormalizeCachePath(filePath);
+            string currentPrefix = normalizedPath + "|";
+            string legacyPrefix = filePath + "_";
+            int removed = 0;
+
+            lock (_cacheLock)
+            {
+                var keysToRemove = _pageCache.Keys
+                    .Where(k =>
+                        k.StartsWith(currentPrefix, StringComparison.OrdinalIgnoreCase) ||
+                        k.StartsWith(legacyPrefix, StringComparison.OrdinalIgnoreCase))
+                    .ToList();
+
+                foreach (var key in keysToRemove)
+                {
+                    if (_pageCache.Remove(key))
+                    {
+                        _cacheOrder.Remove(key);
+                        removed++;
+                    }
+                }
+            }
+
+            if (removed > 0)
+                Log($"Cleared {removed} cached page image(s) for {normalizedPath}");
+        }
 
         private static void AddToCache(string key, BitmapSource bitmap)
         {
@@ -374,6 +426,7 @@ namespace MinsPDFViewer
             public const int FPDF_ANNOT_HIGHLIGHT = 9;
             public const int FPDF_ANNOT_UNDERLINE = 10;
             public const int FPDF_ANNOT_WIDGET = 12;
+            public const int FPDF_ANNOT_STAMP = 13;
 
             public const int FPDFANNOT_COLORTYPE_Color = 0;
 
@@ -404,6 +457,9 @@ namespace MinsPDFViewer
             [System.Runtime.InteropServices.DllImport("pdfium.dll", CallingConvention = System.Runtime.InteropServices.CallingConvention.Cdecl)]
             public static extern bool FPDFText_GetRect(IntPtr text_page, int rect_index, ref double left, ref double top, ref double right, ref double bottom);
 
+            [System.Runtime.InteropServices.DllImport("pdfium.dll", CallingConvention = System.Runtime.InteropServices.CallingConvention.Cdecl)]
+            public static extern int FPDFText_GetBoundedText(IntPtr text_page, double left, double top, double right, double bottom, IntPtr buffer, int buflen);
+
             public const int FPDF_MATCHCASE = 0x00000001;
             public const int FPDF_MATCHWHOLEWORD = 0x00000002;
         }
@@ -430,7 +486,7 @@ namespace MinsPDFViewer
 
                         try
                         {
-                            IntPtr search = NativeMethods.FPDFText_FindStart(textPage, keyword, NativeMethods.FPDF_MATCHCASE, 0);
+                            IntPtr search = NativeMethods.FPDFText_FindStart(textPage, keyword, 0, 0);
                             if (search != IntPtr.Zero)
                             {
                                 try
@@ -487,6 +543,67 @@ namespace MinsPDFViewer
             return results;
         }
 
+        public string ExtractTextInRect(string filePath, int pageIndex, Rect uiRect, double viewWidth, double viewHeight, double pdfWidth, double pdfHeight)
+        {
+            if (!File.Exists(filePath) || uiRect.Width <= 0 || uiRect.Height <= 0 || viewWidth <= 0 || viewHeight <= 0)
+                return string.Empty;
+
+            double scaleX = pdfWidth / viewWidth;
+            double scaleY = pdfHeight / viewHeight;
+            double left = uiRect.Left * scaleX;
+            double right = uiRect.Right * scaleX;
+            double top = pdfHeight - (uiRect.Top * scaleY);
+            double bottom = pdfHeight - (uiRect.Bottom * scaleY);
+
+            lock (PdfiumLock)
+            {
+                IntPtr doc = NativeMethods.FPDF_LoadDocument(filePath, null);
+                if (doc == IntPtr.Zero) return string.Empty;
+
+                try
+                {
+                    IntPtr page = NativeMethods.FPDF_LoadPage(doc, pageIndex);
+                    if (page == IntPtr.Zero) return string.Empty;
+
+                    try
+                    {
+                        IntPtr textPage = NativeMethods.FPDFText_LoadPage(page);
+                        if (textPage == IntPtr.Zero) return string.Empty;
+
+                        try
+                        {
+                            int len = NativeMethods.FPDFText_GetBoundedText(textPage, left, top, right, bottom, IntPtr.Zero, 0);
+                            if (len <= 0) return string.Empty;
+
+                            IntPtr buffer = System.Runtime.InteropServices.Marshal.AllocHGlobal((len + 1) * 2);
+                            try
+                            {
+                                int written = NativeMethods.FPDFText_GetBoundedText(textPage, left, top, right, bottom, buffer, len + 1);
+                                if (written <= 0) return string.Empty;
+                                return System.Runtime.InteropServices.Marshal.PtrToStringUni(buffer, written)?.Trim() ?? string.Empty;
+                            }
+                            finally
+                            {
+                                System.Runtime.InteropServices.Marshal.FreeHGlobal(buffer);
+                            }
+                        }
+                        finally
+                        {
+                            NativeMethods.FPDFText_ClosePage(textPage);
+                        }
+                    }
+                    finally
+                    {
+                        NativeMethods.FPDF_ClosePage(page);
+                    }
+                }
+                finally
+                {
+                    NativeMethods.FPDF_CloseDocument(doc);
+                }
+            }
+        }
+
         public async Task<PdfDocumentModel?> LoadPdfAsync(string filePath)
         {
             if (!File.Exists(filePath)) return null;
@@ -495,6 +612,7 @@ namespace MinsPDFViewer
                 try
                 {
                     byte[] fileBytes = File.ReadAllBytes(filePath);
+                    Log($"LoadPdfAsync: {filePath}, Bytes={fileBytes.Length}");
                     var memoryStream = new MemoryStream(fileBytes);
                     IPdfDocument? pdfDoc = null;
                     lock (PdfiumLock) { pdfDoc = PdfiumViewer.PdfDocument.Load(memoryStream); }
@@ -525,6 +643,7 @@ namespace MinsPDFViewer
                 int pageCount = 0;
                 lock (PdfiumLock) { if (model.PdfDocument != null) pageCount = model.PdfDocument.PageCount; }
                 if (pageCount == 0) return;
+                Log($"InitializeDocumentAsync: {model.FilePath}, PageCount={pageCount}");
 
                 var tempPageList = new List<PdfPageViewModel>();
                 for (int i = 0; i < pageCount; i++)
@@ -714,7 +833,8 @@ namespace MinsPDFViewer
                                     if (subtype == NativeMethods.FPDF_ANNOT_FREETEXT ||
                                         subtype == NativeMethods.FPDF_ANNOT_HIGHLIGHT ||
                                         subtype == NativeMethods.FPDF_ANNOT_UNDERLINE ||
-                                        subtype == NativeMethods.FPDF_ANNOT_WIDGET)
+                                        subtype == NativeMethods.FPDF_ANNOT_WIDGET ||
+                                        subtype == NativeMethods.FPDF_ANNOT_STAMP)
                                     {
                                         var rect = new NativeMethods.FS_RECTF();
                                         if (!NativeMethods.FPDFAnnot_GetRect(annot, ref rect)) continue;
@@ -734,6 +854,8 @@ namespace MinsPDFViewer
                                         Brush background = Brushes.Transparent;
                                         AnnotationType annType = AnnotationType.FreeText;
                                         string fieldName = "";
+                                        string fontFamily = "Malgun Gothic";
+                                        bool isBold = false;
 
                                         if (subtype == NativeMethods.FPDF_ANNOT_FREETEXT)
                                         {
@@ -755,6 +877,29 @@ namespace MinsPDFViewer
                                                     scb.Freeze();
                                                     brush = scb;
                                                 }
+                                            }
+                                        }
+                                        else if (subtype == NativeMethods.FPDF_ANNOT_STAMP)
+                                        {
+                                            if (PdfiumEditService.TryDecodeManagedFreeText(content, out PdfiumEditService.ManagedFreeTextMetadata managedFreeText))
+                                            {
+                                                annType = AnnotationType.FreeText;
+                                                content = managedFreeText.Text;
+                                                fSize = managedFreeText.FontSize;
+                                                fontFamily = managedFreeText.FontFamily;
+                                                isBold = managedFreeText.IsBold;
+                                                var managedBrush = new SolidColorBrush(managedFreeText.ForegroundColor);
+                                                managedBrush.Freeze();
+                                                brush = managedBrush;
+                                            }
+                                            else if (PdfiumEditService.TryDecodeManagedFreeText(content, out string decodedText))
+                                            {
+                                                annType = AnnotationType.FreeText;
+                                                content = decodedText;
+                                            }
+                                            else
+                                            {
+                                                continue;
                                             }
                                         }
                                         else if (subtype == NativeMethods.FPDF_ANNOT_HIGHLIGHT)
@@ -792,6 +937,8 @@ namespace MinsPDFViewer
                                             Height = uiH,
                                             TextContent = content,
                                             FontSize = fSize,
+                                            FontFamily = fontFamily,
+                                            IsBold = isBold,
                                             Foreground = brush,
                                             Background = background,
                                             FieldName = fieldName
@@ -846,60 +993,6 @@ namespace MinsPDFViewer
             }
         }
 
-        private class PageSaveData
-        {
-            public int OriginalPageIndex { get; set; }
-            public double Width { get; set; }
-            public double Height { get; set; }
-            public double PdfPageWidthPoint { get; set; }
-            public double PdfPageHeightPoint { get; set; }
-            public List<AnnotationSaveData> Annotations { get; set; } = new List<AnnotationSaveData>();
-            public List<OcrWordInfo> OcrWords { get; set; } = new List<OcrWordInfo>();
-        }
-
-        private class AnnotationSaveData
-        {
-            public AnnotationType Type { get; set; }
-            public double X { get; set; }
-            public double Y { get; set; }
-            public double Width { get; set; }
-            public double Height { get; set; }
-            public string TextContent { get; set; } = "";
-            public double FontSize { get; set; }
-            public string FontFamily { get; set; } = "Malgun Gothic";
-            public bool IsBold { get; set; }
-            public Color ForegroundColor { get; set; }
-            public Color BackgroundColor { get; set; }
-        }
-
-        private class BookmarkSaveData
-        {
-            public string Title { get; set; } = "";
-            public int OriginalPageIndex { get; set; }
-            public List<BookmarkSaveData> Children { get; set; } = new List<BookmarkSaveData>();
-        }
-
-        private BookmarkSaveData MapBookmarkSnapshot(PdfBookmarkViewModel vm)
-        {
-            var data = new BookmarkSaveData
-            {
-                Title = vm.Title,
-                OriginalPageIndex = vm.PageIndex
-            };
-            foreach (var child in vm.Children)
-            {
-                data.Children.Add(MapBookmarkSnapshot(child));
-            }
-            return data;
-        }
-
-        private PdfFormXObject? GetPdfForm(XForm form)
-        {
-            var prop = typeof(XForm).GetProperty("PdfForm", BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public);
-            if (prop != null) return prop.GetValue(form) as PdfFormXObject;
-            return null;
-        }
-
         private void LogToFile(string msg)
         {
             lock (_logLock)
@@ -920,414 +1013,58 @@ namespace MinsPDFViewer
             string originalFilePath = model.FilePath;
             LogToFile($"Starting SavePdf for: {originalFilePath}");
 
-            // 1. [UI 스레드] 데이터 스냅샷
-            List<PageSaveData> pagesSnapshot = new List<PageSaveData>();
-            List<BookmarkSaveData> bookmarksSnapshot = new List<BookmarkSaveData>();
-
+            bool shouldRewriteBookmarks = false;
             await Application.Current.Dispatcher.InvokeAsync(() =>
             {
-                foreach (var p in model.Pages)
-                {
-                    var pageData = new PageSaveData
-                    {
-                        OriginalPageIndex = p.OriginalPageIndex,
-                        Width = p.Width,
-                        Height = p.Height,
-                        PdfPageWidthPoint = p.PdfPageWidthPoint,
-                        PdfPageHeightPoint = p.PdfPageHeightPoint,
-                        OcrWords = p.OcrWords != null ? new List<OcrWordInfo>(p.OcrWords) : new List<OcrWordInfo>()
-                    };
-
-                    foreach (var ann in p.Annotations)
-                    {
-                        if (ann.Type == AnnotationType.SearchHighlight ||
-                            ann.Type == AnnotationType.SignaturePlaceholder) continue;
-
-                        var annData = new AnnotationSaveData
-                        {
-                            Type = ann.Type,
-                            X = ann.X,
-                            Y = ann.Y,
-                            Width = ann.Width,
-                            Height = ann.Height,
-                            TextContent = ann.TextContent ?? "",
-                            FontSize = ann.FontSize,
-                            FontFamily = ann.FontFamily ?? "Malgun Gothic",
-                            IsBold = ann.IsBold,
-                            ForegroundColor = (ann.Foreground as SolidColorBrush)?.Color ?? Colors.Black,
-                            BackgroundColor = (ann.Background as SolidColorBrush)?.Color ?? Colors.Transparent
-                        };
-                        pageData.Annotations.Add(annData);
-                    }
-                    pagesSnapshot.Add(pageData);
-                }
-
-                // Bookmark Snapshot
-                foreach (var bm in model.Bookmarks)
-                {
-                    bookmarksSnapshot.Add(MapBookmarkSnapshot(bm));
-                }
+                shouldRewriteBookmarks = model.HasBookmarkChanges;
             });
-            LogToFile($"Snapshot created. Pages: {pagesSnapshot.Count}, Bookmarks: {bookmarksSnapshot.Count}");
 
-            await Task.Run(() =>
+            List<MinsPDFViewer.BookmarkSaveData> pdfiumBookmarkSnapshot = shouldRewriteBookmarks
+                ? await PdfSaveSnapshotFactory.CreateBookmarkSnapshotAsync(model)
+                : new List<MinsPDFViewer.BookmarkSaveData>();
+
+            try
             {
-                string tempWorkPath = Path.GetTempFileName();
-                File.Copy(originalFilePath, tempWorkPath, true);
-                LogToFile($"Copied to temp: {tempWorkPath}");
+                var pdfiumEditService = new PdfiumEditService();
+                string pdfiumUnsupportedReason = PdfiumEditService.GetUnsupportedReason(model);
+                if (!string.IsNullOrEmpty(pdfiumUnsupportedReason))
+                    LogToFile($"[SaveEngine:{PdfSaveEngine.Pdfium}] Not eligible: {pdfiumUnsupportedReason}");
 
-                bool standardSaveSuccess = false;
-
-                // Page Mapping for Bookmarks: OriginalPageIndex -> New PdfPage
-                Dictionary<int, PdfPage> pageMapping = new Dictionary<int, PdfPage>();
-
-                // 1. Standard Save (Import)
-                try
+                if (await pdfiumEditService.TrySaveAnnotationsAsync(model, outputPath))
                 {
-                    using (var sourceDoc = PdfReader.Open(tempWorkPath, PdfDocumentOpenMode.Import))
-                    using (var outputDoc = new PdfSharp.Pdf.PdfDocument()) 
+                    if (shouldRewriteBookmarks)
                     {
-                        LogToFile($"Document opened for Import. PageCount: {sourceDoc.PageCount}, SnapshotCount: {pagesSnapshot.Count}");
-
-                        // [Fix] Iterate through UI pages snapshot
-                        for (int i = 0; i < pagesSnapshot.Count; i++)
-                        {
-                            var pageData = pagesSnapshot[i];
-                            int originalIdx = pageData.OriginalPageIndex;
-
-                            if (originalIdx >= 0 && originalIdx < sourceDoc.PageCount)
-                            {
-                                var pdfPage = outputDoc.AddPage(sourceDoc.Pages[originalIdx]);
-                                pageMapping[originalIdx] = pdfPage; // Register mapping
-
-                                // Clear existing annotations to avoid duplication
-                                pdfPage.Annotations.Clear();
-
-                                // OCR Text Layer
-                                DrawOcrText(outputDoc, pdfPage, pageData.OcrWords, pageData.Width, pageData.Height);
-                                
-                                // Annotations
-                                DrawAnnotationsOnPage(outputDoc, pdfPage, i, pagesSnapshot);
-                            }
-                        }
-
-                        // Restore Bookmarks
-                        foreach (var bm in bookmarksSnapshot)
-                        {
-                            AddBookmarkToPdf(outputDoc.Outlines, bm, pageMapping);
-                        }
-
-                        // Set NeedAppearances
-                        var catalog = outputDoc.Internals.Catalog;
-                        var acroForm = catalog.Elements.GetDictionary("/AcroForm");
-                        if (acroForm == null)
-                        {
-                            acroForm = new PdfDictionary(outputDoc);
-                            catalog.Elements["/AcroForm"] = acroForm;
-                        }
-                        acroForm.Elements["/NeedAppearances"] = new PdfBoolean(true);
-
-                        outputDoc.Save(outputPath);
-                        standardSaveSuccess = true;
-                        LogToFile("Standard save successful.");
+                        await new PdfSharpBookmarkService(LogToFile).RewriteBookmarksAsync(outputPath, pdfiumBookmarkSnapshot);
+                        await Application.Current.Dispatcher.InvokeAsync(() => model.HasBookmarkChanges = false);
+                        LogToFile($"[SaveEngine:{PdfSaveEngine.PdfiumWithPdfSharpBookmarkRewrite}] Save completed.");
+                        LogToFile("PDFium edit save successful.");
+                        return;
                     }
-                }
-                catch (Exception ex)
-                {
-                    LogToFile($"Standard save failed: {ex.Message}. Trying fallback.");
+                    LogToFile($"[SaveEngine:{PdfSaveEngine.Pdfium}] Save completed.");
+                    LogToFile("PDFium edit save successful.");
+                    return;
                 }
 
-                // 2. Fallback Save (Rasterization + OCR Text)
-                if (!standardSaveSuccess)
-                {
-                    try
-                    {
-                        // Reset Mapping for fallback
-                        pageMapping.Clear();
-
-                        using (var pdfiumDoc = PdfiumViewer.PdfDocument.Load(tempWorkPath))
-                        using (var outputDoc = new PdfSharp.Pdf.PdfDocument())
-                        {
-                            LogToFile("Starting fallback save (Rasterization).");
-                            
-                            // [Fix] Iterate through snapshot pages only
-                            for (int i = 0; i < pagesSnapshot.Count; i++)
-                            {
-                                var pageData = pagesSnapshot[i];
-                                int originalIdx = pageData.OriginalPageIndex;
-
-                                if (originalIdx >= 0 && originalIdx < pdfiumDoc.PageCount)
-                                {
-                                    var size = pdfiumDoc.PageSizes[originalIdx];
-                                    using (var bitmap = pdfiumDoc.Render(originalIdx, (int)size.Width * 2, (int)size.Height * 2, 192, 192, PdfRenderFlags.Annotations))
-                                    using (var ms = new MemoryStream())
-                                    {
-                                        bitmap.Save(ms, System.Drawing.Imaging.ImageFormat.Png);
-                                        ms.Position = 0;
-
-                                        var page = outputDoc.AddPage();
-                                        page.Width = size.Width;
-                                        page.Height = size.Height;
-                                        pageMapping[originalIdx] = page; // Register mapping
-
-                                        using (var gfx = XGraphics.FromPdfPage(page))
-                                        using (var xImage = XImage.FromStream(ms))
-                                        {
-                                            gfx.DrawImage(xImage, 0, 0, page.Width, page.Height);
-                                            DrawOcrText(outputDoc, page, pageData.OcrWords, pageData.Width, pageData.Height);
-                                            DrawAnnotationsOnPage(outputDoc, page, i, pagesSnapshot);
-                                        }
-                                    }
-                                }
-                            }
-
-                            // Restore Bookmarks (Fallback)
-                            foreach (var bm in bookmarksSnapshot)
-                            {
-                                AddBookmarkToPdf(outputDoc.Outlines, bm, pageMapping);
-                            }
-
-                            outputDoc.Save(outputPath);
-                            LogToFile("Fallback save successful.");
-                        }
-                    }
-                    catch (Exception ex2)
-                    {
-                        LogToFile($"Fallback save failed: {ex2}");
-                        throw;
-                    }
-                }
-
-                try { if (File.Exists(tempWorkPath)) File.Delete(tempWorkPath); } catch { }
-            });
-        }
-
-        private void AddBookmarkToPdf(PdfOutlineCollection collection, BookmarkSaveData bmData, Dictionary<int, PdfPage> mapping)
-        {
-            // Find destination page
-            PdfPage? destPage = null;
-            if (mapping.ContainsKey(bmData.OriginalPageIndex))
-            {
-                destPage = mapping[bmData.OriginalPageIndex];
-            }
-            else
-            {
-                // If the target page was deleted, try to find the nearest previous page?
-                // Or just don't add destination (just a title).
-                // Or map to first page if lost.
-                // Let's search for nearest valid page >= OriginalIndex?
-                // Actually, if page is deleted, bookmark to it might be invalid.
-                // We'll skip destination if invalid, but keep title.
-            }
-
-            var outline = destPage != null ? collection.Add(bmData.Title, destPage, true) : collection.Add(bmData.Title, null, true);
-            
-            foreach (var child in bmData.Children)
-            {
-                AddBookmarkToPdf(outline.Outlines, child, mapping);
-            }
-        }
-
-        private void DrawOcrText(PdfSharp.Pdf.PdfDocument doc, PdfPage page, List<OcrWordInfo> words, double viewWidth, double viewHeight)
-        {
-            if (words == null || words.Count == 0) return;
-
-            try 
-            {
-                using (var gfx = XGraphics.FromPdfPage(page))
-                {
-                    var transparentBrush = new XSolidBrush(XColor.FromArgb(0, 0, 0, 0)); // 완전 투명
-                    
-                    double pdfPageW = page.Width.Point;
-                    double pdfPageH = page.Height.Point;
-                    double scaleX = pdfPageW / viewWidth;
-                    double scaleY = pdfPageH / viewHeight;
-
-                    foreach (var word in words)
-                    {
-                        double fSize = word.BoundingBox.Height * scaleY;
-                        if (fSize <= 0) fSize = 10;
-                        var font = new XFont("Malgun Gothic", fSize, XFontStyleEx.Regular);
-                        
-                        double x = word.BoundingBox.X * scaleX;
-                        double y = word.BoundingBox.Y * scaleY;
-                        
-                        // 투명 텍스트 그리기 (검색 가능)
-                        gfx.DrawString(word.Text, font, transparentBrush, x, y + (fSize * 0.8));
-                    }
-                }
+                LogToFile($"[SaveEngine:{PdfSaveEngine.PdfSharpLegacy}] PDFium edit save skipped; using legacy PDFsharp save path.");
             }
             catch (Exception ex)
             {
-                LogToFile($"Error drawing OCR text: {ex.Message}");
+                LogToFile($"[SaveEngine:{PdfSaveEngine.PdfSharpLegacy}] PDFium edit save failed: {ex.Message}. Using legacy PDFsharp save path.");
             }
-        }
 
-        private void DrawAnnotationsOnPage(PdfSharp.Pdf.PdfDocument doc, PdfPage pdfPage, int pageIndex, List<PageSaveData> snapshots)
-        {
-            if (pageIndex >= snapshots.Count) return;
-            var pageData = snapshots[pageIndex];
+            var (pagesSnapshot, bookmarksSnapshot) = await PdfSaveSnapshotFactory.CreateAsync(model, LogToFile);
+            LogToFile($"Snapshot created. Pages: {pagesSnapshot.Count}, Bookmarks: {bookmarksSnapshot.Count}");
 
-            foreach (var ann in pageData.Annotations)
+            var legacyEngine = await new PdfSharpLegacySaveService(LogToFile).SaveAsync(
+                originalFilePath,
+                outputPath,
+                pagesSnapshot,
+                bookmarksSnapshot);
+            LogToFile($"[SaveEngine:{legacyEngine}] Save completed.");
+
+            if (shouldRewriteBookmarks)
             {
-                try
-                {
-                    double pdfPageH = pdfPage.Height.Point;
-                    double pdfPageW = pdfPage.Width.Point;
-                    double scaleX = pdfPageW / pageData.Width;
-                    double scaleY = pdfPageH / pageData.Height;
-
-                    var rect = new PdfSharp.Pdf.PdfRectangle(new XRect(
-                        ann.X * scaleX,
-                        pdfPageH - ((ann.Y + ann.Height) * scaleY),
-                        ann.Width * scaleX,
-                        ann.Height * scaleY));
-
-                    if (ann.Type == AnnotationType.FreeText)
-                    {
-                        var pdfAnnot = new GenericPdfAnnotation(doc);
-                        pdfAnnot.Elements["/Subtype"] = new PdfName("/FreeText");
-                        pdfAnnot.Elements["/Rect"] = rect;
-                        pdfAnnot.Elements["/Contents"] = new PdfString(ann.TextContent, PdfStringEncoding.Unicode);
-
-                        var form = new XForm(doc, new XRect(0, 0, ann.Width * scaleX, ann.Height * scaleY));
-                        using (var gfx = XGraphics.FromForm(form))
-                        {
-                            // Try Noto Sans KR first, fallback to Malgun Gothic usually handled by system or font resolver
-                            var fontName = "Noto Sans KR"; 
-                            var font = new XFont(fontName, ann.FontSize * scaleY, ann.IsBold ? XFontStyleEx.Bold : XFontStyleEx.Regular);
-                            
-                            // If creation failed or needs fallback (simple check, though XFont usually doesn't throw immediately)
-                            if (font.FontFamily.Name != fontName) font = new XFont("Malgun Gothic", ann.FontSize * scaleY, ann.IsBold ? XFontStyleEx.Bold : XFontStyleEx.Regular);
-
-                            var brush = new XSolidBrush(XColor.FromArgb(ann.ForegroundColor.A, ann.ForegroundColor.R, ann.ForegroundColor.G, ann.ForegroundColor.B));
-                            gfx.DrawString(ann.TextContent, font, brush, new XRect(0, 0, ann.Width * scaleX, ann.Height * scaleY), XStringFormats.TopLeft);
-                        }
-
-                        // Add Resource Dictionary (/DR) so Pdfium can find the font
-                        var pdfForm = GetPdfForm(form);
-                        string fontKey = "/F1"; // Default fallback
-                        
-                        var dr = new PdfDictionary(doc);
-                        var fontDict = new PdfDictionary(doc);
-                        bool fontFound = false;
-
-                        if (pdfForm != null)
-                        {
-                            var resources = pdfForm.Elements.GetDictionary("/Resources");
-                            if (resources != null)
-                            {
-                                var formFontDict = resources.Elements.GetDictionary("/Font");
-                                if (formFontDict != null && formFontDict.Elements.Count > 0)
-                                {
-                                    foreach (var key in formFontDict.Elements.Keys)
-                                    {
-                                        fontDict.Elements[key] = formFontDict.Elements[key];
-                                        fontKey = key;
-                                        fontFound = true;
-                                    }
-                                }
-                            }
-                        }
-
-                        // If PdfSharp didn't put the font in XForm resources, try to find it from the document
-                        if (!fontFound)
-                        {
-                            PdfDictionary? fallbackFont = null;
-                            foreach (var obj in doc.Internals.GetAllObjects())
-                            {
-                                if (obj is PdfDictionary d && d.Elements.GetName("/Type") == "/Font")
-                                {
-                                    var baseFont = d.Elements.GetName("/BaseFont");
-                                    var subtype = d.Elements.GetName("/Subtype");
-                                    
-                                    // High priority: Korean fonts we just added
-                                    if (baseFont.Contains("Noto") || baseFont.Contains("Malgun") || subtype == "/Type0")
-                                    {
-                                        fontDict.Elements["/F1"] = d.Reference;
-                                        fontKey = "/F1";
-                                        fontFound = true;
-                                        break; 
-                                    }
-                                    
-                                    // Lower priority fallback: any font
-                                    if (fallbackFont == null) fallbackFont = d;
-                                }
-                            }
-                            
-                            if (!fontFound && fallbackFont != null)
-                            {
-                                fontDict.Elements["/F1"] = fallbackFont.Reference;
-                                fontKey = "/F1";
-                                fontFound = true;
-                            }
-                        }
-
-                        // If STILL no font found (Clean PDF case), create a standard fallback font
-                        if (!fontFound)
-                        {
-                            var f = new PdfDictionary(doc);
-                            f.Elements["/Type"] = new PdfName("/Font");
-                            f.Elements["/Subtype"] = new PdfName("/Type1");
-                            f.Elements["/BaseFont"] = new PdfName("/Helvetica");
-                            f.Elements["/Encoding"] = new PdfName("/WinAnsiEncoding");
-                            doc.Internals.AddObject(f);
-                            fontDict.Elements["/F1"] = f.Reference;
-                            fontKey = "/F1";
-                            fontFound = true;
-                        }
-                        
-                        dr.Elements["/Font"] = fontDict;
-                        pdfAnnot.Elements["/DR"] = dr;
-
-                        if (pdfForm != null)
-                        {
-                            var apDict = new PdfDictionary(doc);
-                            apDict.Elements["/N"] = pdfForm.Reference;
-                            pdfAnnot.Elements["/AP"] = apDict;
-                        }
-
-                        // Use InvariantCulture to ensure dot decimal separator and prevent "Size 0" issues
-                        double finalFontSize = Math.Max(1.0, ann.FontSize * scaleY);
-                        string colorStr = string.Format(System.Globalization.CultureInfo.InvariantCulture, "{0:0.###} {1:0.###} {2:0.###} rg", 
-                            ann.ForegroundColor.R / 255.0, ann.ForegroundColor.G / 255.0, ann.ForegroundColor.B / 255.0);
-                        
-                        pdfAnnot.Elements["/DA"] = new PdfString(string.Format(System.Globalization.CultureInfo.InvariantCulture, 
-                            "{0} {1:0.###} Tf {2}", fontKey, finalFontSize, colorStr));
-
-                        pdfPage.Annotations.Add(pdfAnnot);
-                    }
-                    else if (ann.Type == AnnotationType.Highlight || ann.Type == AnnotationType.Underline)
-                    {
-                        var pdfAnnot = new GenericPdfAnnotation(doc);
-                        pdfAnnot.Elements["/Subtype"] = new PdfName(ann.Type == AnnotationType.Highlight ? "/Highlight" : "/Underline");
-                        pdfAnnot.Elements["/Rect"] = rect;
-
-                        var form = new XForm(doc, new XRect(0, 0, ann.Width * scaleX, ann.Height * scaleY));
-                        using (var gfx = XGraphics.FromForm(form))
-                        {
-                            if (ann.Type == AnnotationType.Highlight)
-                            {
-                                var brush = new XSolidBrush(XColor.FromArgb(ann.BackgroundColor.A, ann.BackgroundColor.R, ann.BackgroundColor.G, ann.BackgroundColor.B));
-                                gfx.DrawRectangle(brush, 0, 0, ann.Width * scaleX, ann.Height * scaleY);
-                            }
-                            else
-                            {
-                                var pen = new XPen(XColors.Black, 1 * scaleY);
-                                gfx.DrawLine(pen, 0, (ann.Height * scaleY) - 1, ann.Width * scaleX, (ann.Height * scaleY) - 1);
-                            }
-                        }
-                        var apDict = new PdfDictionary(doc);
-                        var pdfForm = GetPdfForm(form);
-                        if (pdfForm != null) apDict.Elements["/N"] = pdfForm.Reference;
-                        pdfAnnot.Elements["/AP"] = apDict;
-                        pdfPage.Annotations.Add(pdfAnnot);
-                    }
-                }
-                catch (Exception ex)
-                {
-                    LogToFile($"Annotation drawing error: {ex.Message}");
-                }
+                await Application.Current.Dispatcher.InvokeAsync(() => model.HasBookmarkChanges = false);
             }
         }
 
