@@ -967,14 +967,12 @@ namespace MinsPDFViewer
         }
 
         private void AnnotationTextBox_TextChanged(object sender, TextChangedEventArgs e)
-        {
-            // Log("[DEBUG] AnnotationTextBox_TextChanged Fired (Raw)");
+        {            
             if (sender is TextBox tb && tb.DataContext is PdfAnnotation ann)
             {
                 // [Direct Sync] Always push text to model, bypassing binding if necessary
                 ann.TextContent = tb.Text;
-                // Log($"[DEBUG] TextChanged: Model updated to '{ann.TextContent}'");
-
+         
                 if (!tb.IsKeyboardFocusWithin)
                     return;
 
@@ -1104,9 +1102,7 @@ namespace MinsPDFViewer
         }
 
         private async void BtnOCR_Click(object sender, RoutedEventArgs e)
-        {
-            Log("[DEBUG] OCR button clicked.");
-
+        {         
             if (!_ocrService.IsAvailable)
             {
                 Log("[DEBUG] OCR engine is not available.");
