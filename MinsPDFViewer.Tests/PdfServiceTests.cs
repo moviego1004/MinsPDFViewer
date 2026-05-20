@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Threading.Tasks;
+using System.Windows.Media;
 using MinsPDFViewer;
 using Xunit;
 
@@ -35,7 +36,6 @@ namespace MinsPDFViewer.Tests
         [Fact]
         public async Task Save_And_Reload_Should_Keep_Annotations()
         {
-            // 1. 문서 로드
             var service = new PdfService();
             var docModel = await service.LoadPdfAsync(_samplePdfPath);
             Assert.NotNull(docModel);
@@ -43,7 +43,6 @@ namespace MinsPDFViewer.Tests
 
             var page = docModel.Pages[0];
 
-            // 2. 텍스트 박스 추가 (Malgun Gothic 사용)
             var newAnnot = new PdfAnnotation
             {
                 Type = AnnotationType.FreeText,
@@ -56,17 +55,49 @@ namespace MinsPDFViewer.Tests
                 FontFamily = "Malgun Gothic"
             };
             page.Annotations.Add(newAnnot);
+            page.Annotations.Add(new PdfAnnotation
+            {
+                Type = AnnotationType.Highlight,
+                X = 70,
+                Y = 120,
+                Width = 140,
+                Height = 18,
+                AnnotationColor = Colors.Lime,
+                Background = new SolidColorBrush(Color.FromArgb(80, Colors.Lime.R, Colors.Lime.G, Colors.Lime.B))
+            });
+            page.Annotations.Add(new PdfAnnotation
+            {
+                Type = AnnotationType.Underline,
+                X = 70,
+                Y = 165,
+                Width = 140,
+                Height = 2,
+                AnnotationColor = Colors.Black,
+                Background = Brushes.Black
+            });
 
             string savePath = Path.Combine(_testFileDir, "tc11_result.pdf");
 
-            // 3. 저장 수행 (여기서 폰트 리졸버가 작동해야 함)
             await service.SavePdf(docModel, savePath);
 
-            // 4. 검증: PDFium 저장 경로는 관리형 텍스트 주석을 Stamp + metadata로 저장한다.
             string savedText = System.Text.Encoding.Latin1.GetString(File.ReadAllBytes(savePath));
-            bool annotationFound = savedText.Contains("MINS_FREETEXT_V2:");
+            Assert.Contains("MINS_FREETEXT_V2:", savedText);
 
-            Assert.True(annotationFound, "저장된 PDF 파일 내에 텍스트 박스(FreeText)가 존재해야 합니다.");
+            var reloaded = await service.LoadPdfAsync(savePath);
+            Assert.NotNull(reloaded);
+            await service.InitializeDocumentAsync(reloaded);
+            var reloadedPage = reloaded.Pages[0];
+            service.RenderPageImage(reloaded, reloadedPage);
+
+            Assert.Contains(reloadedPage.Annotations, a =>
+                a.Type == AnnotationType.FreeText &&
+                a.TextContent == "Hello Test" &&
+                Math.Abs(a.X - 50) < 1 &&
+                Math.Abs(a.Y - 50) < 1 &&
+                Math.Abs(a.Width - 100) < 1 &&
+                Math.Abs(a.Height - 30) < 1);
+            Assert.Contains(reloadedPage.Annotations, a => a.Type == AnnotationType.Highlight);
+            Assert.Contains(reloadedPage.Annotations, a => a.Type == AnnotationType.Underline);
         }
 
         // [TC-18] 서명된 파일 저장 시 서명 데이터 보존 확인

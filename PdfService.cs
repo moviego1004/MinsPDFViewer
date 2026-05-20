@@ -678,25 +678,31 @@ namespace MinsPDFViewer
         private static void RunOnUiDispatcherOrDirect(Action action)
         {
             var dispatcher = Application.Current?.Dispatcher;
-            if (dispatcher == null || Application.Current?.MainWindow == null || dispatcher.CheckAccess())
+            if (dispatcher == null || dispatcher.CheckAccess())
             {
                 action();
                 return;
             }
 
-            dispatcher.Invoke(action);
+            var operation = dispatcher.InvokeAsync(action);
+            if (!operation.Task.Wait(TimeSpan.FromSeconds(5)))
+                action();
         }
 
         private static async Task RunOnUiDispatcherOrDirectAsync(Action action)
         {
             var dispatcher = Application.Current?.Dispatcher;
-            if (dispatcher == null || Application.Current?.MainWindow == null || dispatcher.CheckAccess())
+            if (dispatcher == null || dispatcher.CheckAccess())
             {
                 action();
                 return;
             }
 
-            await dispatcher.InvokeAsync(action);
+            var operation = dispatcher.InvokeAsync(action);
+            if (await Task.WhenAny(operation.Task, Task.Delay(TimeSpan.FromSeconds(5))) == operation.Task)
+                await operation.Task;
+            else
+                action();
         }
 
         private static void Log(string message)
@@ -724,7 +730,7 @@ namespace MinsPDFViewer
             var cached = GetFromCache(cacheKey);
             if (cached != null)
             {
-                Application.Current.Dispatcher.BeginInvoke(() =>
+                RunOnUiDispatcherOrDirect(() =>
                 {
                     pageVM.ImageSource = cached;
                     pageVM.IsHighResRendered = true;
@@ -782,7 +788,7 @@ namespace MinsPDFViewer
                         }
                     }
                 }
-                if (bmpSource != null) Application.Current.Dispatcher.Invoke(() => pageVM.ImageSource = bmpSource);
+                if (bmpSource != null) RunOnUiDispatcherOrDirect(() => pageVM.ImageSource = bmpSource);
             }
             LoadAnnotationsLazy(model, pageVM);
         }
@@ -1010,7 +1016,7 @@ namespace MinsPDFViewer
 
                     if (extracted.Count > 0)
                     {
-                        Application.Current.Dispatcher.BeginInvoke(() =>
+                        RunOnUiDispatcherOrDirect(() =>
                         {
                             if (pageVM.Annotations.Count == 0)
                                 foreach (var item in extracted) pageVM.Annotations.Add(item);
@@ -1145,7 +1151,7 @@ namespace MinsPDFViewer
                 if (model.PdfDocument?.Bookmarks == null) return;
                 var list = new System.Collections.ObjectModel.ObservableCollection<PdfBookmarkViewModel>();
                 foreach (var b in model.PdfDocument.Bookmarks) list.Add(MapBm(b, null));
-                Application.Current.Dispatcher.Invoke(() =>
+                RunOnUiDispatcherOrDirect(() =>
                 {
                     model.Bookmarks.Clear();
                     foreach (var i in list) model.Bookmarks.Add(i);

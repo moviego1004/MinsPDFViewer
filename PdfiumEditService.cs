@@ -104,10 +104,14 @@ namespace MinsPDFViewer
         private static async Task<DocumentSnapshot?> CreateSnapshotAsync(PdfDocumentModel model)
         {
             var dispatcher = Application.Current?.Dispatcher;
-            if (dispatcher == null || Application.Current?.MainWindow == null || dispatcher.CheckAccess())
+            if (dispatcher == null || dispatcher.CheckAccess())
                 return CreateSnapshot(model);
 
-            return await dispatcher.InvokeAsync(() => CreateSnapshot(model));
+            var operation = dispatcher.InvokeAsync(() => CreateSnapshot(model));
+            if (await Task.WhenAny(operation.Task, Task.Delay(TimeSpan.FromSeconds(5))) == operation.Task)
+                return await operation.Task;
+
+            return CreateSnapshot(model);
         }
 
         private static DocumentSnapshot CreateSnapshot(PdfDocumentModel model)
