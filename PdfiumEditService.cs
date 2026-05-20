@@ -8,6 +8,12 @@ using System.Text.Json;
 using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Media;
+using DrawingBitmap = System.Drawing.Bitmap;
+using DrawingGraphics = System.Drawing.Graphics;
+using DrawingImageLockMode = System.Drawing.Imaging.ImageLockMode;
+using DrawingImageFormat = System.Drawing.Imaging.ImageFormat;
+using DrawingPixelFormat = System.Drawing.Imaging.PixelFormat;
+using DrawingRectangle = System.Drawing.Rectangle;
 
 namespace MinsPDFViewer
 {
@@ -18,9 +24,12 @@ namespace MinsPDFViewer
         private const int FPDF_ANNOT_UNDERLINE = 10;
         private const int FPDF_ANNOT_STAMP = 13;
         private const int FPDF_ANNOT_WIDGET = 12;
+        private const int FPDF_PAGEOBJ_IMAGE = 3;
         private const int FPDFANNOT_COLORTYPE_Color = 0;
         internal const string FreeTextMetadataPrefix = "MINS_FREETEXT_V1:";
         internal const string FreeTextMetadataV2Prefix = "MINS_FREETEXT_V2:";
+        internal const string ImageStampMetadataPrefix = "MINS_IMAGESTAMP_V1:";
+        internal const string ImageStampMetadataV2Prefix = "MINS_IMAGESTAMP_V2:";
 
         public async Task<bool> TrySaveAnnotationsAsync(PdfDocumentModel model, string outputPath)
         {
@@ -48,27 +57,37 @@ namespace MinsPDFViewer
                 return false;
             }
 
-            if (model.Pages.Any(p => p.IsBlankPage))
-            {
-                reason = "document contains blank pages";
-                return false;
-            }
-
             int sourcePageCount;
             lock (PdfService.PdfiumLock)
             {
                 sourcePageCount = model.PdfDocument?.PageCount ?? model.Pages.Count;
             }
 
-            if (model.Pages.Count != sourcePageCount)
+            if (model.Pages.Count(p => !p.IsBlankPage) > sourcePageCount)
             {
-                reason = "page set has changed";
+                reason = "document contains inserted pages";
                 return false;
             }
 
             int previousOriginalPageIndex = -1;
+            var seenOriginalPages = new HashSet<int>();
             foreach (var page in model.Pages)
             {
+                if (page.IsBlankPage)
+                    continue;
+
+                if (page.OriginalPageIndex < 0 || page.OriginalPageIndex >= sourcePageCount)
+                {
+                    reason = "page references an invalid source page";
+                    return false;
+                }
+
+                if (!seenOriginalPages.Add(page.OriginalPageIndex))
+                {
+                    reason = "page set contains duplicated source pages";
+                    return false;
+                }
+
                 if (page.OriginalPageIndex <= previousOriginalPageIndex)
                 {
                     reason = "page order has changed";
@@ -84,10 +103,11 @@ namespace MinsPDFViewer
 
         private static async Task<DocumentSnapshot?> CreateSnapshotAsync(PdfDocumentModel model)
         {
-            if (Application.Current == null || Application.Current.Dispatcher.CheckAccess())
+            var dispatcher = Application.Current?.Dispatcher;
+            if (dispatcher == null || Application.Current?.MainWindow == null || dispatcher.CheckAccess())
                 return CreateSnapshot(model);
 
-            return await Application.Current.Dispatcher.InvokeAsync(() => CreateSnapshot(model));
+            return await dispatcher.InvokeAsync(() => CreateSnapshot(model));
         }
 
         private static DocumentSnapshot CreateSnapshot(PdfDocumentModel model)
@@ -104,13 +124,17 @@ namespace MinsPDFViewer
                 var pageSnapshot = new PageSnapshot
                 {
                     OriginalPageIndex = page.OriginalPageIndex,
+                    IsBlankPage = page.IsBlankPage,
                     Width = page.Width,
                     Height = page.Height,
                     PdfWidth = page.PdfPageWidthPoint,
                     PdfHeight = page.PdfPageHeightPoint,
-                    ShouldRewriteAnnotations = page.AnnotationsLoaded ||
+                    Rotation = NormalizeRotation(page.Rotation),
+                    ShouldRewriteAnnotations = page.IsBlankPage ||
+                                               page.AnnotationsLoaded ||
                                                page.Annotations.Any(IsPersistentAnnotation) ||
-                                               (page.OcrWords != null && page.OcrWords.Count > 0)
+                                               (page.OcrWords != null && page.OcrWords.Count > 0) ||
+                                               NormalizeRotation(page.Rotation) != 0
                 };
 
                 foreach (var annotation in page.Annotations)
@@ -133,7 +157,8 @@ namespace MinsPDFViewer
                         FontFamily = annotation.FontFamily ?? "Malgun Gothic",
                         IsBold = annotation.IsBold,
                         Foreground = (annotation.Foreground as SolidColorBrush)?.Color ?? Colors.Black,
-                        Background = (annotation.Background as SolidColorBrush)?.Color ?? annotation.AnnotationColor
+                        Background = (annotation.Background as SolidColorBrush)?.Color ?? annotation.AnnotationColor,
+                        ImageBytes = annotation.ImageBytes
                     });
                 }
 
@@ -167,7 +192,8 @@ namespace MinsPDFViewer
         {
             return annotation.Type == AnnotationType.FreeText ||
                    annotation.Type == AnnotationType.Highlight ||
-                   annotation.Type == AnnotationType.Underline;
+                   annotation.Type == AnnotationType.Underline ||
+                   annotation.Type == AnnotationType.ImageStamp;
         }
 
         private static bool SaveSnapshot(DocumentSnapshot snapshot, string outputPath)
@@ -183,10 +209,12 @@ namespace MinsPDFViewer
                 {
                     foreach (var pageSnapshot in snapshot.Pages)
                     {
-                        if (!pageSnapshot.ShouldRewriteAnnotations)
+                        if (pageSnapshot.IsBlankPage)
                             continue;
 
-                        if (pageSnapshot.Annotations.Count == 0 && pageSnapshot.OcrWords.Count == 0)
+                        if (pageSnapshot.Rotation == 0 &&
+                            (!pageSnapshot.ShouldRewriteAnnotations ||
+                             (pageSnapshot.Annotations.Count == 0 && pageSnapshot.OcrWords.Count == 0)))
                             continue;
 
                         IntPtr page = NativeMethods.FPDF_LoadPage(document, pageSnapshot.OriginalPageIndex);
@@ -195,21 +223,31 @@ namespace MinsPDFViewer
 
                         try
                         {
-                            RemoveEditableAnnotations(page);
+                            if (pageSnapshot.Rotation != 0)
+                                NativeMethods.FPDFPage_SetRotation(page, pageSnapshot.Rotation / 90);
 
-                            foreach (var annotation in pageSnapshot.Annotations)
+                            if (pageSnapshot.ShouldRewriteAnnotations &&
+                                (pageSnapshot.Annotations.Count > 0 || pageSnapshot.OcrWords.Count > 0))
                             {
-                                AddAnnotation(document, page, pageSnapshot, annotation);
-                            }
+                                RemoveEditableAnnotations(page);
 
-                            AddOcrTextLayer(document, page, pageSnapshot, ref ocrFont);
-                            NativeMethods.FPDFPage_GenerateContent(page);
+                                foreach (var annotation in pageSnapshot.Annotations)
+                                {
+                                    AddPersistentObject(document, page, pageSnapshot, annotation);
+                                }
+
+                                AddOcrTextLayer(document, page, pageSnapshot, ref ocrFont);
+                                NativeMethods.FPDFPage_GenerateContent(page);
+                            }
                         }
                         finally
                         {
                             NativeMethods.FPDF_ClosePage(page);
                         }
                     }
+
+                    DeleteRemovedPages(document, snapshot);
+                    InsertBlankPages(document, snapshot, ref ocrFont);
 
                     using var stream = new FileStream(outputPath, FileMode.Create, FileAccess.Write, FileShare.None);
                     var writer = new NativeFileWriter(stream);
@@ -221,6 +259,51 @@ namespace MinsPDFViewer
                         NativeMethods.FPDFFont_Close(ocrFont);
 
                     NativeMethods.FPDF_CloseDocument(document);
+                }
+            }
+        }
+
+        private static void DeleteRemovedPages(IntPtr document, DocumentSnapshot snapshot)
+        {
+            var retainedPages = new HashSet<int>(
+                snapshot.Pages
+                    .Where(p => !p.IsBlankPage)
+                    .Select(p => p.OriginalPageIndex));
+            for (int sourceIndex = snapshot.SourcePageCount - 1; sourceIndex >= 0; sourceIndex--)
+            {
+                if (!retainedPages.Contains(sourceIndex))
+                    NativeMethods.FPDFPage_Delete(document, sourceIndex);
+            }
+        }
+
+        private static void InsertBlankPages(IntPtr document, DocumentSnapshot snapshot, ref IntPtr ocrFont)
+        {
+            for (int targetIndex = 0; targetIndex < snapshot.Pages.Count; targetIndex++)
+            {
+                var pageSnapshot = snapshot.Pages[targetIndex];
+                if (!pageSnapshot.IsBlankPage)
+                    continue;
+
+                double width = pageSnapshot.PdfWidth > 0 ? pageSnapshot.PdfWidth : 595;
+                double height = pageSnapshot.PdfHeight > 0 ? pageSnapshot.PdfHeight : 842;
+                IntPtr page = NativeMethods.FPDFPage_New(document, targetIndex, width, height);
+                if (page == IntPtr.Zero)
+                    continue;
+
+                try
+                {
+                    if (pageSnapshot.Rotation != 0)
+                        NativeMethods.FPDFPage_SetRotation(page, pageSnapshot.Rotation / 90);
+
+                    foreach (var annotation in pageSnapshot.Annotations)
+                        AddPersistentObject(document, page, pageSnapshot, annotation);
+
+                    AddOcrTextLayer(document, page, pageSnapshot, ref ocrFont);
+                    NativeMethods.FPDFPage_GenerateContent(page);
+                }
+                finally
+                {
+                    NativeMethods.FPDF_ClosePage(page);
                 }
             }
         }
@@ -240,7 +323,8 @@ namespace MinsPDFViewer
                     shouldRemove = subtype == FPDF_ANNOT_FREETEXT ||
                                    subtype == FPDF_ANNOT_HIGHLIGHT ||
                                    subtype == FPDF_ANNOT_UNDERLINE ||
-                                   (subtype == FPDF_ANNOT_STAMP && IsManagedFreeTextStamp(annotation));
+                                   (subtype == FPDF_ANNOT_STAMP &&
+                                    (IsManagedFreeTextStamp(annotation) || IsManagedImageStamp(annotation)));
                 }
                 finally
                 {
@@ -250,6 +334,17 @@ namespace MinsPDFViewer
                 if (shouldRemove)
                     NativeMethods.FPDFPage_RemoveAnnot(page, i);
             }
+        }
+
+        private static void AddPersistentObject(IntPtr document, IntPtr page, PageSnapshot pageSnapshot, AnnotationSnapshot annotation)
+        {
+            if (annotation.Type == AnnotationType.ImageStamp)
+            {
+                AddImageAnnotation(document, page, pageSnapshot, annotation);
+                return;
+            }
+
+            AddAnnotation(document, page, pageSnapshot, annotation);
         }
 
         private static void AddAnnotation(IntPtr document, IntPtr page, PageSnapshot pageSnapshot, AnnotationSnapshot annotation)
@@ -301,6 +396,156 @@ namespace MinsPDFViewer
             finally
             {
                 NativeMethods.FPDFPage_CloseAnnot(pdfAnnotation);
+            }
+        }
+
+        private static void AddImageAnnotation(IntPtr document, IntPtr page, PageSnapshot pageSnapshot, AnnotationSnapshot annotation)
+        {
+            if (annotation.ImageBytes == null || annotation.ImageBytes.Length == 0 ||
+                annotation.Width <= 0 || annotation.Height <= 0)
+                return;
+
+            IntPtr pdfAnnotation = NativeMethods.FPDFPage_CreateAnnot(page, FPDF_ANNOT_STAMP);
+            if (pdfAnnotation == IntPtr.Zero)
+                return;
+
+            try
+            {
+                var rect = ToPdfRect(pageSnapshot, annotation);
+                NativeMethods.FPDFAnnot_SetRect(pdfAnnotation, ref rect);
+                NativeMethods.FPDFAnnot_SetFlags(pdfAnnotation, 4);
+                NativeMethods.FPDFAnnot_SetStringValue(pdfAnnotation, "Contents", EncodeManagedImageStamp(annotation));
+                AddImageAppearance(document, page, pdfAnnotation, rect, annotation.ImageBytes);
+            }
+            finally
+            {
+                NativeMethods.FPDFPage_CloseAnnot(pdfAnnotation);
+            }
+        }
+
+        private static void AddImageAppearance(IntPtr document, IntPtr page, IntPtr annotation, NativeMethods.FS_RECTF rect, byte[] imageBytes)
+        {
+            IntPtr imageObject = NativeMethods.FPDFPageObj_NewImageObj(document);
+            if (imageObject == IntPtr.Zero)
+                return;
+
+            bool appended = false;
+            IntPtr pdfBitmap = IntPtr.Zero;
+            try
+            {
+                IntPtr[] pages = { page };
+                bool imageLoaded = TryLoadJpegImageObject(pages, imageObject, imageBytes);
+                if (!imageLoaded)
+                {
+                    pdfBitmap = CreatePdfBitmap(imageBytes);
+                    if (pdfBitmap == IntPtr.Zero)
+                    {
+                        LogToFile($"ImageStamp skipped: bitmap creation failed. Bytes={imageBytes.Length}");
+                        return;
+                    }
+
+                    imageLoaded = NativeMethods.FPDFImageObj_SetBitmap(pages, pages.Length, imageObject, pdfBitmap);
+                    if (!imageLoaded)
+                    {
+                        LogToFile($"ImageStamp skipped: FPDFImageObj_SetBitmap failed. Bytes={imageBytes.Length}");
+                        return;
+                    }
+                }
+
+                double width = Math.Max(0.1, rect.right - rect.left);
+                double height = Math.Max(0.1, rect.top - rect.bottom);
+                NativeMethods.FPDFPageObj_Transform(imageObject, width, 0, 0, height, rect.left, rect.bottom);
+                appended = NativeMethods.FPDFAnnot_AppendObject(annotation, imageObject);
+                LogToFile($"ImageStamp annotation inserted. Rect=({rect.left},{rect.bottom},{width},{height}), Bytes={imageBytes.Length}, Appended={appended}");
+            }
+            finally
+            {
+                if (!appended)
+                    NativeMethods.FPDFPageObj_Destroy(imageObject);
+                if (pdfBitmap != IntPtr.Zero)
+                    NativeMethods.FPDFBitmap_Destroy(pdfBitmap);
+            }
+        }
+
+        private static bool TryLoadJpegImageObject(IntPtr[] pages, IntPtr imageObject, byte[] imageBytes)
+        {
+            if (!IsJpeg(imageBytes))
+                return false;
+
+            using var access = new NativeImageFileAccess(imageBytes);
+            return NativeMethods.FPDFImageObj_LoadJpegFileInline(
+                pages,
+                pages.Length,
+                imageObject,
+                ref access.FileAccess);
+        }
+
+        private static bool IsJpeg(byte[] imageBytes)
+        {
+            return imageBytes.Length > 3 &&
+                   imageBytes[0] == 0xFF &&
+                   imageBytes[1] == 0xD8 &&
+                   imageBytes[^2] == 0xFF &&
+                   imageBytes[^1] == 0xD9;
+        }
+
+        private static string EncodeManagedImageStamp(AnnotationSnapshot snapshot)
+        {
+            var metadata = new ManagedImageStampMetadata
+            {
+                Storage = "appearance"
+            };
+            string json = JsonSerializer.Serialize(metadata);
+            return ImageStampMetadataV2Prefix + Convert.ToBase64String(Encoding.UTF8.GetBytes(json));
+        }
+
+        private static IntPtr CreatePdfBitmap(byte[] imageBytes)
+        {
+            using var input = new MemoryStream(imageBytes);
+            using var source = new DrawingBitmap(input);
+            using var bitmap = new DrawingBitmap(source.Width, source.Height, DrawingPixelFormat.Format32bppArgb);
+            using (var graphics = DrawingGraphics.FromImage(bitmap))
+            {
+                graphics.Clear(System.Drawing.Color.White);
+                graphics.DrawImage(source, 0, 0, bitmap.Width, bitmap.Height);
+            }
+
+            IntPtr pdfBitmap = NativeMethods.FPDFBitmap_CreateEx(bitmap.Width, bitmap.Height, 4, IntPtr.Zero, 0);
+            if (pdfBitmap == IntPtr.Zero)
+                return IntPtr.Zero;
+
+            try
+            {
+                IntPtr targetBuffer = NativeMethods.FPDFBitmap_GetBuffer(pdfBitmap);
+                int targetStride = NativeMethods.FPDFBitmap_GetStride(pdfBitmap);
+                if (targetBuffer == IntPtr.Zero || targetStride <= 0)
+                    return IntPtr.Zero;
+
+                var rect = new DrawingRectangle(0, 0, bitmap.Width, bitmap.Height);
+                var data = bitmap.LockBits(rect, DrawingImageLockMode.ReadOnly, DrawingPixelFormat.Format32bppArgb);
+                try
+                {
+                    int rowBytes = bitmap.Width * 4;
+                    byte[] row = new byte[rowBytes];
+                    for (int y = 0; y < bitmap.Height; y++)
+                    {
+                        Marshal.Copy(IntPtr.Add(data.Scan0, y * data.Stride), row, 0, rowBytes);
+                        Marshal.Copy(row, 0, IntPtr.Add(targetBuffer, y * targetStride), rowBytes);
+                    }
+                }
+                finally
+                {
+                    bitmap.UnlockBits(data);
+                }
+
+                IntPtr result = pdfBitmap;
+                pdfBitmap = IntPtr.Zero;
+                return result;
+            }
+            finally
+            {
+                if (pdfBitmap != IntPtr.Zero)
+                    NativeMethods.FPDFBitmap_Destroy(pdfBitmap);
             }
         }
 
@@ -383,6 +628,12 @@ namespace MinsPDFViewer
                    contents.StartsWith(FreeTextMetadataV2Prefix, StringComparison.Ordinal);
         }
 
+        private static bool IsManagedImageStamp(IntPtr annotation)
+        {
+            string contents = GetAnnotationStringValue(annotation, "Contents");
+            return IsManagedImageStampContents(contents);
+        }
+
         internal static bool TryDecodeManagedFreeText(string contents, out string text)
         {
             text = string.Empty;
@@ -423,6 +674,162 @@ namespace MinsPDFViewer
             catch
             {
                 metadata = new ManagedFreeTextMetadata();
+                return false;
+            }
+        }
+
+        internal static bool TryDecodeManagedImageStamp(string contents, out byte[] imageBytes)
+        {
+            imageBytes = Array.Empty<byte>();
+            if (!contents.StartsWith(ImageStampMetadataPrefix, StringComparison.Ordinal))
+                return false;
+
+            try
+            {
+                string payload = contents.Substring(ImageStampMetadataPrefix.Length);
+                string json = Encoding.UTF8.GetString(Convert.FromBase64String(payload));
+                var metadata = JsonSerializer.Deserialize<ManagedImageStampMetadata>(json);
+                if (string.IsNullOrWhiteSpace(metadata?.ImageBase64))
+                    return false;
+
+                imageBytes = Convert.FromBase64String(metadata.ImageBase64);
+                return imageBytes.Length > 0;
+            }
+            catch
+            {
+                imageBytes = Array.Empty<byte>();
+                return false;
+            }
+        }
+
+        internal static bool IsManagedImageStampContents(string contents)
+        {
+            return contents.StartsWith(ImageStampMetadataPrefix, StringComparison.Ordinal) ||
+                   contents.StartsWith(ImageStampMetadataV2Prefix, StringComparison.Ordinal);
+        }
+
+        internal static bool TryExtractManagedImageStampBytes(IntPtr annotation, string contents, out byte[] imageBytes)
+        {
+            imageBytes = Array.Empty<byte>();
+
+            if (TryDecodeManagedImageStamp(contents, out imageBytes))
+                return true;
+
+            if (!contents.StartsWith(ImageStampMetadataV2Prefix, StringComparison.Ordinal))
+                return false;
+
+            return TryExtractFirstAnnotationImage(annotation, out imageBytes);
+        }
+
+        private static bool TryExtractFirstAnnotationImage(IntPtr annotation, out byte[] imageBytes)
+        {
+            imageBytes = Array.Empty<byte>();
+
+            int objectCount = NativeMethods.FPDFAnnot_GetObjectCount(annotation);
+            for (int i = 0; i < objectCount; i++)
+            {
+                IntPtr pageObject = NativeMethods.FPDFAnnot_GetObject(annotation, i);
+                if (pageObject == IntPtr.Zero ||
+                    NativeMethods.FPDFPageObj_GetType(pageObject) != FPDF_PAGEOBJ_IMAGE)
+                {
+                    continue;
+                }
+
+                if (TryGetDecodableRawImageBytes(pageObject, out imageBytes))
+                    return true;
+
+                if (TryRenderImageObjectToPng(pageObject, out imageBytes))
+                    return true;
+            }
+
+            return false;
+        }
+
+        private static bool TryGetDecodableRawImageBytes(IntPtr imageObject, out byte[] imageBytes)
+        {
+            imageBytes = Array.Empty<byte>();
+
+            ulong size = NativeMethods.FPDFImageObj_GetImageDataRaw(imageObject, IntPtr.Zero, 0);
+            if (size == 0 || size > int.MaxValue)
+                return false;
+
+            IntPtr buffer = Marshal.AllocHGlobal(checked((int)size));
+            try
+            {
+                ulong written = NativeMethods.FPDFImageObj_GetImageDataRaw(imageObject, buffer, size);
+                if (written == 0 || written > size || written > int.MaxValue)
+                    return false;
+
+                byte[] raw = new byte[written];
+                Marshal.Copy(buffer, raw, 0, checked((int)written));
+                if (!CanDecodeImage(raw))
+                    return false;
+
+                imageBytes = raw;
+                return true;
+            }
+            finally
+            {
+                Marshal.FreeHGlobal(buffer);
+            }
+        }
+
+        private static bool TryRenderImageObjectToPng(IntPtr imageObject, out byte[] imageBytes)
+        {
+            imageBytes = Array.Empty<byte>();
+
+            IntPtr pdfBitmap = NativeMethods.FPDFImageObj_GetBitmap(imageObject);
+            if (pdfBitmap == IntPtr.Zero)
+                return false;
+
+            try
+            {
+                int width = NativeMethods.FPDFBitmap_GetWidth(pdfBitmap);
+                int height = NativeMethods.FPDFBitmap_GetHeight(pdfBitmap);
+                int stride = NativeMethods.FPDFBitmap_GetStride(pdfBitmap);
+                IntPtr sourceBuffer = NativeMethods.FPDFBitmap_GetBuffer(pdfBitmap);
+                if (width <= 0 || height <= 0 || stride <= 0 || sourceBuffer == IntPtr.Zero)
+                    return false;
+
+                using var bitmap = new DrawingBitmap(width, height, DrawingPixelFormat.Format32bppArgb);
+                var rect = new DrawingRectangle(0, 0, width, height);
+                var data = bitmap.LockBits(rect, DrawingImageLockMode.WriteOnly, DrawingPixelFormat.Format32bppArgb);
+                try
+                {
+                    int rowBytes = width * 4;
+                    byte[] row = new byte[rowBytes];
+                    for (int y = 0; y < height; y++)
+                    {
+                        Marshal.Copy(IntPtr.Add(sourceBuffer, y * stride), row, 0, rowBytes);
+                        Marshal.Copy(row, 0, IntPtr.Add(data.Scan0, y * data.Stride), rowBytes);
+                    }
+                }
+                finally
+                {
+                    bitmap.UnlockBits(data);
+                }
+
+                using var output = new MemoryStream();
+                bitmap.Save(output, DrawingImageFormat.Png);
+                imageBytes = output.ToArray();
+                return imageBytes.Length > 0;
+            }
+            finally
+            {
+                NativeMethods.FPDFBitmap_Destroy(pdfBitmap);
+            }
+        }
+
+        private static bool CanDecodeImage(byte[] imageBytes)
+        {
+            try
+            {
+                using var stream = new MemoryStream(imageBytes);
+                using var _ = new DrawingBitmap(stream);
+                return true;
+            }
+            catch
+            {
                 return false;
             }
         }
@@ -549,6 +956,24 @@ namespace MinsPDFViewer
             return suspicious >= 3;
         }
 
+        private static int NormalizeRotation(int rotation)
+        {
+            rotation %= 360;
+            if (rotation < 0)
+                rotation += 360;
+            return rotation is 90 or 180 or 270 ? rotation : 0;
+        }
+
+        private static void LogToFile(string message)
+        {
+            try
+            {
+                string logPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "debug.log");
+                File.AppendAllText(logPath, $"[{DateTime.Now:HH:mm:ss.fff}] [PdfiumEditService] {message}{Environment.NewLine}");
+            }
+            catch { }
+        }
+
         private static NativeMethods.FS_RECTF ToPdfRect(PageSnapshot page, AnnotationSnapshot annotation)
         {
             double scaleX = page.PdfWidth / page.Width;
@@ -605,10 +1030,12 @@ namespace MinsPDFViewer
         private sealed class PageSnapshot
         {
             public int OriginalPageIndex { get; init; }
+            public bool IsBlankPage { get; init; }
             public double Width { get; init; }
             public double Height { get; init; }
             public double PdfWidth { get; init; }
             public double PdfHeight { get; init; }
+            public int Rotation { get; init; }
             public bool ShouldRewriteAnnotations { get; init; }
             public List<AnnotationSnapshot> Annotations { get; } = new();
             public List<OcrWordSnapshot> OcrWords { get; } = new();
@@ -627,6 +1054,7 @@ namespace MinsPDFViewer
             public bool IsBold { get; init; }
             public Color Foreground { get; init; }
             public Color Background { get; init; }
+            public byte[]? ImageBytes { get; init; }
         }
 
         internal sealed class ManagedFreeTextMetadata
@@ -645,6 +1073,12 @@ namespace MinsPDFViewer
                 ForegroundR,
                 ForegroundG,
                 ForegroundB);
+        }
+
+        private sealed class ManagedImageStampMetadata
+        {
+            public string Storage { get; set; } = string.Empty;
+            public string ImageBase64 { get; set; } = string.Empty;
         }
 
         private sealed class OcrWordSnapshot
@@ -683,6 +1117,50 @@ namespace MinsPDFViewer
             }
         }
 
+        private sealed class NativeImageFileAccess : IDisposable
+        {
+            private readonly byte[] _data;
+            private readonly GCHandle _handle;
+            private readonly NativeMethods.GetBlockCallback _callback;
+
+            public NativeImageFileAccess(byte[] data)
+            {
+                _data = data;
+                _callback = ReadBlock;
+                _handle = GCHandle.Alloc(this);
+                FileAccess = new NativeMethods.FPDF_FILEACCESS
+                {
+                    FileLen = checked((uint)data.Length),
+                    GetBlock = _callback,
+                    Param = GCHandle.ToIntPtr(_handle)
+                };
+            }
+
+            public NativeMethods.FPDF_FILEACCESS FileAccess;
+
+            private static int ReadBlock(IntPtr param, uint position, IntPtr buffer, uint size)
+            {
+                if (param == IntPtr.Zero || buffer == IntPtr.Zero)
+                    return 0;
+
+                var handle = GCHandle.FromIntPtr(param);
+                if (handle.Target is not NativeImageFileAccess access)
+                    return 0;
+
+                if (position > access._data.Length || size > access._data.Length - position)
+                    return 0;
+
+                Marshal.Copy(access._data, checked((int)position), buffer, checked((int)size));
+                return 1;
+            }
+
+            public void Dispose()
+            {
+                if (_handle.IsAllocated)
+                    _handle.Free();
+            }
+        }
+
         private static class NativeMethods
         {
             [StructLayout(LayoutKind.Sequential)]
@@ -710,11 +1188,22 @@ namespace MinsPDFViewer
             [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
             public delegate int WriteBlockCallback(IntPtr fileWrite, IntPtr data, uint size);
 
+            [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+            public delegate int GetBlockCallback(IntPtr param, uint position, IntPtr buffer, uint size);
+
             [StructLayout(LayoutKind.Sequential)]
             public struct FPDF_FILEWRITE
             {
                 public int Version;
                 public WriteBlockCallback WriteBlock;
+            }
+
+            [StructLayout(LayoutKind.Sequential)]
+            public struct FPDF_FILEACCESS
+            {
+                public uint FileLen;
+                public GetBlockCallback GetBlock;
+                public IntPtr Param;
             }
 
             [DllImport("pdfium.dll", CallingConvention = CallingConvention.Cdecl)]
@@ -781,6 +1270,15 @@ namespace MinsPDFViewer
             public static extern bool FPDF_SaveAsCopy(IntPtr document, ref FPDF_FILEWRITE fileWrite, uint flags);
 
             [DllImport("pdfium.dll", CallingConvention = CallingConvention.Cdecl)]
+            public static extern void FPDFPage_Delete(IntPtr document, int pageIndex);
+
+            [DllImport("pdfium.dll", CallingConvention = CallingConvention.Cdecl)]
+            public static extern IntPtr FPDFPage_New(IntPtr document, int pageIndex, double width, double height);
+
+            [DllImport("pdfium.dll", CallingConvention = CallingConvention.Cdecl)]
+            public static extern void FPDFPage_SetRotation(IntPtr page, int rotate);
+
+            [DllImport("pdfium.dll", CallingConvention = CallingConvention.Cdecl)]
             public static extern IntPtr FPDFText_LoadFont(IntPtr document, byte[] data, uint size, int fontType, bool cid);
 
             [DllImport("pdfium.dll", CallingConvention = CallingConvention.Cdecl)]
@@ -788,6 +1286,35 @@ namespace MinsPDFViewer
 
             [DllImport("pdfium.dll", CallingConvention = CallingConvention.Cdecl)]
             public static extern IntPtr FPDFPageObj_CreateTextObj(IntPtr document, IntPtr font, float fontSize);
+
+            [DllImport("pdfium.dll", CallingConvention = CallingConvention.Cdecl)]
+            public static extern IntPtr FPDFPageObj_NewImageObj(IntPtr document);
+
+            [DllImport("pdfium.dll", CallingConvention = CallingConvention.Cdecl)]
+            public static extern IntPtr FPDFBitmap_CreateEx(int width, int height, int format, IntPtr firstScan, int stride);
+
+            [DllImport("pdfium.dll", CallingConvention = CallingConvention.Cdecl)]
+            public static extern IntPtr FPDFBitmap_GetBuffer(IntPtr bitmap);
+
+            [DllImport("pdfium.dll", CallingConvention = CallingConvention.Cdecl)]
+            public static extern int FPDFBitmap_GetStride(IntPtr bitmap);
+
+            [DllImport("pdfium.dll", CallingConvention = CallingConvention.Cdecl)]
+            public static extern void FPDFBitmap_Destroy(IntPtr bitmap);
+
+            [DllImport("pdfium.dll", CallingConvention = CallingConvention.Cdecl)]
+            public static extern bool FPDFImageObj_SetBitmap(
+                [In, MarshalAs(UnmanagedType.LPArray, SizeParamIndex = 1)] IntPtr[] pages,
+                int count,
+                IntPtr imageObject,
+                IntPtr bitmap);
+
+            [DllImport("pdfium.dll", CallingConvention = CallingConvention.Cdecl)]
+            public static extern bool FPDFImageObj_LoadJpegFileInline(
+                [In, MarshalAs(UnmanagedType.LPArray, SizeParamIndex = 1)] IntPtr[] pages,
+                int count,
+                IntPtr imageObject,
+                ref FPDF_FILEACCESS fileAccess);
 
             [DllImport("pdfium.dll", CallingConvention = CallingConvention.Cdecl)]
             public static extern bool FPDFText_SetText(IntPtr textObject, [MarshalAs(UnmanagedType.LPWStr)] string text);
@@ -811,6 +1338,27 @@ namespace MinsPDFViewer
 
             [DllImport("pdfium.dll", CallingConvention = CallingConvention.Cdecl)]
             public static extern bool FPDFAnnot_AppendObject(IntPtr annotation, IntPtr pageObject);
+
+            [DllImport("pdfium.dll", CallingConvention = CallingConvention.Cdecl)]
+            public static extern int FPDFAnnot_GetObjectCount(IntPtr annotation);
+
+            [DllImport("pdfium.dll", CallingConvention = CallingConvention.Cdecl)]
+            public static extern IntPtr FPDFAnnot_GetObject(IntPtr annotation, int index);
+
+            [DllImport("pdfium.dll", CallingConvention = CallingConvention.Cdecl)]
+            public static extern int FPDFPageObj_GetType(IntPtr pageObject);
+
+            [DllImport("pdfium.dll", CallingConvention = CallingConvention.Cdecl)]
+            public static extern ulong FPDFImageObj_GetImageDataRaw(IntPtr imageObject, IntPtr buffer, ulong buflen);
+
+            [DllImport("pdfium.dll", CallingConvention = CallingConvention.Cdecl)]
+            public static extern IntPtr FPDFImageObj_GetBitmap(IntPtr imageObject);
+
+            [DllImport("pdfium.dll", CallingConvention = CallingConvention.Cdecl)]
+            public static extern int FPDFBitmap_GetWidth(IntPtr bitmap);
+
+            [DllImport("pdfium.dll", CallingConvention = CallingConvention.Cdecl)]
+            public static extern int FPDFBitmap_GetHeight(IntPtr bitmap);
 
             [DllImport("pdfium.dll", CallingConvention = CallingConvention.Cdecl)]
             public static extern void FPDFPageObj_Destroy(IntPtr pageObject);

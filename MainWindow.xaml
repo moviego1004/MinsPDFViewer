@@ -72,20 +72,17 @@
                                                 CornerRadius="3,3,0,0"
                                                 Cursor="SizeAll"
                                                 Background="Transparent"
+                                                Visibility="{Binding IsSelected, Converter={StaticResource BooleanToVisibilityConverter}}"
                                                 PreviewMouseDown="AnnotationDragHandle_PreviewMouseDown">
                                         <Border.Style>
                                                 <Style TargetType="Border">
                                                         <Setter Property="Background"
                                                                         Value="Transparent"/>
-                                                        <Setter Property="Visibility"
-                                                                        Value="Collapsed"/>
                                                         <Style.Triggers>
                                                                 <DataTrigger Binding="{Binding IsSelected}"
                                                                                 Value="True">
                                                                         <Setter Property="Background"
                                                                                         Value="#DDDDDD"/>
-                                                                        <Setter Property="Visibility"
-                                                                                        Value="Visible"/>
                                                                 </DataTrigger>
                                                         </Style.Triggers>
                                                 </Style>
@@ -102,7 +99,7 @@
                                                 BorderBrush="Gray"
                                                 BorderThickness="1"
                                                 Background="#EEFFFFFF">
-                                        <TextBox Text="{Binding TextContent, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                        <TextBox Text="{Binding TextContent, Mode=OneWay}"
                                                  FontFamily="{Binding FontFamily}"
                                                  FontSize="{Binding FontSize}"
                                                  FontWeight="{Binding IsBold, Converter={StaticResource BoolToFontWeightConverter}}"
@@ -116,9 +113,16 @@
                                                  Loaded="AnnotationTextBox_Loaded"
                                                  GotFocus="AnnotationTextBox_GotFocus"
                                                  LostFocus="AnnotationTextBox_LostFocus"
-                                                 PreviewKeyDown="AnnotationTextBox_PreviewKeyDown"
-                                                 TextChanged="AnnotationTextBox_TextChanged"/>
+                                                  PreviewKeyDown="AnnotationTextBox_PreviewKeyDown"
+                                                  TextChanged="AnnotationTextBox_TextChanged"/>
                                 </Border>
+
+                                <Rectangle Grid.RowSpan="2"
+                                           Stroke="#1976D2"
+                                           StrokeThickness="1.5"
+                                           StrokeDashArray="3 2"
+                                           IsHitTestVisible="False"
+                                           Visibility="{Binding IsSelected, Converter={StaticResource BooleanToVisibilityConverter}}"/>
 
                                 <Thumb Grid.Row="1"
                                                 HorizontalAlignment="Right"
@@ -173,6 +177,31 @@
                                 </Button.Template>
                         </Button>
                 </DataTemplate>
+
+                <DataTemplate x:Key="ImageStampTemplate">
+                        <Grid Width="{Binding Width}"
+                              Height="{Binding Height}"
+                              Cursor="SizeAll">
+                                <Image Source="{Binding ImageSource}"
+                                       Stretch="Fill"
+                                       SnapsToDevicePixels="True"
+                                       PreviewMouseDown="Annotation_PreviewMouseDown"/>
+                                <Rectangle Stroke="#1976D2"
+                                           StrokeThickness="1.5"
+                                           StrokeDashArray="3 2"
+                                           IsHitTestVisible="False"
+                                           Visibility="{Binding IsSelected, Converter={StaticResource BooleanToVisibilityConverter}}"/>
+                                <Thumb HorizontalAlignment="Right"
+                                       VerticalAlignment="Bottom"
+                                       Width="10"
+                                       Height="10"
+                                       Cursor="SizeNWSE"
+                                       DragDelta="ResizeThumb_DragDelta"
+                                       Background="#1976D2"
+                                       Opacity="0.65"
+                                       Visibility="{Binding IsSelected, Converter={StaticResource BooleanToVisibilityConverter}}"/>
+                        </Grid>
+                </DataTemplate>
         </Window.Resources>
 
         <Grid>
@@ -201,6 +230,18 @@
                                 <Button Content="🔖 책갈피"
                                                 Click="BtnToggleSidebar_Click"
                                                 Margin="0,0,5,0"/>
+                                <Separator/>
+                                <RadioButton Name="RbReadMode"
+                                                GroupName="ViewMode"
+                                                Content="읽기"
+                                                IsChecked="True"
+                                                Checked="Mode_Checked"
+                                                Margin="5,0"/>
+                                <RadioButton Name="RbEditMode"
+                                                GroupName="ViewMode"
+                                                Content="편집"
+                                                Checked="Mode_Checked"
+                                                Margin="5,0"/>
                                 <Separator/>
                                 <RadioButton Name="RbCursor"
                                                 GroupName="Tools"
@@ -615,7 +656,8 @@
                                         BorderThickness="1"
                                         Padding="5">
                                 <StackPanel Orientation="Horizontal">
-                                        <Button Content="복사"
+                                        <Button x:Name="BtnPopupCopy"
+                                                        Content="복사"
                                                         Click="BtnPopupCopy_Click"
                                                         Margin="2"/>
                                         <Button Content="이미지 복사"

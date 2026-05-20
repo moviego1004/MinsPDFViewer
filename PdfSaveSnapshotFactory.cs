@@ -22,10 +22,12 @@ namespace MinsPDFViewer
                     var pageData = new PageSaveData
                     {
                         OriginalPageIndex = p.OriginalPageIndex,
+                        IsBlankPage = p.IsBlankPage,
                         Width = p.Width,
                         Height = p.Height,
                         PdfPageWidthPoint = p.PdfPageWidthPoint,
                         PdfPageHeightPoint = p.PdfPageHeightPoint,
+                        Rotation = NormalizeRotation(p.Rotation),
                         OcrWords = p.OcrWords != null ? new List<OcrWordInfo>(p.OcrWords) : new List<OcrWordInfo>()
                     };
 
@@ -53,7 +55,8 @@ namespace MinsPDFViewer
                             FontFamily = ann.FontFamily ?? "Malgun Gothic",
                             IsBold = ann.IsBold,
                             ForegroundColor = (ann.Foreground as SolidColorBrush)?.Color ?? Colors.Black,
-                            BackgroundColor = (ann.Background as SolidColorBrush)?.Color ?? Colors.Transparent
+                            BackgroundColor = (ann.Background as SolidColorBrush)?.Color ?? Colors.Transparent,
+                            ImageBytes = ann.ImageBytes
                         });
                     }
 
@@ -69,6 +72,14 @@ namespace MinsPDFViewer
             });
 
             return (pagesSnapshot, bookmarksSnapshot);
+        }
+
+        private static int NormalizeRotation(int rotation)
+        {
+            rotation %= 360;
+            if (rotation < 0)
+                rotation += 360;
+            return rotation is 90 or 180 or 270 ? rotation : 0;
         }
 
         public static async Task<List<BookmarkSaveData>> CreateBookmarkSnapshotAsync(PdfDocumentModel model)
@@ -96,7 +107,8 @@ namespace MinsPDFViewer
             var data = new BookmarkSaveData
             {
                 Title = vm.Title,
-                OriginalPageIndex = pages[vm.PageIndex].OriginalPageIndex
+                OriginalPageIndex = pages[vm.PageIndex].OriginalPageIndex,
+                PageIndex = vm.PageIndex
             };
 
             foreach (var child in vm.Children)

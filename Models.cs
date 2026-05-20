@@ -12,7 +12,7 @@ namespace MinsPDFViewer
 {
     public enum AnnotationType
     {
-        Highlight, Underline, FreeText, SearchHighlight, SignatureField, SignaturePlaceholder
+        Highlight, Underline, FreeText, SearchHighlight, SignatureField, SignaturePlaceholder, ImageStamp
     }
 
     public class PdfDocumentModel : INotifyPropertyChanged, IDisposable
@@ -318,6 +318,7 @@ namespace MinsPDFViewer
         {
             get => _x; set
             {
+                if (Math.Abs(_x - value) < 0.01) return;
                 _x = value;
                 OnPropertyChanged(nameof(X));
             }
@@ -326,6 +327,7 @@ namespace MinsPDFViewer
         {
             get => _y; set
             {
+                if (Math.Abs(_y - value) < 0.01) return;
                 _y = value;
                 OnPropertyChanged(nameof(Y));
             }
@@ -334,6 +336,7 @@ namespace MinsPDFViewer
         {
             get => _width; set
             {
+                if (Math.Abs(_width - value) < 0.01) return;
                 _width = value;
                 OnPropertyChanged(nameof(Width));
             }
@@ -342,6 +345,7 @@ namespace MinsPDFViewer
         {
             get => _height; set
             {
+                if (Math.Abs(_height - value) < 0.01) return;
                 _height = value;
                 OnPropertyChanged(nameof(Height));
             }
@@ -353,6 +357,7 @@ namespace MinsPDFViewer
             get => _type;
             set
             {
+                if (_type == value) return;
                 _type = value;
                 OnPropertyChanged(nameof(Type));
                 OnPropertyChanged(nameof(IsFreeText));
@@ -372,6 +377,7 @@ namespace MinsPDFViewer
         {
             get => _textContent; set
             {
+                if (_textContent == value) return;
                 _textContent = value;
                 OnPropertyChanged(nameof(TextContent));
             }
@@ -382,6 +388,7 @@ namespace MinsPDFViewer
         {
             get => _fontSize; set
             {
+                if (Math.Abs(_fontSize - value) < 0.01) return;
                 _fontSize = value;
                 OnPropertyChanged(nameof(FontSize));
             }
@@ -392,6 +399,7 @@ namespace MinsPDFViewer
         {
             get => _fontFamily; set
             {
+                if (_fontFamily == value) return;
                 _fontFamily = value;
                 OnPropertyChanged(nameof(FontFamily));
             }
@@ -402,6 +410,7 @@ namespace MinsPDFViewer
         {
             get => _foreground; set
             {
+                if (ReferenceEquals(_foreground, value)) return;
                 _foreground = value;
                 OnPropertyChanged(nameof(Foreground));
             }
@@ -412,6 +421,7 @@ namespace MinsPDFViewer
         {
             get => _isBold; set
             {
+                if (_isBold == value) return;
                 _isBold = value;
                 OnPropertyChanged(nameof(IsBold));
             }
@@ -428,9 +438,26 @@ namespace MinsPDFViewer
         {
             get => _visualStampPath; set
             {
+                if (_visualStampPath == value) return;
                 _visualStampPath = value;
                 OnPropertyChanged(nameof(VisualStampPath));
             }
+        }
+
+        private ImageSource? _imageSource;
+        public ImageSource? ImageSource
+        {
+            get => _imageSource; set
+            {
+                if (ReferenceEquals(_imageSource, value)) return;
+                _imageSource = value;
+                OnPropertyChanged(nameof(ImageSource));
+            }
+        }
+
+        public byte[]? ImageBytes
+        {
+            get; set;
         }
 
         private bool _isSelected;
@@ -438,6 +465,7 @@ namespace MinsPDFViewer
         {
             get => _isSelected; set
             {
+                if (_isSelected == value) return;
                 _isSelected = value;
                 OnPropertyChanged(nameof(IsSelected));
             }

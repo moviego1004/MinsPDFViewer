@@ -671,8 +671,32 @@ namespace MinsPDFViewer
                         CropHeightPoint = pageH
                     });
                 }
-                Application.Current.Dispatcher.Invoke(() => { foreach (var p in tempPageList) model.Pages.Add(p); });
+                RunOnUiDispatcherOrDirect(() => { foreach (var p in tempPageList) model.Pages.Add(p); });
             });
+        }
+
+        private static void RunOnUiDispatcherOrDirect(Action action)
+        {
+            var dispatcher = Application.Current?.Dispatcher;
+            if (dispatcher == null || Application.Current?.MainWindow == null || dispatcher.CheckAccess())
+            {
+                action();
+                return;
+            }
+
+            dispatcher.Invoke(action);
+        }
+
+        private static async Task RunOnUiDispatcherOrDirectAsync(Action action)
+        {
+            var dispatcher = Application.Current?.Dispatcher;
+            if (dispatcher == null || Application.Current?.MainWindow == null || dispatcher.CheckAccess())
+            {
+                action();
+                return;
+            }
+
+            await dispatcher.InvokeAsync(action);
         }
 
         private static void Log(string message)
@@ -892,6 +916,29 @@ namespace MinsPDFViewer
                                                 managedBrush.Freeze();
                                                 brush = managedBrush;
                                             }
+                                            else if (PdfiumEditService.TryExtractManagedImageStampBytes(annot, content, out byte[] imageBytes))
+                                            {
+                                                annType = AnnotationType.ImageStamp;
+                                                content = string.Empty;
+                                                extracted.Add(new PdfAnnotation
+                                                {
+                                                    Type = annType,
+                                                    X = uiX,
+                                                    Y = uiY,
+                                                    Width = uiW,
+                                                    Height = uiH,
+                                                    TextContent = content,
+                                                    FontSize = fSize,
+                                                    FontFamily = fontFamily,
+                                                    IsBold = isBold,
+                                                    Foreground = brush,
+                                                    Background = background,
+                                                    FieldName = fieldName,
+                                                    ImageBytes = imageBytes,
+                                                    ImageSource = CreateBitmapSource(imageBytes, uiW, uiH)
+                                                });
+                                                continue;
+                                            }
                                             else if (PdfiumEditService.TryDecodeManagedFreeText(content, out string decodedText))
                                             {
                                                 annType = AnnotationType.FreeText;
@@ -1014,7 +1061,7 @@ namespace MinsPDFViewer
             LogToFile($"Starting SavePdf for: {originalFilePath}");
 
             bool shouldRewriteBookmarks = false;
-            await Application.Current.Dispatcher.InvokeAsync(() =>
+            await RunOnUiDispatcherOrDirectAsync(() =>
             {
                 shouldRewriteBookmarks = model.HasBookmarkChanges;
             });
@@ -1034,9 +1081,9 @@ namespace MinsPDFViewer
                 {
                     if (shouldRewriteBookmarks)
                     {
-                        await new PdfSharpBookmarkService(LogToFile).RewriteBookmarksAsync(outputPath, pdfiumBookmarkSnapshot);
-                        await Application.Current.Dispatcher.InvokeAsync(() => model.HasBookmarkChanges = false);
-                        LogToFile($"[SaveEngine:{PdfSaveEngine.PdfiumWithPdfSharpBookmarkRewrite}] Save completed.");
+                        await new PdfBookmarkRewriteService(LogToFile).RewriteBookmarksAsync(outputPath, pdfiumBookmarkSnapshot);
+                        await RunOnUiDispatcherOrDirectAsync(() => model.HasBookmarkChanges = false);
+                        LogToFile($"[SaveEngine:{PdfSaveEngine.PdfiumWithBookmarkRewrite}] Save completed.");
                         LogToFile("PDFium edit save successful.");
                         return;
                     }
@@ -1045,27 +1092,50 @@ namespace MinsPDFViewer
                     return;
                 }
 
-                LogToFile($"[SaveEngine:{PdfSaveEngine.PdfSharpLegacy}] PDFium edit save skipped; using legacy PDFsharp save path.");
+                throw new InvalidOperationException(
+                    string.IsNullOrEmpty(pdfiumUnsupportedReason)
+                        ? "PDFium save did not complete."
+                        : $"PDFium save is not available: {pdfiumUnsupportedReason}");
             }
             catch (Exception ex)
             {
-                LogToFile($"[SaveEngine:{PdfSaveEngine.PdfSharpLegacy}] PDFium edit save failed: {ex.Message}. Using legacy PDFsharp save path.");
+                LogToFile($"[SaveEngine:{PdfSaveEngine.Pdfium}] Save failed: {ex.Message}");
+                throw;
             }
+        }
 
-            var (pagesSnapshot, bookmarksSnapshot) = await PdfSaveSnapshotFactory.CreateAsync(model, LogToFile);
-            LogToFile($"Snapshot created. Pages: {pagesSnapshot.Count}, Bookmarks: {bookmarksSnapshot.Count}");
+        private static BitmapSource? CreateBitmapSource(byte[] imageBytes, double displayWidth, double displayHeight)
+        {
+            if (imageBytes.Length == 0)
+                return null;
 
-            var legacyEngine = await new PdfSharpLegacySaveService(LogToFile).SaveAsync(
-                originalFilePath,
-                outputPath,
-                pagesSnapshot,
-                bookmarksSnapshot);
-            LogToFile($"[SaveEngine:{legacyEngine}] Save completed.");
-
-            if (shouldRewriteBookmarks)
+            try
             {
-                await Application.Current.Dispatcher.InvokeAsync(() => model.HasBookmarkChanges = false);
+                var bitmap = new BitmapImage();
+                using var stream = new MemoryStream(imageBytes);
+                bitmap.BeginInit();
+                bitmap.CacheOption = BitmapCacheOption.OnLoad;
+                int decodeWidth = GetDecodePixelWidth(displayWidth, displayHeight);
+                if (decodeWidth > 0)
+                    bitmap.DecodePixelWidth = decodeWidth;
+                bitmap.StreamSource = stream;
+                bitmap.EndInit();
+                bitmap.Freeze();
+                return bitmap;
             }
+            catch
+            {
+                return null;
+            }
+        }
+
+        private static int GetDecodePixelWidth(double displayWidth, double displayHeight)
+        {
+            double maxDisplaySide = Math.Max(displayWidth, displayHeight);
+            if (maxDisplaySide <= 0)
+                return 0;
+
+            return (int)Math.Max(64, Math.Min(2048, Math.Ceiling(maxDisplaySide * 2)));
         }
 
         public void LoadBookmarks(PdfDocumentModel model)

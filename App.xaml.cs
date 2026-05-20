@@ -21,8 +21,6 @@ namespace MinsPDFViewer
         {
             base.OnStartup(e);
 
-            PdfSharpRuntime.EnsureInitialized();
-
             // 1. 메인 윈도우 수동 생성
             var mainWindow = new MainWindow();
             mainWindow.Show();

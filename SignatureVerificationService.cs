@@ -1,13 +1,14 @@
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.IO;
 using System.Linq;
+using System.Text;
+using System.Text.RegularExpressions;
+using Org.BouncyCastle.Asn1;
 using Org.BouncyCastle.Asn1.Pkcs;
 using Org.BouncyCastle.Cms;
 using Org.BouncyCastle.X509;
-using PdfSharp.Pdf;
-using PdfSharp.Pdf.Advanced;
-using PdfSharp.Pdf.IO;
 
 namespace MinsPDFViewer
 {
@@ -15,23 +16,15 @@ namespace MinsPDFViewer
     {
         public SignatureValidationResult? VerifySignatureAtPoint(string filePath, int pageIndex, double pdfX, double pdfY)
         {
-            using (var doc = PdfReader.Open(filePath, PdfDocumentOpenMode.Import))
-            {
-                if (pageIndex < 0 || pageIndex >= doc.PageCount)
-                    return null;
+            var signatures = ReadSignatureFields(filePath);
+            var match = signatures.FirstOrDefault(s =>
+                s.PageIndex == pageIndex &&
+                pdfX >= s.Rect.X &&
+                pdfX <= s.Rect.Right &&
+                pdfY >= s.Rect.Y &&
+                pdfY <= s.Rect.Top);
 
-                var page = doc.Pages[pageIndex];
-                if (page.Annotations == null)
-                    return null;
-
-                foreach (var annot in page.Annotations)
-                {
-                    if (TryGetSignatureDictionaryAtPoint(annot as PdfDictionary, pdfX, pdfY, out var sigDict))
-                        return VerifySignature(filePath, sigDict);
-                }
-            }
-
-            return null;
+            return match == null ? null : VerifySignature(filePath, match);
         }
 
         public SignatureValidationResult? VerifySignatureForAnnotation(
@@ -40,65 +33,35 @@ namespace MinsPDFViewer
             string? fieldName,
             SignaturePdfRect annotationRect)
         {
-            using (var doc = PdfReader.Open(filePath, PdfDocumentOpenMode.Import))
-            {
-                if (pageIndex < 0 || pageIndex >= doc.PageCount)
-                    return null;
+            var signatures = ReadSignatureFields(filePath);
+            var match = signatures.FirstOrDefault(s =>
+                s.PageIndex == pageIndex &&
+                !string.IsNullOrWhiteSpace(fieldName) &&
+                s.FieldName == fieldName);
 
-                var page = doc.Pages[pageIndex];
-                if (page.Annotations == null)
-                    return null;
+            match ??= signatures.FirstOrDefault(s =>
+                s.PageIndex == pageIndex &&
+                annotationRect.CenterX >= s.Rect.X &&
+                annotationRect.CenterX <= s.Rect.Right &&
+                annotationRect.CenterY >= s.Rect.Y &&
+                annotationRect.CenterY <= s.Rect.Top);
 
-                foreach (var annot in page.Annotations)
-                {
-                    var field = annot as PdfDictionary;
-                    if (!IsSignatureWidget(field))
-                        continue;
-
-                    if (!string.IsNullOrWhiteSpace(fieldName) && field!.Elements.GetString("/T") == fieldName)
-                    {
-                        var dict = field.Elements.GetDictionary("/V");
-                        return dict == null ? null : VerifySignature(filePath, dict);
-                    }
-
-                    if (TryGetSignatureDictionaryAtPoint(field, annotationRect.CenterX, annotationRect.CenterY, out var sigDict))
-                        return VerifySignature(filePath, sigDict);
-                }
-            }
-
-            return null;
+            return match == null ? null : VerifySignature(filePath, match);
         }
 
-        public SignatureValidationResult VerifySignature(string filePath, PdfDictionary sigDict)
+        private SignatureValidationResult VerifySignature(string filePath, SignatureFieldInfo field)
         {
             var result = new SignatureValidationResult();
             try
             {
-                if (sigDict.Elements["/Contents"] is not PdfString contents)
-                    throw new Exception("서명 데이터(/Contents)가 없습니다.");
-
-                if (sigDict.Elements["/ByteRange"] is not PdfArray byteRangeArray)
-                    throw new Exception("서명 범위(/ByteRange)가 없습니다.");
-
-                byte[] sigBytes = contents.Value.Select(c => (byte)c).ToArray();
-
-                int[] ranges = new int[4];
-                for (int i = 0; i < 4; i++)
-                    ranges[i] = ((PdfInteger)byteRangeArray.Elements[i]).Value;
-
                 byte[] fileBytes = File.ReadAllBytes(filePath);
-
-                int len1 = ranges[1];
-                int len2 = ranges[3];
-                int totalLen = len1 + len2;
-
+                int totalLen = field.ByteRange[1] + field.ByteRange[3];
                 byte[] signedContent = new byte[totalLen];
-                Array.Copy(fileBytes, ranges[0], signedContent, 0, len1);
-                Array.Copy(fileBytes, ranges[2], signedContent, len1, len2);
+                Buffer.BlockCopy(fileBytes, field.ByteRange[0], signedContent, 0, field.ByteRange[1]);
+                Buffer.BlockCopy(fileBytes, field.ByteRange[2], signedContent, field.ByteRange[1], field.ByteRange[3]);
 
                 var processable = new CmsProcessableByteArray(signedContent);
-                var cmsMsg = new CmsSignedData(processable, sigBytes);
-
+                var cmsMsg = new CmsSignedData(processable, field.Contents);
                 var signerStore = cmsMsg.GetSignerInfos();
                 var signers = signerStore.GetSigners();
 
@@ -113,7 +76,6 @@ namespace MinsPDFViewer
                         throw new Exception("서명자 인증서를 찾을 수 없습니다.");
 
                     X509Certificate cert = matches.Cast<X509Certificate>().First();
-
                     if (signer.Verify(cert))
                     {
                         result.IsValid = true;
@@ -136,14 +98,14 @@ namespace MinsPDFViewer
                         {
                             try
                             {
-                                var timeObj = (Org.BouncyCastle.Asn1.Asn1Object)signingTimeAttr.AttrValues[0];
-                                // [수정] Null 안전 처리
-                                string? timeStr = timeObj?.ToString();
+                                string? timeStr = signingTimeAttr.AttrValues[0]?.ToString();
                                 if (!string.IsNullOrEmpty(timeStr))
                                 {
-                                    result.SigningTime = DateTime.ParseExact(timeStr,
+                                    result.SigningTime = DateTime.ParseExact(
+                                        timeStr,
                                         new[] { "yyMMddHHmmss'Z'", "yyyyMMddHHmmss'Z'" },
-                                        null, System.Globalization.DateTimeStyles.AssumeUniversal);
+                                        null,
+                                        System.Globalization.DateTimeStyles.AssumeUniversal);
                                 }
                             }
                             catch { }
@@ -152,15 +114,9 @@ namespace MinsPDFViewer
                 }
 
                 if (result.SigningTime == default)
-                {
-                    if (sigDict.Elements["/M"] is PdfDate date)
-                        result.SigningTime = date.Value;
-                }
-                if (sigDict.Elements["/Reason"] is PdfString reason)
-                    result.Reason = reason.Value;
-                if (sigDict.Elements["/Location"] is PdfString location)
-                    result.Location = location.Value;
-
+                    result.SigningTime = field.SigningTime ?? default;
+                result.Reason = field.Reason ?? string.Empty;
+                result.Location = field.Location ?? string.Empty;
                 if (string.IsNullOrEmpty(result.SignerName))
                     result.SignerName = "서명자 정보 없음";
             }
@@ -173,6 +129,224 @@ namespace MinsPDFViewer
             return result;
         }
 
+        private static List<SignatureFieldInfo> ReadSignatureFields(string filePath)
+        {
+            string text = Encoding.Latin1.GetString(File.ReadAllBytes(filePath));
+            var objects = ReadObjects(text);
+            var pageIndexByObject = BuildPageIndexMap(objects);
+            var result = new List<SignatureFieldInfo>();
+
+            foreach (var field in objects.Values)
+            {
+                if (!Regex.IsMatch(field.Content, @"/Subtype\s*/Widget") ||
+                    !Regex.IsMatch(field.Content, @"/FT\s*/Sig"))
+                    continue;
+
+                var valueRef = TryReadReference(field.Content, "V");
+                if (valueRef == null || !objects.TryGetValue((valueRef.ObjectNumber, valueRef.Generation), out var sigObject))
+                    continue;
+
+                var pageRef = TryReadReference(field.Content, "P");
+                int pageIndex = pageRef != null && pageIndexByObject.TryGetValue((pageRef.ObjectNumber, pageRef.Generation), out int idx)
+                    ? idx
+                    : -1;
+
+                if (!TryReadRect(field.Content, out var rect) ||
+                    !TryReadByteRange(sigObject.Content, out var byteRange) ||
+                    !TryReadContents(sigObject.Content, out var contents))
+                    continue;
+
+                result.Add(new SignatureFieldInfo
+                {
+                    FieldName = ReadLiteral(field.Content, "T"),
+                    PageIndex = pageIndex,
+                    Rect = rect,
+                    ByteRange = byteRange,
+                    Contents = contents,
+                    Reason = ReadTextString(sigObject.Content, "Reason"),
+                    Location = ReadTextString(sigObject.Content, "Location"),
+                    SigningTime = ReadPdfDate(sigObject.Content)
+                });
+            }
+
+            return result;
+        }
+
+        private static Dictionary<(int Number, int Generation), int> BuildPageIndexMap(Dictionary<(int Number, int Generation), PdfObjectInfo> objects)
+        {
+            var map = new Dictionary<(int, int), int>();
+            var catalog = objects.Values.LastOrDefault(o => Regex.IsMatch(o.Content, @"/Type\s*/Catalog"));
+            if (catalog == null)
+                return map;
+
+            var pagesRef = TryReadReference(catalog.Content, "Pages");
+            if (pagesRef == null)
+                return map;
+
+            var pages = new List<PageRef>();
+            VisitPageTree(pagesRef, objects, new HashSet<(int, int)>(), pages);
+            for (int i = 0; i < pages.Count; i++)
+                map[(pages[i].ObjectNumber, pages[i].Generation)] = i;
+            return map;
+        }
+
+        private static void VisitPageTree(PageRef node, Dictionary<(int Number, int Generation), PdfObjectInfo> objects, HashSet<(int, int)> visited, List<PageRef> pages)
+        {
+            if (!visited.Add((node.ObjectNumber, node.Generation)))
+                return;
+            if (!objects.TryGetValue((node.ObjectNumber, node.Generation), out var obj))
+                return;
+            if (Regex.IsMatch(obj.Content, @"/Type\s*/Page\b") && !Regex.IsMatch(obj.Content, @"/Type\s*/Pages\b"))
+            {
+                pages.Add(node);
+                return;
+            }
+
+            foreach (var child in ReadReferencesFromArray(obj.Content, "Kids"))
+                VisitPageTree(child, objects, visited, pages);
+        }
+
+        private static Dictionary<(int Number, int Generation), PdfObjectInfo> ReadObjects(string text)
+        {
+            var objects = new Dictionary<(int, int), PdfObjectInfo>();
+            foreach (Match match in Regex.Matches(text, @"(?s)(\d+)\s+(\d+)\s+obj\s*(.*?)\s*endobj"))
+            {
+                int number = int.Parse(match.Groups[1].Value, CultureInfo.InvariantCulture);
+                int generation = int.Parse(match.Groups[2].Value, CultureInfo.InvariantCulture);
+                objects[(number, generation)] = new PdfObjectInfo(number, generation, match.Groups[3].Value.Trim());
+            }
+            return objects;
+        }
+
+        private static PageRef? TryReadReference(string text, string key)
+        {
+            var match = Regex.Match(text, @$"/{Regex.Escape(key)}\s+(\d+)\s+(\d+)\s+R");
+            if (!match.Success)
+                return null;
+            return new PageRef(int.Parse(match.Groups[1].Value, CultureInfo.InvariantCulture), int.Parse(match.Groups[2].Value, CultureInfo.InvariantCulture));
+        }
+
+        private static List<PageRef> ReadReferencesFromArray(string text, string key)
+        {
+            var match = Regex.Match(text, @$"/{Regex.Escape(key)}\s*\[(.*?)\]", RegexOptions.Singleline);
+            if (!match.Success)
+                return new List<PageRef>();
+            return Regex.Matches(match.Groups[1].Value, @"(\d+)\s+(\d+)\s+R")
+                .Select(m => new PageRef(int.Parse(m.Groups[1].Value, CultureInfo.InvariantCulture), int.Parse(m.Groups[2].Value, CultureInfo.InvariantCulture)))
+                .ToList();
+        }
+
+        private static bool TryReadRect(string text, out SignaturePdfRect rect)
+        {
+            rect = default;
+            var match = Regex.Match(text, @"/Rect\s*\[\s*([-\d.]+)\s+([-\d.]+)\s+([-\d.]+)\s+([-\d.]+)\s*\]");
+            if (!match.Success)
+                return false;
+            double left = double.Parse(match.Groups[1].Value, CultureInfo.InvariantCulture);
+            double bottom = double.Parse(match.Groups[2].Value, CultureInfo.InvariantCulture);
+            double right = double.Parse(match.Groups[3].Value, CultureInfo.InvariantCulture);
+            double top = double.Parse(match.Groups[4].Value, CultureInfo.InvariantCulture);
+            rect = new SignaturePdfRect(left, bottom, right - left, top - bottom);
+            return true;
+        }
+
+        private static bool TryReadByteRange(string text, out int[] byteRange)
+        {
+            byteRange = Array.Empty<int>();
+            var match = Regex.Match(text, @"/ByteRange\s*\[\s*(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s*\]");
+            if (!match.Success)
+                return false;
+            byteRange = new[]
+            {
+                int.Parse(match.Groups[1].Value, CultureInfo.InvariantCulture),
+                int.Parse(match.Groups[2].Value, CultureInfo.InvariantCulture),
+                int.Parse(match.Groups[3].Value, CultureInfo.InvariantCulture),
+                int.Parse(match.Groups[4].Value, CultureInfo.InvariantCulture)
+            };
+            return true;
+        }
+
+        private static bool TryReadContents(string text, out byte[] contents)
+        {
+            contents = Array.Empty<byte>();
+            var match = Regex.Match(text, @"/Contents\s*<([0-9A-Fa-f\s]+)>", RegexOptions.Singleline);
+            if (!match.Success)
+                return false;
+            string hex = Regex.Replace(match.Groups[1].Value, @"\s+", "");
+            if (hex.Length % 2 == 1)
+                hex += "0";
+            byte[] paddedContents = Convert.FromHexString(hex);
+            contents = TrimPdfSignaturePadding(paddedContents);
+            return true;
+        }
+
+        private static byte[] TrimPdfSignaturePadding(byte[] paddedContents)
+        {
+            if (paddedContents.Length == 0)
+                return paddedContents;
+
+            try
+            {
+                using var ms = new MemoryStream(paddedContents, writable: false);
+                using var asn1 = new Asn1InputStream(ms);
+                asn1.ReadObject();
+                if (ms.Position > 0 && ms.Position <= paddedContents.Length)
+                    return paddedContents.Take((int)ms.Position).ToArray();
+            }
+            catch
+            {
+                // Fall through to the conservative legacy trim below.
+            }
+
+            int length = paddedContents.Length;
+            while (length > 2 &&
+                   paddedContents[length - 1] == 0 &&
+                   paddedContents[length - 2] == 0 &&
+                   paddedContents[length - 3] == 0)
+            {
+                length--;
+            }
+
+            return paddedContents.Take(length).ToArray();
+        }
+
+        private static string? ReadLiteral(string text, string key)
+        {
+            var match = Regex.Match(text, @$"/{Regex.Escape(key)}\s*\((.*?)\)", RegexOptions.Singleline);
+            return match.Success ? UnescapeLiteral(match.Groups[1].Value) : null;
+        }
+
+        private static string? ReadTextString(string text, string key)
+        {
+            var hex = Regex.Match(text, @$"/{Regex.Escape(key)}\s*<([0-9A-Fa-f]+)>");
+            if (hex.Success)
+            {
+                byte[] bytes = Convert.FromHexString(hex.Groups[1].Value);
+                if (bytes.Length >= 2 && bytes[0] == 0xFE && bytes[1] == 0xFF)
+                    return Encoding.BigEndianUnicode.GetString(bytes, 2, bytes.Length - 2);
+                return Encoding.Latin1.GetString(bytes);
+            }
+
+            return ReadLiteral(text, key);
+        }
+
+        private static DateTime? ReadPdfDate(string text)
+        {
+            string? value = ReadLiteral(text, "M");
+            if (string.IsNullOrWhiteSpace(value))
+                return null;
+            value = value.StartsWith("D:", StringComparison.Ordinal) ? value.Substring(2) : value;
+            if (value.Length >= 14 &&
+                DateTime.TryParseExact(value.Substring(0, 14), "yyyyMMddHHmmss", CultureInfo.InvariantCulture, DateTimeStyles.None, out var parsed))
+                return parsed;
+            return null;
+        }
+
+        private static string UnescapeLiteral(string value)
+        {
+            return value.Replace("\\(", "(").Replace("\\)", ")").Replace("\\\\", "\\");
+        }
+
         private string ParseCnFromDn(string dn)
         {
             try
@@ -182,50 +356,26 @@ namespace MinsPDFViewer
                 {
                     var kv = part.Trim().Split('=');
                     if (kv.Length == 2 && kv[0].Trim().ToUpper() == "CN")
-                    {
                         return kv[1].Trim();
-                    }
                 }
                 return dn;
             }
             catch { return dn; }
         }
 
-        private static bool TryGetSignatureDictionaryAtPoint(
-            PdfDictionary? field,
-            double pdfX,
-            double pdfY,
-            out PdfDictionary sigDict)
+        private sealed record PdfObjectInfo(int Number, int Generation, string Content);
+        private sealed record PageRef(int ObjectNumber, int Generation);
+
+        private sealed class SignatureFieldInfo
         {
-            sigDict = null!;
-            if (!IsSignatureWidget(field))
-                return false;
-
-            var rectArr = field!.Elements.GetArray("/Rect");
-            if (rectArr == null || rectArr.Elements.Count != 4)
-                return false;
-
-            double left = rectArr.Elements.GetReal(0);
-            double bottom = rectArr.Elements.GetReal(1);
-            double right = rectArr.Elements.GetReal(2);
-            double top = rectArr.Elements.GetReal(3);
-
-            if (pdfX < left || pdfX > right || pdfY < bottom || pdfY > top)
-                return false;
-
-            var dict = field.Elements.GetDictionary("/V");
-            if (dict == null)
-                return false;
-
-            sigDict = dict;
-            return true;
-        }
-
-        private static bool IsSignatureWidget(PdfDictionary? field)
-        {
-            return field != null
-                && field.Elements.GetString("/Subtype") == "/Widget"
-                && field.Elements.GetString("/FT") == "/Sig";
+            public string? FieldName { get; set; }
+            public int PageIndex { get; set; }
+            public SignaturePdfRect Rect { get; set; }
+            public int[] ByteRange { get; set; } = Array.Empty<int>();
+            public byte[] Contents { get; set; } = Array.Empty<byte>();
+            public string? Reason { get; set; }
+            public string? Location { get; set; }
+            public DateTime? SigningTime { get; set; }
         }
     }
 }

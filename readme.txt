@@ -10,4 +10,3 @@ dotnet add MinsPDFViewer.Tests/MinsPDFViewer.Tests.csproj reference MinsPDFViewe
 
 # 4. 테스트 프로젝트에 필요한 라이브러리 설치 (메인과 동일환경 구성)
 dotnet add MinsPDFViewer.Tests/MinsPDFViewer.Tests.csproj package Docnet.Core
-dotnet add MinsPDFViewer.Tests/MinsPDFViewer.Tests.csproj package PdfSharp
