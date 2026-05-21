@@ -2,9 +2,11 @@ using System;
 using System.Collections.Specialized;
 using System.Collections.Generic;
 using System.Globalization;
+using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Text;
+using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
@@ -13,6 +15,7 @@ using System.Windows.Data;
 using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
+using System.Windows.Media.Media3D;
 using Microsoft.Win32;
 using PdfiumViewer;
 
@@ -26,12 +29,40 @@ namespace MinsPDFViewer
         private readonly SignatureVerificationService _signatureVerificationService;
         private readonly OcrService _ocrService;
         private readonly HistoryService _historyService;
+        private const int ThumbnailRenderPagesBefore = 3;
+        private const int ThumbnailRenderPagesAfter = 8;
+        private const double MinThumbnailImageWidth = 80;
+        private const double MaxThumbnailImageWidth = 320;
+        private CancellationTokenSource? _thumbnailRenderCts;
+        private bool _syncingThumbnailSelection;
+        private Point _thumbnailDragStartPoint;
+        private PdfPageViewModel? _draggedThumbnailPage;
+        private List<PdfPageViewModel> _draggedThumbnailPages = new();
+        private bool _isThumbnailDragging;
+        private double _thumbnailImageWidth = 140;
 
         public System.Collections.ObjectModel.ObservableCollection<PdfDocumentModel> Documents
         {
             get; set;
         }
             = new System.Collections.ObjectModel.ObservableCollection<PdfDocumentModel>();
+
+        public double ThumbnailImageWidth
+        {
+            get => _thumbnailImageWidth;
+            private set
+            {
+                double normalized = Math.Max(MinThumbnailImageWidth, Math.Min(MaxThumbnailImageWidth, value));
+                if (Math.Abs(_thumbnailImageWidth - normalized) < 0.1)
+                    return;
+
+                _thumbnailImageWidth = normalized;
+                OnPropertyChanged(nameof(ThumbnailImageWidth));
+                OnPropertyChanged(nameof(ThumbnailFrameWidth));
+            }
+        }
+
+        public double ThumbnailFrameWidth => ThumbnailImageWidth + 10;
 
         private PdfDocumentModel? _selectedDocument;
         public PdfDocumentModel? SelectedDocument
@@ -75,6 +106,7 @@ namespace MinsPDFViewer
         private Point _lastPanPoint;
 
         private ScrollViewer? _cachedScrollViewer;
+        private GridLength _lastSidebarWidth = new GridLength(250);
 
         public bool IsEditMode
         {
@@ -123,23 +155,25 @@ namespace MinsPDFViewer
         {
             try
             {
-                string logPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "debug.log");
-                string logMsg = $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}] {message}{Environment.NewLine}";
-                File.AppendAllText(logPath, logMsg);
-                System.Diagnostics.Debug.Write(logMsg);
-                Console.Write(logMsg);
+                DebugLog.Append(string.Empty, message);
             }
             catch { }
         }
 
         private void MainTabControl_SelectionChanged(object sender, SelectionChangedEventArgs e)
         {
+            if (!ReferenceEquals(e.OriginalSource, MainTabControl))
+                return;
+
             if (_selectedAnnotation != null)
             {
                 _selectedAnnotation.IsSelected = false;
                 _selectedAnnotation = null;
                 CheckToolbarVisibility();
             }
+
+            if (SelectedDocument != null)
+                StartThumbnailRendering(SelectedDocument);
         }
 
         private void UpdateScrollViewerState(ListView listView, PdfDocumentModel? oldDoc, PdfDocumentModel? newDoc)
@@ -1123,6 +1157,7 @@ namespace MinsPDFViewer
             PbStatus.Maximum = document.Pages.Count;
             PbStatus.Value = 0;
             TxtStatus.Text = $"OCR 분석 중... ({_ocrService.CurrentLanguage})";
+            var previousCursor = Mouse.OverrideCursor;
             Mouse.OverrideCursor = Cursors.Wait;
             try
             {
@@ -1147,7 +1182,7 @@ namespace MinsPDFViewer
             }
             finally
             {
-                Mouse.OverrideCursor = null;
+                Mouse.OverrideCursor = previousCursor;
                 BtnOCR.IsEnabled = true;
                 PbStatus.Visibility = Visibility.Collapsed;
             }
@@ -1161,18 +1196,6 @@ namespace MinsPDFViewer
 
             if (SelectedDocument == null) return;
 
-            // [Audit Log] Check memory state before save
-            foreach (var p in SelectedDocument.Pages)
-            {
-                foreach (var a in p.Annotations)
-                {
-                    if (a.Type == AnnotationType.FreeText)
-                    {
-                        Log($"[DEBUG] Pre-Save Audit: Page={p.PageIndex}, Text='{a.TextContent}', Rect=({a.X},{a.Y},{a.Width},{a.Height})");
-                    }
-                }
-            }
-
             // Capture the document to save in a local variable to prevent NRE if selection changes
             var docToSave = SelectedDocument;
 
@@ -1182,22 +1205,36 @@ namespace MinsPDFViewer
             var sv = GetCurrentScrollViewer();
             double vOffset = sv?.VerticalOffset ?? 0;
             double hOffset = sv?.HorizontalOffset ?? 0;
+            var previousCursor = Mouse.OverrideCursor;
+            var saveWatch = Stopwatch.StartNew();
+            void LogSaveStep(string step)
+            {
+                Log($"[SAVE_PROFILE] {step} elapsed={saveWatch.ElapsedMilliseconds}ms path='{originalPath}'");
+                saveWatch.Restart();
+            }
 
             try
             {
+                Mouse.OverrideCursor = Cursors.Wait;
                 TxtStatus.Text = "저장 중...";
+                LogSaveStep("start");
                 await _pdfService.SavePdf(docToSave, tempPath);
+                LogSaveStep("SavePdf temp");
                 
                 // [Fix] Close every tab for this path so reload cannot select stale document state.
                 await CloseOpenDocumentsForPathAsync(originalPath);
+                LogSaveStep("CloseOpenDocuments");
                 
                 await Task.Run(() => File.Copy(tempPath, originalPath, true));
+                LogSaveStep("CopyTempToOriginal");
                 PdfService.ClearPageCacheForFile(originalPath);
                 
                 _historyService.SetLastPage(originalPath, currentPageIndex);
                 _historyService.SaveHistory();
+                LogSaveStep("SaveHistory");
                 
                 await ReloadPdfFromPathAsync(originalPath, currentPageIndex);
+                LogSaveStep("ReloadPdfFromPath");
 
                 var newSv = GetCurrentScrollViewer();
                 if (newSv != null)
@@ -1225,6 +1262,7 @@ namespace MinsPDFViewer
                         }
                     }, System.Windows.Threading.DispatcherPriority.ContextIdle);
                 }
+                LogSaveStep("RestoreScrollAndVisibleRender");
                 
                 TxtStatus.Text = "저장 완료";
                 MessageBox.Show("저장되었습니다.");
@@ -1236,6 +1274,7 @@ namespace MinsPDFViewer
             }
             finally 
             { 
+                Mouse.OverrideCursor = previousCursor;
                 if (File.Exists(tempPath)) try { File.Delete(tempPath); } catch { } 
             } 
         }
@@ -1255,16 +1294,28 @@ namespace MinsPDFViewer
                 var sv = GetCurrentScrollViewer();
                 double vOffset = sv?.VerticalOffset ?? 0;
                 double hOffset = sv?.HorizontalOffset ?? 0;
+                var previousCursor = Mouse.OverrideCursor;
+                var saveWatch = Stopwatch.StartNew();
+                void LogSaveStep(string step)
+                {
+                    Log($"[SAVE_PROFILE] {step} elapsed={saveWatch.ElapsedMilliseconds}ms path='{savePath}'");
+                    saveWatch.Restart();
+                }
 
                 try {
+                    Mouse.OverrideCursor = Cursors.Wait;
                     TxtStatus.Text = "다른 이름으로 저장 중...";
+                    LogSaveStep("start");
                     await _pdfService.SavePdf(docToSave, savePath);
+                    LogSaveStep("SavePdf target");
                     PdfService.ClearPageCacheForFile(savePath);
 
                     _historyService.SetLastPage(savePath, currentPageIndex);
                     _historyService.SaveHistory();
+                    LogSaveStep("SaveHistory");
 
                     await ReloadPdfFromPathAsync(savePath, currentPageIndex);
+                    LogSaveStep("ReloadPdfFromPath");
 
                     var newSv = GetCurrentScrollViewer();
                     if (newSv != null)
@@ -1272,10 +1323,12 @@ namespace MinsPDFViewer
                         newSv.ScrollToVerticalOffset(vOffset);
                         newSv.ScrollToHorizontalOffset(hOffset);
                     }
+                    LogSaveStep("RestoreScroll");
 
                     TxtStatus.Text = "저장 완료";
                     MessageBox.Show("저장되었습니다.");
                 } catch (Exception ex) { Log($"[CRITICAL] SaveAs Error: {ex}"); MessageBox.Show($"저장 실패: {ex.Message}"); }
+                finally { Mouse.OverrideCursor = previousCursor; }
             }
         }
 
@@ -1302,8 +1355,8 @@ namespace MinsPDFViewer
             SelectionPopup.IsOpen = false; p.IsSelecting = false;
         }
 
-        private void BtnZoomIn_Click(object sender, RoutedEventArgs e) { if (SelectedDocument != null) SelectedDocument.Zoom += 0.1; }
-        private void BtnZoomOut_Click(object sender, RoutedEventArgs e) { if (SelectedDocument != null) SelectedDocument.Zoom -= 0.1; }
+        private void BtnZoomIn_Click(object sender, RoutedEventArgs e) => AdjustDocumentZoom(1);
+        private void BtnZoomOut_Click(object sender, RoutedEventArgs e) => AdjustDocumentZoom(-1);
         private void BtnFitWidth_Click(object sender, RoutedEventArgs e) {
             if (SelectedDocument != null && SelectedDocument.Pages.Count > 0) {
                 double viewWidth = MainTabControl.ActualWidth - 60;
@@ -1316,11 +1369,44 @@ namespace MinsPDFViewer
                 if (viewHeight > 0 && SelectedDocument.Pages[0].Height > 0) SelectedDocument.Zoom = viewHeight / SelectedDocument.Pages[0].Height;
             }
         }
-        private void PdfListView_PreviewMouseWheel(object sender, MouseWheelEventArgs e) {
-            if ((Keyboard.Modifiers & ModifierKeys.Control) == ModifierKeys.Control && SelectedDocument != null) {
-                if (e.Delta > 0) SelectedDocument.Zoom += 0.1; else SelectedDocument.Zoom -= 0.1;
-                e.Handled = true;
-            }
+        private void DocumentZoom_PreviewMouseWheel(object sender, MouseWheelEventArgs e)
+        {
+            if ((Keyboard.Modifiers & ModifierKeys.Control) != ModifierKeys.Control)
+                return;
+
+            if (IsThumbnailWheelEvent(sender, e))
+                AdjustThumbnailZoom(e.Delta > 0 ? 1 : -1);
+            else
+                AdjustDocumentZoom(e.Delta > 0 ? 1 : -1);
+
+            e.Handled = true;
+        }
+
+        private void AdjustDocumentZoom(int direction)
+        {
+            if (SelectedDocument == null || direction == 0)
+                return;
+
+            double nextZoom = SelectedDocument.Zoom + (direction > 0 ? 0.1 : -0.1);
+            SelectedDocument.Zoom = Math.Max(0.1, Math.Min(5.0, nextZoom));
+        }
+
+        private void AdjustThumbnailZoom(int direction)
+        {
+            if (direction == 0)
+                return;
+
+            ThumbnailImageWidth += direction > 0 ? 14 : -14;
+            if (SelectedDocument != null)
+                StartThumbnailRendering(SelectedDocument);
+        }
+
+        private bool IsThumbnailWheelEvent(object sender, MouseWheelEventArgs e)
+        {
+            if (ReferenceEquals(sender, PageThumbnailList))
+                return true;
+
+            return e.OriginalSource is DependencyObject source && IsDescendantOf(source, PageThumbnailList);
         }
 
         private void BtnDeleteAnnotation_Click(object sender, RoutedEventArgs e)
@@ -1333,8 +1419,20 @@ namespace MinsPDFViewer
         }
         private void CheckToolbarVisibility()
         {
-            bool shouldShow = IsEditMode && ((_currentTool == "TEXT") || (_selectedAnnotation != null));
-            if (TextStyleToolbar != null) TextStyleToolbar.Visibility = shouldShow ? Visibility.Visible : Visibility.Collapsed;
+            if (ViewToolsToolbar != null)
+                ViewToolsToolbar.Visibility = IsEditMode ? Visibility.Collapsed : Visibility.Visible;
+
+            if (EditToolsToolbar != null)
+                EditToolsToolbar.Visibility = IsEditMode ? Visibility.Visible : Visibility.Collapsed;
+
+            bool shouldShowTextTools = IsEditMode &&
+                (_currentTool == "TEXT" ||
+                 (_selectedAnnotation != null && _selectedAnnotation.Type == AnnotationType.FreeText));
+            if (TextStyleToolbar != null)
+                TextStyleToolbar.Visibility = shouldShowTextTools ? Visibility.Visible : Visibility.Collapsed;
+
+            if (BtnDeleteAnnotation != null)
+                BtnDeleteAnnotation.IsEnabled = IsEditMode && _selectedAnnotation != null;
         }
 
         private void ResizeThumb_DragDelta(object sender, DragDeltaEventArgs e)
@@ -1413,6 +1511,13 @@ namespace MinsPDFViewer
                 _currentTool = "CURSOR";
                 if (RbCursor != null) RbCursor.IsChecked = true;
             }
+            else if (IsEditMode && _currentTool == "HIGHLIGHT")
+            {
+                _currentTool = "CURSOR";
+                if (RbCursor != null) RbCursor.IsChecked = true;
+            }
+
+            CheckToolbarVisibility();
         }
 
         private void ListView_PreviewMouseDown(object sender, MouseButtonEventArgs e)
@@ -1666,7 +1771,30 @@ namespace MinsPDFViewer
             }
         }
 
-        private void BtnToggleSidebar_Click(object sender, RoutedEventArgs e) => SidebarBorder.Visibility = SidebarBorder.Visibility == Visibility.Visible ? Visibility.Collapsed : Visibility.Visible;
+        private void BtnToggleSidebar_Click(object sender, RoutedEventArgs e)
+        {
+            if (SidebarBorder.Visibility == Visibility.Visible)
+            {
+                if (SidebarColumn.ActualWidth > 0)
+                    _lastSidebarWidth = new GridLength(SidebarColumn.ActualWidth);
+
+                SidebarBorder.Visibility = Visibility.Collapsed;
+                SidebarSplitter.Visibility = Visibility.Collapsed;
+                SidebarColumn.MinWidth = 0;
+                SidebarColumn.Width = new GridLength(0);
+                return;
+            }
+
+            SidebarColumn.MinWidth = 180;
+            SidebarColumn.Width = _lastSidebarWidth.Value > 0
+                ? _lastSidebarWidth
+                : new GridLength(250);
+            SidebarBorder.Visibility = Visibility.Visible;
+            SidebarSplitter.Visibility = Visibility.Visible;
+
+            if (SelectedDocument != null)
+                StartThumbnailRendering(SelectedDocument);
+        }
         private void ScrollToPage(int pageIndex)
         {
             if (SelectedDocument == null || pageIndex < 0 || pageIndex >= SelectedDocument.Pages.Count) return;
@@ -1716,34 +1844,153 @@ namespace MinsPDFViewer
             }
         }
 
-        private Point _startPoint; private bool _isDragging = false;
-        private void BookmarkTree_PreviewMouseLeftButtonDown(object sender, MouseButtonEventArgs e) => _startPoint = e.GetPosition(null);
+        private Point _startPoint;
+        private bool _isDragging = false;
+        private PdfBookmarkViewModel? _draggedBookmark;
+        private void BookmarkTree_PreviewMouseLeftButtonDown(object sender, MouseButtonEventArgs e)
+        {
+            _startPoint = e.GetPosition(null);
+            _draggedBookmark = FindAncestor<TreeViewItem>((DependencyObject)e.OriginalSource)?.DataContext as PdfBookmarkViewModel;
+            if (_draggedBookmark != null)
+                _draggedBookmark.IsSelected = true;
+        }
+
         private void BookmarkTree_PreviewMouseMove(object sender, MouseEventArgs e) {
             if (e.LeftButton == MouseButtonState.Pressed && !_isDragging) {
                 Point pos = e.GetPosition(null); Vector diff = _startPoint - pos;
                 if (Math.Abs(diff.X) > SystemParameters.MinimumHorizontalDragDistance || Math.Abs(diff.Y) > SystemParameters.MinimumVerticalDragDistance) {
-                    if (BookmarkTree.SelectedItem is PdfBookmarkViewModel bm && !bm.IsEditing) {
-                        _isDragging = true; DragDrop.DoDragDrop(BookmarkTree, new DataObject("MinsBookmark", bm), DragDropEffects.Move); _isDragging = false;
+                    var bm = _draggedBookmark ?? BookmarkTree.SelectedItem as PdfBookmarkViewModel;
+                    if (bm != null && !bm.IsEditing) {
+                        _isDragging = true;
+                        DragDrop.DoDragDrop(BookmarkTree, new DataObject("MinsBookmark", bm), DragDropEffects.Move);
+                        _isDragging = false;
+                        _draggedBookmark = null;
                     }
                 }
             }
         }
-        private void BookmarkTree_DragOver(object sender, DragEventArgs e) { e.Effects = e.Data.GetDataPresent(DataFormats.FileDrop) ? DragDropEffects.Copy : e.Data.GetDataPresent("MinsBookmark") ? DragDropEffects.Move : DragDropEffects.None; e.Handled = true; }
+        private void BookmarkTree_DragOver(object sender, DragEventArgs e)
+        {
+            if (e.Data.GetDataPresent(DataFormats.FileDrop))
+            {
+                e.Effects = DragDropEffects.Copy;
+            }
+            else if (e.Data.GetDataPresent("MinsBookmark") &&
+                     CanDropBookmark(e.Data.GetData("MinsBookmark") as PdfBookmarkViewModel, GetBookmarkDropTarget(e)))
+            {
+                e.Effects = DragDropEffects.Move;
+            }
+            else
+            {
+                e.Effects = DragDropEffects.None;
+            }
+
+            e.Handled = true;
+        }
+
         private void BookmarkTree_Drop(object sender, DragEventArgs e)
         {
             if (e.Data.GetDataPresent(DataFormats.FileDrop)) { Window_Drop(sender, e); return; }
             if (!e.Data.GetDataPresent("MinsBookmark") || SelectedDocument == null) return;
             var src = e.Data.GetData("MinsBookmark") as PdfBookmarkViewModel;
-            var target = FindAncestor<TreeViewItem>((DependencyObject)e.OriginalSource)?.DataContext as PdfBookmarkViewModel;
-            if (src == null || (target != null && (target == src || IsChildOf(target, src)))) return;
-            GetCurrentCollection(src)?.Remove(src);
-            if (target == null) { SelectedDocument.Bookmarks.Add(src); src.Parent = null; }
-            else { target.Children.Add(src); src.Parent = target; target.IsExpanded = true; }
+            var dropTarget = GetBookmarkDropTarget(e);
+            if (!CanDropBookmark(src, dropTarget)) return;
+
+            MoveBookmark(src!, dropTarget);
             MarkBookmarksChanged();
             e.Handled = true;
         }
+
+        private BookmarkDropTarget GetBookmarkDropTarget(DragEventArgs e)
+        {
+            var item = FindAncestor<TreeViewItem>((DependencyObject)e.OriginalSource);
+            if (item?.DataContext is not PdfBookmarkViewModel target)
+                return new BookmarkDropTarget(null, BookmarkDropPlacement.After);
+
+            var position = e.GetPosition(item);
+            double third = Math.Max(1.0, item.ActualHeight / 3.0);
+            BookmarkDropPlacement placement =
+                position.Y < third ? BookmarkDropPlacement.Before :
+                position.Y > item.ActualHeight - third ? BookmarkDropPlacement.After :
+                BookmarkDropPlacement.AsChild;
+
+            return new BookmarkDropTarget(target, placement);
+        }
+
+        private bool CanDropBookmark(PdfBookmarkViewModel? source, BookmarkDropTarget target)
+        {
+            if (source == null || SelectedDocument == null)
+                return false;
+
+            if (target.Bookmark == null)
+                return true;
+
+            return target.Bookmark != source && !IsChildOf(target.Bookmark, source);
+        }
+
+        private void MoveBookmark(PdfBookmarkViewModel source, BookmarkDropTarget target)
+        {
+            if (SelectedDocument == null)
+                return;
+
+            GetCurrentCollection(source)?.Remove(source);
+
+            if (target.Bookmark == null)
+            {
+                SelectedDocument.Bookmarks.Add(source);
+                source.Parent = null;
+                source.IsSelected = true;
+                return;
+            }
+
+            if (target.Placement == BookmarkDropPlacement.AsChild)
+            {
+                target.Bookmark.Children.Add(source);
+                source.Parent = target.Bookmark;
+                target.Bookmark.IsExpanded = true;
+                source.IsSelected = true;
+                return;
+            }
+
+            var targetCollection = GetCurrentCollection(target.Bookmark);
+            if (targetCollection == null)
+                return;
+
+            int targetIndex = targetCollection.IndexOf(target.Bookmark);
+            if (targetIndex < 0)
+                targetIndex = targetCollection.Count - 1;
+
+            int insertIndex = target.Placement == BookmarkDropPlacement.Before
+                ? targetIndex
+                : targetIndex + 1;
+            insertIndex = Math.Max(0, Math.Min(insertIndex, targetCollection.Count));
+
+            targetCollection.Insert(insertIndex, source);
+            source.Parent = target.Bookmark.Parent;
+            source.IsSelected = true;
+        }
+
         private bool IsChildOf(PdfBookmarkViewModel c, PdfBookmarkViewModel p) { var cur = c.Parent; while (cur != null) { if (cur == p) return true; cur = cur.Parent; } return false; }
-        private static T? FindAncestor<T>(DependencyObject cur) where T : DependencyObject { while (cur != null) { if (cur is T t) return t; cur = VisualTreeHelper.GetParent(cur); } return null; }
+        private static T? FindAncestor<T>(DependencyObject cur) where T : DependencyObject
+        {
+            while (cur != null)
+            {
+                if (cur is T t) return t;
+                cur = cur is Visual or Visual3D
+                    ? VisualTreeHelper.GetParent(cur)
+                    : LogicalTreeHelper.GetParent(cur);
+            }
+            return null;
+        }
+
+        private enum BookmarkDropPlacement
+        {
+            Before,
+            AsChild,
+            After
+        }
+
+        private readonly record struct BookmarkDropTarget(PdfBookmarkViewModel? Bookmark, BookmarkDropPlacement Placement);
         private void MarkBookmarksChanged()
         {
             if (SelectedDocument != null) SelectedDocument.HasBookmarkChanges = true;
@@ -1764,7 +2011,378 @@ namespace MinsPDFViewer
                 }), System.Windows.Threading.DispatcherPriority.Input);
             }
         }
-        private void PdfListView_ScrollChanged(object sender, ScrollChangedEventArgs e) { if (SelectedDocument != null) TxtPageInfo.Text = $"{GetCurrentPageIndex() + 1} / {SelectedDocument.Pages.Count}"; }
+        private void PdfListView_ScrollChanged(object sender, ScrollChangedEventArgs e)
+        {
+            if (SelectedDocument != null)
+            {
+                int pageIndex = GetCurrentPageIndex();
+                TxtPageInfo.Text = $"{pageIndex + 1} / {SelectedDocument.Pages.Count}";
+                SyncSelectedThumbnail(pageIndex);
+            }
+        }
+
+        private void PageThumbnailList_SelectionChanged(object sender, SelectionChangedEventArgs e)
+        {
+            if (_syncingThumbnailSelection || SelectedDocument == null)
+                return;
+
+            if (PageThumbnailList.SelectedItems.Count == 1 && PageThumbnailList.SelectedItem is PdfPageViewModel page)
+                ScrollToPage(page.PageIndex);
+        }
+
+        private void PageThumbnailList_PreviewMouseLeftButtonDown(object sender, MouseButtonEventArgs e)
+        {
+            _thumbnailDragStartPoint = e.GetPosition(PageThumbnailList);
+            _draggedThumbnailPage = FindAncestor<ListBoxItem>((DependencyObject)e.OriginalSource)?.DataContext as PdfPageViewModel;
+            _draggedThumbnailPages = GetSelectedThumbnailPages(_draggedThumbnailPage);
+        }
+
+        private void PageThumbnailItem_PreviewMouseLeftButtonDown(object sender, MouseButtonEventArgs e)
+        {
+            if (sender is not ListBoxItem item)
+                return;
+
+            _thumbnailDragStartPoint = e.GetPosition(PageThumbnailList);
+            _draggedThumbnailPage = item.DataContext as PdfPageViewModel;
+            _draggedThumbnailPages = GetSelectedThumbnailPages(_draggedThumbnailPage);
+        }
+
+        private void PageThumbnailList_PreviewMouseMove(object sender, MouseEventArgs e)
+        {
+            TryStartThumbnailDrag(e);
+        }
+
+        private void PageThumbnailItem_PreviewMouseMove(object sender, MouseEventArgs e)
+        {
+            TryStartThumbnailDrag(e);
+        }
+
+        private void PageThumbnailList_PreviewMouseLeftButtonUp(object sender, MouseButtonEventArgs e)
+        {
+            FinishThumbnailDrag(e);
+        }
+
+        private void PageThumbnailItem_PreviewMouseLeftButtonUp(object sender, MouseButtonEventArgs e)
+        {
+            FinishThumbnailDrag(e);
+        }
+
+        private void TryStartThumbnailDrag(MouseEventArgs e)
+        {
+            if (e.LeftButton != MouseButtonState.Pressed || _draggedThumbnailPage == null || _draggedThumbnailPages.Count == 0)
+                return;
+
+            var currentPoint = e.GetPosition(PageThumbnailList);
+            if (Math.Abs(currentPoint.X - _thumbnailDragStartPoint.X) < SystemParameters.MinimumHorizontalDragDistance &&
+                Math.Abs(currentPoint.Y - _thumbnailDragStartPoint.Y) < SystemParameters.MinimumVerticalDragDistance)
+                return;
+
+            _isThumbnailDragging = true;
+            Mouse.Capture(PageThumbnailList);
+            PageThumbnailList.Cursor = Cursors.SizeAll;
+            TxtStatus.Text = _draggedThumbnailPages.Count == 1
+                ? "페이지 이동 중..."
+                : $"{_draggedThumbnailPages.Count}개 페이지 이동 중...";
+            e.Handled = true;
+        }
+
+        private void FinishThumbnailDrag(MouseButtonEventArgs e)
+        {
+            if (!_isThumbnailDragging || SelectedDocument == null || _draggedThumbnailPage == null || _draggedThumbnailPages.Count == 0)
+            {
+                ResetThumbnailDragState();
+                return;
+            }
+
+            var dropPoint = e.GetPosition(PageThumbnailList);
+            int targetIndex = GetThumbnailDropIndex(dropPoint);
+
+            if (targetIndex >= 0)
+            {
+                MoveThumbnailPages(_draggedThumbnailPages, targetIndex);
+            }
+
+            ResetThumbnailDragState();
+            e.Handled = true;
+        }
+
+        private void ResetThumbnailDragState()
+        {
+            _isThumbnailDragging = false;
+            _draggedThumbnailPage = null;
+            _draggedThumbnailPages = new List<PdfPageViewModel>();
+            PageThumbnailList.Cursor = null;
+            if (Mouse.Captured == PageThumbnailList)
+                Mouse.Capture(null);
+        }
+
+        private void PageThumbnailList_DragOver(object sender, DragEventArgs e)
+        {
+            e.Effects = e.Data.GetDataPresent("MinsPageThumbnail") || e.Data.GetDataPresent(typeof(PdfPageViewModel))
+                ? DragDropEffects.Move
+                : DragDropEffects.None;
+            e.Handled = true;
+        }
+
+        private void PageThumbnailList_Drop(object sender, DragEventArgs e)
+        {
+            if (SelectedDocument == null)
+                return;
+
+            var sourcePage = e.Data.GetData("MinsPageThumbnail") as PdfPageViewModel
+                ?? e.Data.GetData(typeof(PdfPageViewModel)) as PdfPageViewModel;
+            if (sourcePage == null || !SelectedDocument.Pages.Contains(sourcePage))
+                return;
+
+            int sourceIndex = SelectedDocument.Pages.IndexOf(sourcePage);
+            int targetIndex = GetThumbnailDropIndex(e);
+            if (sourceIndex < 0 || targetIndex < 0)
+                return;
+
+            MoveThumbnailPages(new[] { sourcePage }, targetIndex);
+            e.Handled = true;
+        }
+
+        private List<PdfPageViewModel> GetSelectedThumbnailPages(PdfPageViewModel? fallbackPage)
+        {
+            if (SelectedDocument == null)
+                return new List<PdfPageViewModel>();
+
+            var selectedPages = PageThumbnailList.SelectedItems
+                .OfType<PdfPageViewModel>()
+                .Where(SelectedDocument.Pages.Contains)
+                .OrderBy(p => SelectedDocument.Pages.IndexOf(p))
+                .ToList();
+
+            if (fallbackPage != null && !selectedPages.Contains(fallbackPage))
+                selectedPages = new List<PdfPageViewModel> { fallbackPage };
+
+            return selectedPages;
+        }
+
+        private void MoveThumbnailPages(IEnumerable<PdfPageViewModel> sourcePages, int targetIndex)
+        {
+            if (SelectedDocument == null)
+                return;
+
+            var pagesToMove = sourcePages
+                .Where(SelectedDocument.Pages.Contains)
+                .Distinct()
+                .OrderBy(p => SelectedDocument.Pages.IndexOf(p))
+                .ToList();
+            if (pagesToMove.Count == 0)
+                return;
+
+            var oldOrder = SelectedDocument.Pages.ToList();
+            var oldIndexes = pagesToMove.Select(p => oldOrder.IndexOf(p)).Where(i => i >= 0).OrderBy(i => i).ToList();
+
+            int adjustedTargetIndex = targetIndex;
+            foreach (int oldIndex in oldIndexes)
+            {
+                if (oldIndex < targetIndex)
+                    adjustedTargetIndex--;
+            }
+
+            foreach (var page in pagesToMove)
+                SelectedDocument.Pages.Remove(page);
+
+            adjustedTargetIndex = Math.Max(0, Math.Min(adjustedTargetIndex, SelectedDocument.Pages.Count));
+            for (int i = 0; i < pagesToMove.Count; i++)
+                SelectedDocument.Pages.Insert(adjustedTargetIndex + i, pagesToMove[i]);
+
+            var newOrder = SelectedDocument.Pages.ToList();
+            if (oldOrder.SequenceEqual(newOrder))
+                return;
+
+            RefreshPageIndexes();
+            _syncingThumbnailSelection = true;
+            try
+            {
+                PageThumbnailList.SelectedItems.Clear();
+                foreach (var page in pagesToMove)
+                    PageThumbnailList.SelectedItems.Add(page);
+            }
+            finally
+            {
+                _syncingThumbnailSelection = false;
+            }
+
+            var firstMovedPage = pagesToMove[0];
+            TxtStatus.Text = pagesToMove.Count == 1 ? "페이지 순서 변경됨" : $"{pagesToMove.Count}개 페이지 순서 변경됨";
+            TxtPageInfo.Text = $"{firstMovedPage.PageNumber} / {SelectedDocument.Pages.Count}";
+
+            var previousCursor = Mouse.OverrideCursor;
+            Mouse.OverrideCursor = Cursors.Wait;
+            try
+            {
+                ScrollToPage(firstMovedPage.PageIndex);
+            }
+            finally
+            {
+                Mouse.OverrideCursor = previousCursor;
+            }
+        }
+
+        private int GetThumbnailDropIndex(DragEventArgs e)
+        {
+            if (SelectedDocument == null)
+                return -1;
+
+            var targetItem = FindAncestor<ListBoxItem>((DependencyObject)e.OriginalSource);
+            if (targetItem == null)
+                return SelectedDocument.Pages.Count;
+
+            int targetIndex = PageThumbnailList.ItemContainerGenerator.IndexFromContainer(targetItem);
+            if (targetIndex < 0)
+                return SelectedDocument.Pages.Count;
+
+            var position = e.GetPosition(targetItem);
+            if (position.Y > targetItem.ActualHeight / 2)
+                targetIndex++;
+
+            return targetIndex;
+        }
+
+        private int GetThumbnailDropIndex(Point position)
+        {
+            if (SelectedDocument == null)
+                return -1;
+
+            var hit = PageThumbnailList.InputHitTest(position) as DependencyObject;
+            var targetItem = hit != null ? FindAncestor<ListBoxItem>(hit) : null;
+            if (targetItem == null)
+                return position.Y < 0 ? 0 : SelectedDocument.Pages.Count;
+
+            int targetIndex = PageThumbnailList.ItemContainerGenerator.IndexFromContainer(targetItem);
+            if (targetIndex < 0)
+                return SelectedDocument.Pages.Count;
+
+            var itemPoint = PageThumbnailList.TranslatePoint(position, targetItem);
+            if (itemPoint.Y > targetItem.ActualHeight / 2)
+                targetIndex++;
+
+            return targetIndex;
+        }
+
+        private void SyncSelectedThumbnail(int pageIndex)
+        {
+            if (SelectedDocument == null || pageIndex < 0 || pageIndex >= SelectedDocument.Pages.Count)
+                return;
+
+            var page = SelectedDocument.Pages[pageIndex];
+            if (ReferenceEquals(PageThumbnailList.SelectedItem, page))
+                return;
+
+            _syncingThumbnailSelection = true;
+            try
+            {
+                PageThumbnailList.SelectedItem = page;
+            }
+            finally
+            {
+                _syncingThumbnailSelection = false;
+            }
+
+            StartThumbnailRendering(SelectedDocument);
+        }
+
+        private void StartThumbnailRendering(PdfDocumentModel document)
+        {
+            _thumbnailRenderCts?.Cancel();
+            _thumbnailRenderCts = new CancellationTokenSource();
+            var token = _thumbnailRenderCts.Token;
+
+            Dispatcher.InvokeAsync(() =>
+            {
+                if (!token.IsCancellationRequested && ReferenceEquals(SelectedDocument, document))
+                    PageThumbnailList.UpdateLayout();
+            }, System.Windows.Threading.DispatcherPriority.ContextIdle);
+
+            var pages = GetThumbnailRenderCandidates(document);
+            if (pages.Count == 0)
+                return;
+
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    foreach (var page in pages)
+                    {
+                        token.ThrowIfCancellationRequested();
+                        if (document.IsDisposed)
+                            return;
+
+                        await _pdfService.RenderThumbnailAsync(document, page, 140, token);
+                    }
+                }
+                catch (OperationCanceledException)
+                {
+                }
+            }, token);
+        }
+
+        private List<PdfPageViewModel> GetThumbnailRenderCandidates(PdfDocumentModel document)
+        {
+            if (!ReferenceEquals(SelectedDocument, document))
+                return new List<PdfPageViewModel>();
+
+            var indexes = new SortedSet<int>();
+            int currentIndex = GetCurrentPageIndex();
+            AddThumbnailRange(indexes, document, currentIndex - ThumbnailRenderPagesBefore, currentIndex + ThumbnailRenderPagesAfter);
+
+            if (PageThumbnailList.SelectedItem is PdfPageViewModel selectedPage)
+                AddThumbnailRange(indexes, document, selectedPage.PageIndex - ThumbnailRenderPagesBefore, selectedPage.PageIndex + ThumbnailRenderPagesAfter);
+
+            if (SidebarBorder.Visibility == Visibility.Visible)
+            {
+                PageThumbnailList.UpdateLayout();
+                for (int i = 0; i < document.Pages.Count; i++)
+                {
+                    if (PageThumbnailList.ItemContainerGenerator.ContainerFromIndex(i) is ListBoxItem item &&
+                        IsElementVisibleInThumbnailList(item))
+                    {
+                        AddThumbnailRange(indexes, document, i - 2, i + 4);
+                    }
+                }
+            }
+
+            return indexes
+                .Where(i => i >= 0 && i < document.Pages.Count)
+                .Select(i => document.Pages[i])
+                .Where(p => p.ThumbnailSource == null)
+                .ToList();
+        }
+
+        private static void AddThumbnailRange(SortedSet<int> indexes, PdfDocumentModel document, int start, int end)
+        {
+            int first = Math.Max(0, start);
+            int last = Math.Min(document.Pages.Count - 1, end);
+            for (int i = first; i <= last; i++)
+                indexes.Add(i);
+        }
+
+        private bool IsElementVisibleInThumbnailList(FrameworkElement element)
+        {
+            if (!element.IsVisible || PageThumbnailList.ActualHeight <= 0)
+                return false;
+
+            try
+            {
+                var bounds = element.TransformToAncestor(PageThumbnailList)
+                    .TransformBounds(new Rect(0, 0, element.ActualWidth, element.ActualHeight));
+                return bounds.Bottom >= -80 && bounds.Top <= PageThumbnailList.ActualHeight + 160;
+            }
+            catch (InvalidOperationException)
+            {
+                return false;
+            }
+        }
+
+        private void PageThumbnailList_ScrollChanged(object sender, ScrollChangedEventArgs e)
+        {
+            if (SelectedDocument != null)
+                StartThumbnailRendering(SelectedDocument);
+        }
         private void BtnAddBookmark_Click(object sender, RoutedEventArgs e)
         {
             if (SelectedDocument == null) return;
@@ -1816,9 +2434,24 @@ namespace MinsPDFViewer
         {
             if (!File.Exists(path)) return;
             Log($"[DEBUG] OpenPdfFromPath: {path}");
+            var profileWatch = Stopwatch.StartNew();
+            void LogOpenStep(string step)
+            {
+                Log($"[OPEN_PROFILE] {step} elapsed={profileWatch.ElapsedMilliseconds}ms path='{path}'");
+                profileWatch.Restart();
+            }
+
             var existing = Documents.FirstOrDefault(d => d.FilePath.Equals(path, StringComparison.OrdinalIgnoreCase));
-            if (existing != null) { SelectedDocument = existing; return; }
+            if (existing != null)
+            {
+                SelectedDocument = existing;
+                LogOpenStep("select existing document");
+                StartThumbnailRendering(existing);
+                return;
+            }
+
             var doc = await _pdfService.LoadPdfAsync(path);
+            LogOpenStep("LoadPdfAsync");
             if (doc != null) 
             { 
                 // [Fix] Zoom changed event handler to update page sizes
@@ -1854,6 +2487,7 @@ namespace MinsPDFViewer
                 };
                 
                 await _pdfService.InitializeDocumentAsync(doc); 
+                LogOpenStep("InitializeDocumentAsync");
                 
                 // Initial size calculation based on default Zoom (1.0)
                 foreach(var p in doc.Pages)
@@ -1861,9 +2495,25 @@ namespace MinsPDFViewer
                     p.Width = p.PdfPageWidthPoint * doc.Zoom;
                     p.Height = p.PdfPageHeightPoint * doc.Zoom;
                 }
+                LogOpenStep("initial page size calculation");
                 
                 Documents.Add(doc); 
-                SelectedDocument = doc; 
+                SelectedDocument = doc;
+                LogOpenStep("add and select document");
+                int initialPageIndex = Math.Max(0, Math.Min(_historyService.GetLastPage(path), doc.Pages.Count - 1));
+                RenderPagesAround(initialPageIndex, 0, 2);
+                LogOpenStep("queue initial visible render");
+                StartThumbnailRendering(doc);
+                LogOpenStep("queue lazy thumbnails");
+                _ = _pdfService.LoadBookmarksAsync(doc);
+
+                await Dispatcher.InvokeAsync(() =>
+                {
+                    ScrollToPage(initialPageIndex);
+                    TxtStatus.Text = initialPageIndex > 0
+                        ? $"{initialPageIndex + 1}페이지에서 다시 열었습니다."
+                        : "준비";
+                }, System.Windows.Threading.DispatcherPriority.Loaded);
             }
         }
 
@@ -1938,7 +2588,41 @@ namespace MinsPDFViewer
         }
         private void Window_PreviewMouseMove(object sender, MouseEventArgs e) { if (_isPanning && e.LeftButton == MouseButtonState.Pressed) { var p = e.GetPosition(this); var d = p - _lastPanPoint; var sv = GetScrollViewer(); if (sv != null) { sv.ScrollToHorizontalOffset(sv.HorizontalOffset - d.X); sv.ScrollToVerticalOffset(sv.VerticalOffset - d.Y); } _lastPanPoint = p; e.Handled = true; } }
         private void Window_PreviewMouseUp(object sender, MouseButtonEventArgs e) { if (_isPanning) { _isPanning = false; GetCurrentListView()?.ReleaseMouseCapture(); e.Handled = true; } }
-        private void Window_PreviewMouseWheel(object sender, MouseWheelEventArgs e) { } // No-op, handled by PdfListView_PreviewMouseWheel
+        private void Window_PreviewMouseWheel(object sender, MouseWheelEventArgs e)
+        {
+            if ((Keyboard.Modifiers & ModifierKeys.Control) != ModifierKeys.Control || SelectedDocument == null)
+                return;
+
+            if (e.OriginalSource is not DependencyObject source)
+                return;
+
+            if (IsDescendantOf(source, PageThumbnailList))
+            {
+                AdjustThumbnailZoom(e.Delta > 0 ? 1 : -1);
+                e.Handled = true;
+            }
+            else if (IsDescendantOf(source, MainTabControl))
+            {
+                AdjustDocumentZoom(e.Delta > 0 ? 1 : -1);
+                e.Handled = true;
+            }
+        }
+
+        private static bool IsDescendantOf(DependencyObject source, DependencyObject ancestor)
+        {
+            DependencyObject? current = source;
+            while (current != null)
+            {
+                if (ReferenceEquals(current, ancestor))
+                    return true;
+
+                current = current is Visual or Visual3D
+                    ? VisualTreeHelper.GetParent(current)
+                    : LogicalTreeHelper.GetParent(current);
+            }
+
+            return false;
+        }
         private void BtnAddBlankPage_Click(object sender, RoutedEventArgs e)
         {
             if (SelectedDocument == null) return;

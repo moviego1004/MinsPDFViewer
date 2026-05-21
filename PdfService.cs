@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Text;
@@ -247,7 +248,7 @@ namespace MinsPDFViewer
 
             if (highBmp != null)
             {
-                string cacheKey = GetCacheKey(model.FilePath, pageVM.OriginalPageIndex);
+                string cacheKey = GetCacheKey(model.FilePath, pageVM.OriginalPageIndex, req.Zoom);
                 AddToCache(cacheKey, highBmp);
                 var bmp = highBmp;
                 Application.Current.Dispatcher.BeginInvoke(() =>
@@ -268,7 +269,7 @@ namespace MinsPDFViewer
             }
         }
 
-        // Page image cache (key: file identity + pageIndex, value: frozen BitmapSource)
+        // Page image cache (key: file identity + pageIndex + zoom, value: frozen BitmapSource)
         private static readonly LinkedList<string> _cacheOrder = new LinkedList<string>();
         private static readonly Dictionary<string, BitmapSource> _pageCache = new Dictionary<string, BitmapSource>();
         private static readonly object _cacheLock = new object();
@@ -285,7 +286,7 @@ namespace MinsPDFViewer
             }
         }
 
-        private static string GetCacheKey(string filePath, int pageIndex)
+        private static string GetCacheKey(string filePath, int pageIndex, double zoom)
         {
             string normalizedPath = NormalizeCachePath(filePath);
             long lastWriteTicks = 0;
@@ -302,7 +303,8 @@ namespace MinsPDFViewer
             }
             catch { }
 
-            return $"{normalizedPath}|{lastWriteTicks}|{length}|{pageIndex}";
+            int zoomBucket = (int)Math.Round(zoom * 100);
+            return $"{normalizedPath}|{lastWriteTicks}|{length}|{pageIndex}|{zoomBucket}";
         }
 
         public static void ClearPageCacheForFile(string filePath)
@@ -609,21 +611,30 @@ namespace MinsPDFViewer
             if (!File.Exists(filePath)) return null;
             return await Task.Run(() =>
             {
+                var profileWatch = Stopwatch.StartNew();
+                void LogOpenProfile(string step)
+                {
+                    Log($"[OPEN_PROFILE] {step} elapsed={profileWatch.ElapsedMilliseconds}ms path='{filePath}'");
+                    profileWatch.Restart();
+                }
+
                 try
                 {
-                    byte[] fileBytes = File.ReadAllBytes(filePath);
-                    Log($"LoadPdfAsync: {filePath}, Bytes={fileBytes.Length}");
-                    var memoryStream = new MemoryStream(fileBytes);
+                    var fileInfo = new FileInfo(filePath);
+                    Log($"LoadPdfAsync: {filePath}, Bytes={fileInfo.Length}");
+                    LogOpenProfile("stat file");
+
                     IPdfDocument? pdfDoc = null;
-                    lock (PdfiumLock) { pdfDoc = PdfiumViewer.PdfDocument.Load(memoryStream); }
+                    lock (PdfiumLock) { pdfDoc = PdfiumViewer.PdfDocument.Load(filePath); }
+                    LogOpenProfile("PdfDocument.Load file");
+
                     var model = new PdfDocumentModel
                     {
                         FilePath = filePath,
                         FileName = Path.GetFileName(filePath),
-                        PdfDocument = pdfDoc,
-                        FileStream = memoryStream
+                        PdfDocument = pdfDoc
                     };
-                    LoadBookmarks(model);
+                    LogOpenProfile("create model");
                     return model;
                 }
                 catch (Exception ex)
@@ -677,6 +688,12 @@ namespace MinsPDFViewer
 
         private static void RunOnUiDispatcherOrDirect(Action action)
         {
+            if (UseDirectDispatcherForTests)
+            {
+                action();
+                return;
+            }
+
             var dispatcher = Application.Current?.Dispatcher;
             if (dispatcher == null || dispatcher.CheckAccess())
             {
@@ -684,13 +701,17 @@ namespace MinsPDFViewer
                 return;
             }
 
-            var operation = dispatcher.InvokeAsync(action);
-            if (!operation.Task.Wait(TimeSpan.FromSeconds(5)))
-                action();
+            dispatcher.Invoke(action);
         }
 
         private static async Task RunOnUiDispatcherOrDirectAsync(Action action)
         {
+            if (UseDirectDispatcherForTests)
+            {
+                action();
+                return;
+            }
+
             var dispatcher = Application.Current?.Dispatcher;
             if (dispatcher == null || dispatcher.CheckAccess())
             {
@@ -698,20 +719,16 @@ namespace MinsPDFViewer
                 return;
             }
 
-            var operation = dispatcher.InvokeAsync(action);
-            if (await Task.WhenAny(operation.Task, Task.Delay(TimeSpan.FromSeconds(5))) == operation.Task)
-                await operation.Task;
-            else
-                action();
+            await dispatcher.InvokeAsync(action);
         }
+
+        internal static bool UseDirectDispatcherForTests { get; set; }
 
         private static void Log(string message)
         {
             try
             {
-                string logPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "debug.log");
-                string logMsg = $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}] [PdfService] {message}{Environment.NewLine}";
-                File.AppendAllText(logPath, logMsg);
+                DebugLog.Append("PdfService", message);
             }
             catch { }
         }
@@ -726,7 +743,7 @@ namespace MinsPDFViewer
             if (model.IsDisposed || pageVM.IsBlankPage) return;
 
             // Check cache first
-            string cacheKey = GetCacheKey(model.FilePath, pageVM.OriginalPageIndex);
+            string cacheKey = GetCacheKey(model.FilePath, pageVM.OriginalPageIndex, model.Zoom);
             var cached = GetFromCache(cacheKey);
             if (cached != null)
             {
@@ -758,6 +775,53 @@ namespace MinsPDFViewer
                 Zoom = model.Zoom
             });
             _renderSignal.Release();
+        }
+
+        public async Task RenderThumbnailAsync(PdfDocumentModel model, PdfPageViewModel pageVM, int maxPixelWidth = 140, CancellationToken ct = default)
+        {
+            if (model.IsDisposed || pageVM.IsBlankPage || pageVM.ThumbnailSource != null)
+                return;
+
+            BitmapSource? thumbnail = null;
+            await Task.Run(() =>
+            {
+                if (ct.IsCancellationRequested || model.IsDisposed || model.PdfDocument == null)
+                    return;
+
+                lock (PdfiumLock)
+                {
+                    if (ct.IsCancellationRequested || model.IsDisposed || model.PdfDocument == null)
+                        return;
+
+                    try
+                    {
+                        double widthPoint = pageVM.PdfPageWidthPoint > 0 ? pageVM.PdfPageWidthPoint : pageVM.Width;
+                        double heightPoint = pageVM.PdfPageHeightPoint > 0 ? pageVM.PdfPageHeightPoint : pageVM.Height;
+                        double scale = maxPixelWidth / Math.Max(1.0, widthPoint);
+                        int renderW = Math.Max(1, (int)Math.Round(widthPoint * scale));
+                        int renderH = Math.Max(1, (int)Math.Round(heightPoint * scale));
+
+                        using (var bitmap = model.PdfDocument.Render(pageVM.OriginalPageIndex, renderW, renderH, 96, 96, PdfRenderFlags.Annotations))
+                        {
+                            thumbnail = ToBitmapSource((DrawingBitmap)bitmap);
+                            thumbnail.Freeze();
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        Log($"[WARN] Thumbnail render failed for page {pageVM.PageIndex}: {ex.Message}");
+                    }
+                }
+            }, ct);
+
+            if (thumbnail == null || ct.IsCancellationRequested)
+                return;
+
+            RunOnUiDispatcherOrDirect(() =>
+            {
+                if (!ct.IsCancellationRequested && pageVM.ThumbnailSource == null)
+                    pageVM.ThumbnailSource = thumbnail;
+            });
         }
 
         // Keep legacy method for compatibility with other callers (save, OCR, etc.)
@@ -1052,8 +1116,7 @@ namespace MinsPDFViewer
             {
                 try
                 {
-                    string logPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "debug.log");
-                    File.AppendAllText(logPath, $"[{DateTime.Now:HH:mm:ss.fff}] [PdfService] {msg}{Environment.NewLine}");
+                    DebugLog.Append("PdfService", msg);
                 }
                 catch { }
             }
@@ -1065,30 +1128,42 @@ namespace MinsPDFViewer
 
             string originalFilePath = model.FilePath;
             LogToFile($"Starting SavePdf for: {originalFilePath}");
+            var profileWatch = Stopwatch.StartNew();
+            void LogProfile(string step)
+            {
+                LogToFile($"[SAVE_PROFILE] {step} elapsed={profileWatch.ElapsedMilliseconds}ms");
+                profileWatch.Restart();
+            }
 
             bool shouldRewriteBookmarks = false;
             await RunOnUiDispatcherOrDirectAsync(() =>
             {
                 shouldRewriteBookmarks = model.HasBookmarkChanges;
             });
+            LogProfile("read bookmark state");
 
             List<MinsPDFViewer.BookmarkSaveData> pdfiumBookmarkSnapshot = shouldRewriteBookmarks
                 ? await PdfSaveSnapshotFactory.CreateBookmarkSnapshotAsync(model)
                 : new List<MinsPDFViewer.BookmarkSaveData>();
+            LogProfile("bookmark snapshot");
 
             try
             {
                 var pdfiumEditService = new PdfiumEditService();
                 string pdfiumUnsupportedReason = PdfiumEditService.GetUnsupportedReason(model);
+                LogProfile("eligibility check");
                 if (!string.IsNullOrEmpty(pdfiumUnsupportedReason))
                     LogToFile($"[SaveEngine:{PdfSaveEngine.Pdfium}] Not eligible: {pdfiumUnsupportedReason}");
 
                 if (await pdfiumEditService.TrySaveAnnotationsAsync(model, outputPath))
                 {
+                    LogProfile("pdfium edit save");
                     if (shouldRewriteBookmarks)
                     {
                         await new PdfBookmarkRewriteService(LogToFile).RewriteBookmarksAsync(outputPath, pdfiumBookmarkSnapshot);
+                        LogProfile("bookmark rewrite");
                         await RunOnUiDispatcherOrDirectAsync(() => model.HasBookmarkChanges = false);
+                        LogProfile("clear bookmark dirty flag");
                         LogToFile($"[SaveEngine:{PdfSaveEngine.PdfiumWithBookmarkRewrite}] Save completed.");
                         LogToFile("PDFium edit save successful.");
                         return;
@@ -1157,6 +1232,26 @@ namespace MinsPDFViewer
                     foreach (var i in list) model.Bookmarks.Add(i);
                 });
             }
+        }
+
+        public Task LoadBookmarksAsync(PdfDocumentModel model)
+        {
+            return Task.Run(() =>
+            {
+                if (model.IsDisposed)
+                    return;
+
+                var profileWatch = Stopwatch.StartNew();
+                try
+                {
+                    LoadBookmarks(model);
+                    Log($"[OPEN_PROFILE] LoadBookmarksAsync elapsed={profileWatch.ElapsedMilliseconds}ms path='{model.FilePath}'");
+                }
+                catch (Exception ex)
+                {
+                    Log($"[WARN] LoadBookmarksAsync failed: {ex.Message}");
+                }
+            });
         }
 
         private PdfBookmarkViewModel MapBm(PdfBookmark b, PdfBookmarkViewModel? p)

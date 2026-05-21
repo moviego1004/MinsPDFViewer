@@ -17,6 +17,8 @@ namespace MinsPDFViewer.Tests
 
         public PdfServiceTests()
         {
+            PdfService.UseDirectDispatcherForTests = true;
+
             // 테스트 파일들이 저장될 임시 폴더
             _testFileDir = Path.Combine(AppContext.BaseDirectory, "TestFiles");
             if (!Directory.Exists(_testFileDir))
@@ -140,6 +142,36 @@ namespace MinsPDFViewer.Tests
             Assert.False(result.IsDocumentModified, result.Message);
         }
 
+        [Fact]
+        public async Task Save_Reordered_Pages_Should_Persist_Order()
+        {
+            string sourcePath = Path.Combine(_testFileDir, "two_pages.pdf");
+            File.WriteAllBytes(sourcePath, CreateTwoPagePdf());
+
+            var service = new PdfService();
+            var docModel = await service.LoadPdfAsync(sourcePath);
+            Assert.NotNull(docModel);
+            await service.InitializeDocumentAsync(docModel);
+            Assert.Equal(2, docModel.Pages.Count);
+
+            docModel.Pages.Move(1, 0);
+            for (int i = 0; i < docModel.Pages.Count; i++)
+                docModel.Pages[i].PageIndex = i;
+
+            string savePath = Path.Combine(_testFileDir, "two_pages_reordered.pdf");
+            await service.SavePdf(docModel, savePath);
+
+            var reloaded = await service.LoadPdfAsync(savePath);
+            Assert.NotNull(reloaded);
+            await service.InitializeDocumentAsync(reloaded);
+
+            Assert.Equal(2, reloaded.Pages.Count);
+            Assert.Equal(500, reloaded.Pages[0].PdfPageWidthPoint, 1);
+            Assert.Equal(600, reloaded.Pages[0].PdfPageHeightPoint, 1);
+            Assert.Equal(300, reloaded.Pages[1].PdfPageWidthPoint, 1);
+            Assert.Equal(400, reloaded.Pages[1].PdfPageHeightPoint, 1);
+        }
+
         private static byte[] CreateMinimalPdf()
         {
             var objects = new[]
@@ -167,6 +199,38 @@ namespace MinsPDFViewer.Tests
             sb.Append("startxref\n");
             sb.Append(xrefOffset);
             sb.Append("\n%%EOF\n");
+            return System.Text.Encoding.ASCII.GetBytes(sb.ToString());
+        }
+
+        private static byte[] CreateTwoPagePdf()
+        {
+            var objects = new[]
+            {
+                "1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n",
+                "2 0 obj\n<< /Type /Pages /Kids [3 0 R 4 0 R] /Count 2 >>\nendobj\n",
+                "3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 400] /Resources << >> >>\nendobj\n",
+                "4 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 500 600] /Resources << >> >>\nendobj\n"
+            };
+
+            var sb = new System.Text.StringBuilder();
+            sb.Append("%PDF-1.7\n");
+            var offsets = new List<int>();
+            foreach (var obj in objects)
+            {
+                offsets.Add(System.Text.Encoding.ASCII.GetByteCount(sb.ToString()));
+                sb.Append(obj);
+            }
+
+            int xrefOffset = System.Text.Encoding.ASCII.GetByteCount(sb.ToString());
+            sb.Append("xref\n0 5\n");
+            sb.Append("0000000000 65535 f \n");
+            foreach (int offset in offsets)
+                sb.Append($"{offset:0000000000} 00000 n \n");
+
+            sb.Append("trailer\n<< /Size 5 /Root 1 0 R >>\n");
+            sb.Append("startxref\n");
+            sb.Append(xrefOffset);
+            sb.Append("\n%%EOF");
             return System.Text.Encoding.ASCII.GetBytes(sb.ToString());
         }
     }

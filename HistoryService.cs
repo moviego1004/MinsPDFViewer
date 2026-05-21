@@ -28,7 +28,8 @@ namespace MinsPDFViewer
         // 파일 경로에 해당하는 마지막 페이지 번호 가져오기
         public int GetLastPage(string filePath)
         {
-            if (_historyData.TryGetValue(filePath, out int pageIndex))
+            string key = NormalizePath(filePath);
+            if (_historyData.TryGetValue(key, out int pageIndex))
             {
                 return pageIndex;
             }
@@ -42,7 +43,7 @@ namespace MinsPDFViewer
                 return;
 
             // 이미 있으면 덮어쓰기, 없으면 추가
-            _historyData[filePath] = pageIndex;
+            _historyData[NormalizePath(filePath)] = Math.Max(0, pageIndex);
         }
 
         // 파일로 영구 저장
@@ -70,6 +71,21 @@ namespace MinsPDFViewer
                 }
             }
             catch { /* 로드 실패 시 빈 상태로 시작 */ }
+        }
+
+        private static string NormalizePath(string filePath)
+        {
+            if (string.IsNullOrWhiteSpace(filePath))
+                return string.Empty;
+
+            try
+            {
+                return Path.GetFullPath(filePath);
+            }
+            catch
+            {
+                return filePath;
+            }
         }
     }
 }

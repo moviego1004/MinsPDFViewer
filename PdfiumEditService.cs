@@ -1,5 +1,7 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
+using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Runtime.InteropServices;
@@ -33,14 +35,19 @@ namespace MinsPDFViewer
 
         public async Task<bool> TrySaveAnnotationsAsync(PdfDocumentModel model, string outputPath)
         {
+            var profileWatch = Stopwatch.StartNew();
             if (!CanUsePdfiumAnnotationSave(model, out _))
                 return false;
+            LogProfile("eligibility", profileWatch);
 
             var snapshot = await CreateSnapshotAsync(model);
+            LogProfile("snapshot", profileWatch);
             if (snapshot == null)
                 return false;
 
-            return await Task.Run(() => SaveSnapshot(snapshot, outputPath));
+            bool saved = await Task.Run(() => SaveSnapshot(snapshot, outputPath));
+            LogProfile("SaveSnapshot total", profileWatch);
+            return saved;
         }
 
         internal static string GetUnsupportedReason(PdfDocumentModel model)
@@ -69,7 +76,6 @@ namespace MinsPDFViewer
                 return false;
             }
 
-            int previousOriginalPageIndex = -1;
             var seenOriginalPages = new HashSet<int>();
             foreach (var page in model.Pages)
             {
@@ -87,14 +93,6 @@ namespace MinsPDFViewer
                     reason = "page set contains duplicated source pages";
                     return false;
                 }
-
-                if (page.OriginalPageIndex <= previousOriginalPageIndex)
-                {
-                    reason = "page order has changed";
-                    return false;
-                }
-
-                previousOriginalPageIndex = page.OriginalPageIndex;
             }
 
             reason = "";
@@ -103,15 +101,14 @@ namespace MinsPDFViewer
 
         private static async Task<DocumentSnapshot?> CreateSnapshotAsync(PdfDocumentModel model)
         {
+            if (PdfService.UseDirectDispatcherForTests)
+                return CreateSnapshot(model);
+
             var dispatcher = Application.Current?.Dispatcher;
             if (dispatcher == null || dispatcher.CheckAccess())
                 return CreateSnapshot(model);
 
-            var operation = dispatcher.InvokeAsync(() => CreateSnapshot(model));
-            if (await Task.WhenAny(operation.Task, Task.Delay(TimeSpan.FromSeconds(5))) == operation.Task)
-                return await operation.Task;
-
-            return CreateSnapshot(model);
+            return await dispatcher.InvokeAsync(() => CreateSnapshot(model));
         }
 
         private static DocumentSnapshot CreateSnapshot(PdfDocumentModel model)
@@ -202,28 +199,36 @@ namespace MinsPDFViewer
 
         private static bool SaveSnapshot(DocumentSnapshot snapshot, string outputPath)
         {
+            var profileWatch = Stopwatch.StartNew();
             lock (PdfService.PdfiumLock)
             {
                 IntPtr document = NativeMethods.FPDF_LoadDocument(snapshot.SourcePath, null);
+                LogProfile("LoadDocument", profileWatch);
                 if (document == IntPtr.Zero)
                     return false;
 
                 IntPtr ocrFont = IntPtr.Zero;
                 try
                 {
+                    bool hasReorderedPages = HasReorderedSourcePages(snapshot);
+                    bool needsSourceMutation = NeedsSourceMutation(snapshot);
+                    LogProfile($"analyze pages reorder={hasReorderedPages} mutation={needsSourceMutation}", profileWatch);
+                    if (hasReorderedPages && !needsSourceMutation)
+                        return SaveReorderedSnapshot(document, snapshot, outputPath, sourceHasPendingMutations: false);
+
+                    int mutatedPageCount = 0;
                     foreach (var pageSnapshot in snapshot.Pages)
                     {
                         if (pageSnapshot.IsBlankPage)
                             continue;
 
-                        if (pageSnapshot.Rotation == 0 &&
-                            (!pageSnapshot.ShouldRewriteAnnotations ||
-                             (pageSnapshot.Annotations.Count == 0 && pageSnapshot.OcrWords.Count == 0)))
+                        if (!NeedsPageMutation(pageSnapshot))
                             continue;
 
                         IntPtr page = NativeMethods.FPDF_LoadPage(document, pageSnapshot.OriginalPageIndex);
                         if (page == IntPtr.Zero)
                             return false;
+                        mutatedPageCount++;
 
                         try
                         {
@@ -249,13 +254,17 @@ namespace MinsPDFViewer
                             NativeMethods.FPDF_ClosePage(page);
                         }
                     }
+                    LogProfile($"mutate pages count={mutatedPageCount}", profileWatch);
+
+                    if (hasReorderedPages)
+                        return SaveReorderedSnapshot(document, snapshot, outputPath, sourceHasPendingMutations: true);
 
                     DeleteRemovedPages(document, snapshot);
+                    LogProfile("delete removed pages", profileWatch);
                     InsertBlankPages(document, snapshot, ref ocrFont);
+                    LogProfile("insert blank pages", profileWatch);
 
-                    using var stream = new FileStream(outputPath, FileMode.Create, FileAccess.Write, FileShare.None);
-                    var writer = new NativeFileWriter(stream);
-                    return NativeMethods.FPDF_SaveAsCopy(document, ref writer.FileWrite, 0);
+                    return SaveDocumentToFile(document, outputPath);
                 }
                 finally
                 {
@@ -265,6 +274,128 @@ namespace MinsPDFViewer
                     NativeMethods.FPDF_CloseDocument(document);
                 }
             }
+        }
+
+        private static bool NeedsSourceMutation(DocumentSnapshot snapshot)
+        {
+            return snapshot.Pages.Any(p => !p.IsBlankPage && NeedsPageMutation(p));
+        }
+
+        private static bool NeedsPageMutation(PageSnapshot pageSnapshot)
+        {
+            return pageSnapshot.Rotation != 0 ||
+                   (pageSnapshot.ShouldRewriteAnnotations &&
+                    (pageSnapshot.Annotations.Count > 0 || pageSnapshot.OcrWords.Count > 0));
+        }
+
+        private static bool HasReorderedSourcePages(DocumentSnapshot snapshot)
+        {
+            int previousOriginalPageIndex = -1;
+            foreach (var page in snapshot.Pages)
+            {
+                if (page.IsBlankPage)
+                    continue;
+
+                if (page.OriginalPageIndex <= previousOriginalPageIndex)
+                    return true;
+
+                previousOriginalPageIndex = page.OriginalPageIndex;
+            }
+
+            return false;
+        }
+
+        private static bool SaveReorderedSnapshot(IntPtr sourceDocument, DocumentSnapshot snapshot, string outputPath, bool sourceHasPendingMutations)
+        {
+            var profileWatch = Stopwatch.StartNew();
+            string tempPath = Path.Combine(Path.GetTempPath(), Guid.NewGuid() + ".pdf");
+            IntPtr modifiedSource = IntPtr.Zero;
+            IntPtr reorderedDocument = IntPtr.Zero;
+            IntPtr ocrFont = IntPtr.Zero;
+
+            try
+            {
+                IntPtr importSource = sourceDocument;
+                if (sourceHasPendingMutations)
+                {
+                    if (!SaveDocumentToFile(sourceDocument, tempPath))
+                        return false;
+                    LogProfile("reorder save mutated source temp", profileWatch);
+
+                    modifiedSource = NativeMethods.FPDF_LoadDocument(tempPath, null);
+                    if (modifiedSource == IntPtr.Zero)
+                        return false;
+                    LogProfile("reorder load mutated source temp", profileWatch);
+
+                    importSource = modifiedSource;
+                }
+
+                reorderedDocument = NativeMethods.FPDF_CreateNewDocument();
+                if (reorderedDocument == IntPtr.Zero)
+                    return false;
+                LogProfile("reorder create target document", profileWatch);
+
+                int targetIndex = 0;
+                int importedRanges = 0;
+                while (targetIndex < snapshot.Pages.Count)
+                {
+                    var pageSnapshot = snapshot.Pages[targetIndex];
+                    if (pageSnapshot.IsBlankPage)
+                    {
+                        InsertBlankPageAt(reorderedDocument, targetIndex, pageSnapshot, ref ocrFont);
+                        targetIndex++;
+                        continue;
+                    }
+
+                    int rangeStart = pageSnapshot.OriginalPageIndex;
+                    int rangeEnd = rangeStart;
+                    int rangeLength = 1;
+                    while (targetIndex + rangeLength < snapshot.Pages.Count)
+                    {
+                        var nextPage = snapshot.Pages[targetIndex + rangeLength];
+                        if (nextPage.IsBlankPage || nextPage.OriginalPageIndex != rangeEnd + 1)
+                            break;
+
+                        rangeEnd = nextPage.OriginalPageIndex;
+                        rangeLength++;
+                    }
+
+                    string pageRange = rangeStart == rangeEnd
+                        ? (rangeStart + 1).ToString(CultureInfo.InvariantCulture)
+                        : $"{rangeStart + 1}-{rangeEnd + 1}";
+                    if (!NativeMethods.FPDF_ImportPages(reorderedDocument, importSource, pageRange, targetIndex))
+                        return false;
+                    importedRanges++;
+
+                    targetIndex += rangeLength;
+                }
+                LogProfile($"reorder import ranges count={importedRanges}", profileWatch);
+
+                return SaveDocumentToFile(reorderedDocument, outputPath);
+            }
+            finally
+            {
+                if (ocrFont != IntPtr.Zero)
+                    NativeMethods.FPDFFont_Close(ocrFont);
+                if (reorderedDocument != IntPtr.Zero)
+                    NativeMethods.FPDF_CloseDocument(reorderedDocument);
+                if (modifiedSource != IntPtr.Zero)
+                    NativeMethods.FPDF_CloseDocument(modifiedSource);
+                if (File.Exists(tempPath))
+                {
+                    try { File.Delete(tempPath); } catch { }
+                }
+            }
+        }
+
+        private static bool SaveDocumentToFile(IntPtr document, string outputPath)
+        {
+            var profileWatch = Stopwatch.StartNew();
+            using var stream = new FileStream(outputPath, FileMode.Create, FileAccess.Write, FileShare.None);
+            var writer = new NativeFileWriter(stream);
+            bool saved = NativeMethods.FPDF_SaveAsCopy(document, ref writer.FileWrite, 0);
+            LogToFile($"[SAVE_PROFILE] SaveAsCopy elapsed={profileWatch.ElapsedMilliseconds}ms output='{outputPath}'");
+            return saved;
         }
 
         private static void DeleteRemovedPages(IntPtr document, DocumentSnapshot snapshot)
@@ -288,27 +419,32 @@ namespace MinsPDFViewer
                 if (!pageSnapshot.IsBlankPage)
                     continue;
 
-                double width = pageSnapshot.PdfWidth > 0 ? pageSnapshot.PdfWidth : 595;
-                double height = pageSnapshot.PdfHeight > 0 ? pageSnapshot.PdfHeight : 842;
-                IntPtr page = NativeMethods.FPDFPage_New(document, targetIndex, width, height);
-                if (page == IntPtr.Zero)
-                    continue;
+                InsertBlankPageAt(document, targetIndex, pageSnapshot, ref ocrFont);
+            }
+        }
 
-                try
-                {
-                    if (pageSnapshot.Rotation != 0)
-                        NativeMethods.FPDFPage_SetRotation(page, pageSnapshot.Rotation / 90);
+        private static void InsertBlankPageAt(IntPtr document, int targetIndex, PageSnapshot pageSnapshot, ref IntPtr ocrFont)
+        {
+            double width = pageSnapshot.PdfWidth > 0 ? pageSnapshot.PdfWidth : 595;
+            double height = pageSnapshot.PdfHeight > 0 ? pageSnapshot.PdfHeight : 842;
+            IntPtr page = NativeMethods.FPDFPage_New(document, targetIndex, width, height);
+            if (page == IntPtr.Zero)
+                return;
 
-                    foreach (var annotation in pageSnapshot.Annotations)
-                        AddPersistentObject(document, page, pageSnapshot, annotation);
+            try
+            {
+                if (pageSnapshot.Rotation != 0)
+                    NativeMethods.FPDFPage_SetRotation(page, pageSnapshot.Rotation / 90);
 
-                    AddOcrTextLayer(document, page, pageSnapshot, ref ocrFont);
-                    NativeMethods.FPDFPage_GenerateContent(page);
-                }
-                finally
-                {
-                    NativeMethods.FPDF_ClosePage(page);
-                }
+                foreach (var annotation in pageSnapshot.Annotations)
+                    AddPersistentObject(document, page, pageSnapshot, annotation);
+
+                AddOcrTextLayer(document, page, pageSnapshot, ref ocrFont);
+                NativeMethods.FPDFPage_GenerateContent(page);
+            }
+            finally
+            {
+                NativeMethods.FPDF_ClosePage(page);
             }
         }
 
@@ -972,10 +1108,15 @@ namespace MinsPDFViewer
         {
             try
             {
-                string logPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "debug.log");
-                File.AppendAllText(logPath, $"[{DateTime.Now:HH:mm:ss.fff}] [PdfiumEditService] {message}{Environment.NewLine}");
+                DebugLog.Append("PdfiumEditService", message);
             }
             catch { }
+        }
+
+        private static void LogProfile(string step, Stopwatch watch)
+        {
+            LogToFile($"[SAVE_PROFILE] {step} elapsed={watch.ElapsedMilliseconds}ms");
+            watch.Restart();
         }
 
         private static NativeMethods.FS_RECTF ToPdfRect(PageSnapshot page, AnnotationSnapshot annotation)
@@ -1217,6 +1358,16 @@ namespace MinsPDFViewer
 
             [DllImport("pdfium.dll", CallingConvention = CallingConvention.Cdecl)]
             public static extern void FPDF_CloseDocument(IntPtr document);
+
+            [DllImport("pdfium.dll", CallingConvention = CallingConvention.Cdecl)]
+            public static extern IntPtr FPDF_CreateNewDocument();
+
+            [DllImport("pdfium.dll", CallingConvention = CallingConvention.Cdecl)]
+            public static extern bool FPDF_ImportPages(
+                IntPtr destDocument,
+                IntPtr srcDocument,
+                [MarshalAs(UnmanagedType.LPStr)] string pageRange,
+                int index);
 
             [DllImport("pdfium.dll", CallingConvention = CallingConvention.Cdecl)]
             public static extern IntPtr FPDF_LoadPage(IntPtr document, int pageIndex);

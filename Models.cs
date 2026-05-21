@@ -180,12 +180,34 @@ namespace MinsPDFViewer
         {
             CancelRender();
             ImageSource = null;
+            ThumbnailSource = null;
             IsHighResRendered = false;
         }
+        private int _pageIndex;
         public int PageIndex
         {
-            get; set;
+            get => _pageIndex;
+            set
+            {
+                _pageIndex = value;
+                OnPropertyChanged(nameof(PageIndex));
+                OnPropertyChanged(nameof(PageNumber));
+            }
         }
+        public int PageNumber => PageIndex + 1;
+
+        private ImageSource? _thumbnailSource;
+        public ImageSource? ThumbnailSource
+        {
+            get => _thumbnailSource;
+            set
+            {
+                _thumbnailSource = value;
+                OnPropertyChanged(nameof(ThumbnailSource));
+                OnPropertyChanged(nameof(HasThumbnail));
+            }
+        }
+        public bool HasThumbnail => ThumbnailSource != null;
 
         private double _width; public double Width
         {

@@ -230,7 +230,13 @@
                                 <Button Content="🔖 책갈피"
                                                 Click="BtnToggleSidebar_Click"
                                                 Margin="0,0,5,0"/>
-                                <Separator/>
+                        </ToolBar>
+
+                        <ToolBar>
+                                <TextBlock Text="모드"
+                                                VerticalAlignment="Center"
+                                                Foreground="#666"
+                                                Margin="4,0,6,0"/>
                                 <RadioButton Name="RbReadMode"
                                                 GroupName="ViewMode"
                                                 Content="읽기"
@@ -242,7 +248,13 @@
                                                 Content="편집"
                                                 Checked="Mode_Checked"
                                                 Margin="5,0"/>
-                                <Separator/>
+                        </ToolBar>
+
+                        <ToolBar Name="ViewToolsToolbar">
+                                <TextBlock Text="보기"
+                                                VerticalAlignment="Center"
+                                                Foreground="#666"
+                                                Margin="4,0,6,0"/>
                                 <RadioButton Name="RbCursor"
                                                 GroupName="Tools"
                                                 Content="👆 선택"
@@ -254,12 +266,55 @@
                                                 Content="🖍 형광펜"
                                                 Checked="Tool_Checked"
                                                 Margin="5,0"/>
+                        </ToolBar>
+
+                        <ToolBar Name="EditToolsToolbar"
+                                        Visibility="Collapsed">
+                                <TextBlock Text="편집"
+                                                VerticalAlignment="Center"
+                                                Foreground="#666"
+                                                Margin="4,0,6,0"/>
                                 <RadioButton Name="RbText"
                                                 GroupName="Tools"
                                                 Content="📝 텍스트"
                                                 Checked="Tool_Checked"
                                                 Margin="5,0"/>
                                 <Separator/>
+                                <Button Name="BtnSign"
+                                                Content="🔐 전자서명"
+                                                Click="BtnSign_Click"
+                                                FontWeight="Bold"
+                                                Margin="0,0,5,0"/>
+                                <Button Name="BtnOCR"
+                                                Content="👁 OCR"
+                                                Click="BtnOCR_Click"
+                                                FontWeight="Bold"
+                                                Foreground="Blue"/>
+                                <Separator/>
+                                <Button Content="📄+"
+                                                ToolTip="빈 페이지 추가"
+                                                Click="BtnAddBlankPage_Click"/>
+                                <Button Content="🗑 페이지"
+                                                ToolTip="현재 페이지 삭제"
+                                                Click="BtnDeletePage_Click"/>
+                                <Button Content="↺"
+                                                ToolTip="왼쪽 회전"
+                                                Click="BtnRotateLeft_Click"/>
+                                <Button Content="↻"
+                                                ToolTip="오른쪽 회전"
+                                                Click="BtnRotateRight_Click"/>
+                                <Button Name="BtnDeleteAnnotation"
+                                                Content="🗑 주석"
+                                                ToolTip="선택한 주석 삭제"
+                                                Click="BtnDeleteAnnotation_Click"
+                                                IsEnabled="False"/>
+                        </ToolBar>
+
+                        <ToolBar>
+                                <TextBlock Text="화면"
+                                                VerticalAlignment="Center"
+                                                Foreground="#666"
+                                                Margin="4,0,6,0"/>
                                 <Button Name="BtnZoomOut"
                                                 Content="➖"
                                                 Click="BtnZoomOut_Click"/>
@@ -272,37 +327,34 @@
                                 <Button Name="BtnFitHeight"
                                                 Content="↕ 높이 맞춤"
                                                 Click="BtnFitHeight_Click"/>
-                                <Separator/>
-                                <Button Content="📄+"
-                                                ToolTip="빈 페이지 추가"
-                                                Click="BtnAddBlankPage_Click"/>
-                                <Button Content="🗑️"
-                                                ToolTip="페이지 삭제"
-                                                Click="BtnDeletePage_Click"/>
-                                <Button Content="↺"
-                                                ToolTip="왼쪽 회전"
-                                                Click="BtnRotateLeft_Click"/>
-                                <Button Content="↻"
-                                                ToolTip="오른쪽 회전"
-                                                Click="BtnRotateRight_Click"/>
-                                <Separator/>
+                        </ToolBar>
 
-                                <Button Name="BtnOCR"
-                                                Content="👁 OCR 분석"
-                                                Click="BtnOCR_Click"
-                                                FontWeight="Bold"
-                                                Foreground="Blue"/>
-                                <Separator/>
-                                <Button Name="BtnSign"
-                                                Content="🔐 전자서명"
-                                                Click="BtnSign_Click"
-                                                FontWeight="Bold"
-                                                Margin="0,0,5,0"/>
-                                <Separator/>
+                        <ToolBar>
+                                <TextBlock Text="검색"
+                                                VerticalAlignment="Center"
+                                                Foreground="#666"
+                                                Margin="4,0,6,0"/>
+                                <TextBox Name="TxtSearch"
+                                                Width="150"
+                                                PreviewKeyDown="TxtSearch_PreviewKeyDown"
+                                                ToolTip="Enter: 다음, Ctrl+Enter: 이전"/>
+                                <Button Name="BtnSearch"
+                                                Content="🔍"
+                                                Click="BtnSearch_Click"/>
+                                <Button Name="BtnPrevSearch"
+                                                Content="◀"
+                                                Click="BtnPrevSearch_Click"/>
+                                <Button Name="BtnNextSearch"
+                                                Content="▶"
+                                                Click="BtnNextSearch_Click"/>
                         </ToolBar>
 
                         <ToolBar Name="TextStyleToolbar"
                                         Visibility="Collapsed">
+                                <TextBlock Text="텍스트"
+                                                VerticalAlignment="Center"
+                                                Foreground="#666"
+                                                Margin="4,0,6,0"/>
                                 <ComboBox Name="CbFont"
                                                 Width="100"
                                                 SelectionChanged="StyleChanged"/>
@@ -332,53 +384,35 @@
                                                         Tag="Orange"
                                                         Foreground="Orange"/>
                                 </ComboBox>
-                                <Button Name="BtnDeleteAnnotation"
-                                                Content="🗑 삭제"
-                                                Click="BtnDeleteAnnotation_Click"/>
-                        </ToolBar>
-
-                        <ToolBar>
-                                <TextBox Name="TxtSearch"
-                                                Width="150"
-                                                PreviewKeyDown="TxtSearch_PreviewKeyDown"
-                                                ToolTip="Enter: 다음, Ctrl+Enter: 이전"/>
-                                <Button Name="BtnSearch"
-                                                Content="🔍"
-                                                Click="BtnSearch_Click"/>
-                                <Button Name="BtnPrevSearch"
-                                                Content="◀"
-                                                Click="BtnPrevSearch_Click"/>
-                                <Button Name="BtnNextSearch"
-                                                Content="▶"
-                                                Click="BtnNextSearch_Click"/>
                         </ToolBar>
                 </ToolBarTray>
 
                 <Grid Grid.Row="1">
                         <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="Auto"
-                                                MinWidth="0"/>
+                                <ColumnDefinition x:Name="SidebarColumn"
+                                                Width="0"
+                                                MinWidth="0"
+                                                MaxWidth="520"/>
                                 <ColumnDefinition Width="Auto"/>
                                 <ColumnDefinition Width="*"/>
                         </Grid.ColumnDefinitions>
 
                         <Border Name="SidebarBorder"
                                         Grid.Column="0"
-                                        Width="250"
                                         BorderBrush="Gray"
                                         BorderThickness="0,0,1,0"
                                         Background="#F5F5F5"
-                                        Visibility="Collapsed">
+                                        Visibility="Collapsed"
+                                        HorizontalAlignment="Stretch">
                                 <Grid>
                                         <Grid.RowDefinitions>
-                                                <RowDefinition Height="Auto"/>
                                                 <RowDefinition Height="Auto"/>
                                                 <RowDefinition Height="*"/>
                                         </Grid.RowDefinitions>
 
                                         <DockPanel Grid.Row="0"
                                                         Margin="5">
-                                                <TextBlock Text="🔖 책갈피"
+                                                <TextBlock Text="패널"
                                                                 FontWeight="Bold"
                                                                 VerticalAlignment="Center"
                                                                 DockPanel.Dock="Left"/>
@@ -391,115 +425,191 @@
                                                                 Click="BtnToggleSidebar_Click"/>
                                         </DockPanel>
 
-                                        <ToolBarTray Grid.Row="1"
-                                                        Background="Transparent">
-                                                <ToolBar Background="Transparent"
-                                                                OverflowMode="Never">
-                                                        <Button Content="➕"
-                                                                        ToolTip="현재 페이지 추가"
-                                                                        Click="BtnAddBookmark_Click"/>
-                                                        <Button Content="➖"
-                                                                        ToolTip="삭제"
-                                                                        Click="BtnDeleteBookmark_Click"/>
-                                                        <Separator/>
-                                                        <Button Content="▲"
-                                                                        ToolTip="위로"
-                                                                        Click="BtnMoveBookmarkUp_Click"/>
-                                                        <Button Content="▼"
-                                                                        ToolTip="아래로"
-                                                                        Click="BtnMoveBookmarkDown_Click"/>
-                                                </ToolBar>
-                                        </ToolBarTray>
-
-                                        <TreeView Grid.Row="2"
-                                                        Name="BookmarkTree"
-                                                        ItemsSource="{Binding SelectedDocument.Bookmarks}"
-                                                        BorderThickness="0"
+                                        <TabControl Grid.Row="1"
                                                         Background="Transparent"
-                                                        AllowDrop="True"
-                                                        PreviewMouseLeftButtonDown="BookmarkTree_PreviewMouseLeftButtonDown"
-                                                        PreviewMouseMove="BookmarkTree_PreviewMouseMove"
-                                                        Drop="BookmarkTree_Drop"
-                                                        DragOver="BookmarkTree_DragOver"
-                                                        SelectedItemChanged="BookmarkTree_SelectedItemChanged"
-                                                        KeyDown="BookmarkTree_KeyDown">
-                                                <TreeView.ItemTemplate>
-                                                        <HierarchicalDataTemplate ItemsSource="{Binding Children}">
-                                                                <StackPanel Orientation="Horizontal"
+                                                        BorderThickness="0">
+                                                <TabItem Header="페이지">
+                                                        <ListBox Name="PageThumbnailList"
+                                                                        ItemsSource="{Binding SelectedDocument.Pages}"
+                                                                        BorderThickness="0"
+                                                                        Background="Transparent"
+                                                                        AllowDrop="True"
+                                                                        SelectionMode="Extended"
+                                                                        HorizontalContentAlignment="Stretch"
+                                                                        ScrollViewer.CanContentScroll="True"
+                                                                        ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+                                                                        ScrollViewer.ScrollChanged="PageThumbnailList_ScrollChanged"
+                                                                        PreviewMouseWheel="DocumentZoom_PreviewMouseWheel"
+                                                                        VirtualizingPanel.IsVirtualizing="True"
+                                                                        VirtualizingPanel.VirtualizationMode="Recycling"
+                                                                        SelectionChanged="PageThumbnailList_SelectionChanged"
+                                                                        PreviewMouseLeftButtonDown="PageThumbnailList_PreviewMouseLeftButtonDown"
+                                                                        PreviewMouseMove="PageThumbnailList_PreviewMouseMove"
+                                                                        PreviewMouseLeftButtonUp="PageThumbnailList_PreviewMouseLeftButtonUp"
+                                                                        DragOver="PageThumbnailList_DragOver"
+                                                                        Drop="PageThumbnailList_Drop">
+                                                                <ListBox.ItemContainerStyle>
+                                                                        <Style TargetType="ListBoxItem">
+                                                                                <Setter Property="HorizontalContentAlignment"
+                                                                                                Value="Stretch"/>
+                                                                                <Setter Property="Margin"
+                                                                                                Value="0,2"/>
+                                                                                <Setter Property="AllowDrop"
+                                                                                                Value="True"/>
+                                                                                <EventSetter Event="PreviewMouseLeftButtonDown"
+                                                                                                Handler="PageThumbnailItem_PreviewMouseLeftButtonDown"/>
+                                                                                <EventSetter Event="PreviewMouseMove"
+                                                                                                Handler="PageThumbnailItem_PreviewMouseMove"/>
+                                                                                <EventSetter Event="PreviewMouseLeftButtonUp"
+                                                                                                Handler="PageThumbnailItem_PreviewMouseLeftButtonUp"/>
+                                                                        </Style>
+                                                                </ListBox.ItemContainerStyle>
+                                                                <ListBox.ItemTemplate>
+                                                                        <DataTemplate>
+                                                                                <StackPanel Margin="8,6"
+                                                                                                HorizontalAlignment="Center">
+                                                                                        <Border Width="{Binding DataContext.ThumbnailFrameWidth, RelativeSource={RelativeSource AncestorType=Window}}"
+                                                                                                        MinHeight="80"
+                                                                                                        Background="White"
+                                                                                                        BorderBrush="#C8C8C8"
+                                                                                                        BorderThickness="1"
+                                                                                                        Padding="4">
+                                                                                                <Image Source="{Binding ThumbnailSource}"
+                                                                                                                Width="{Binding DataContext.ThumbnailImageWidth, RelativeSource={RelativeSource AncestorType=Window}}"
+                                                                                                                Stretch="Uniform"
+                                                                                                                SnapsToDevicePixels="True"/>
+                                                                                        </Border>
+                                                                                        <TextBlock Text="{Binding PageNumber, StringFormat='페이지 {0}'}"
+                                                                                                        Margin="0,4,0,0"
+                                                                                                        HorizontalAlignment="Center"
+                                                                                                        FontSize="11"
+                                                                                                        Foreground="#555"/>
+                                                                                </StackPanel>
+                                                                        </DataTemplate>
+                                                                </ListBox.ItemTemplate>
+                                                        </ListBox>
+                                                </TabItem>
+                                                <TabItem Header="책갈피">
+                                                        <Grid>
+                                                                <Grid.RowDefinitions>
+                                                                        <RowDefinition Height="Auto"/>
+                                                                        <RowDefinition Height="*"/>
+                                                                </Grid.RowDefinitions>
+
+                                                                <ToolBarTray Grid.Row="0"
                                                                                 Background="Transparent">
-                                                                        <Grid Margin="0,0,5,0">
-                                                                                <TextBlock Text="{Binding Title}"
-                                                                                                VerticalAlignment="Center">
-                                                                                        <TextBlock.Style>
-                                                                                                <Style TargetType="TextBlock">
-                                                                                                        <Setter Property="Visibility"
-                                                                                                                        Value="Visible"/>
-                                                                                                        <Style.Triggers>
-                                                                                                                <DataTrigger Binding="{Binding IsEditing}"
-                                                                                                                                Value="True">
-                                                                                                                        <Setter Property="Visibility"
-                                                                                                                                        Value="Collapsed"/>
-                                                                                                                </DataTrigger>
-                                                                                                        </Style.Triggers>
-                                                                                                </Style>
-                                                                                        </TextBlock.Style>
-                                                                                </TextBlock>
-                                                                                <TextBox Text="{Binding Title, UpdateSourceTrigger=PropertyChanged}"
-                                                                                                VerticalAlignment="Center"
-                                                                                                KeyDown="BookmarkRename_KeyDown"
-                                                                                                LostFocus="BookmarkRename_LostFocus"
-                                                                                                IsVisibleChanged="BookmarkRename_IsVisibleChanged">
-                                                                                        <TextBox.Style>
-                                                                                                <Style TargetType="TextBox">
-                                                                                                        <Setter Property="Visibility"
-                                                                                                                        Value="Collapsed"/>
-                                                                                                        <Style.Triggers>
-                                                                                                                <DataTrigger Binding="{Binding IsEditing}"
-                                                                                                                                Value="True">
-                                                                                                                        <Setter Property="Visibility"
-                                                                                                                                        Value="Visible"/>
-                                                                                                                </DataTrigger>
-                                                                                                        </Style.Triggers>
-                                                                                                </Style>
-                                                                                        </TextBox.Style>
-                                                                                </TextBox>
-                                                                        </Grid>
-                                                                        <TextBlock Text="{Binding PageNumber, StringFormat=' (p.{0})'}"
-                                                                                        Foreground="Gray"
-                                                                                        FontSize="10"
-                                                                                        VerticalAlignment="Center"
-                                                                                        IsHitTestVisible="False"/>
-                                                                        <StackPanel.ContextMenu>
-                                                                                <ContextMenu>
-                                                                                        <MenuItem Header="이름 변경 (F2)"
-                                                                                                        Click="BtnRenameBookmark_Click"/>
-                                                                                        <MenuItem Header="현재 페이지로 위치 갱신"
-                                                                                                        Click="BtnUpdateBookmarkPage_Click"/>
-                                                                                        <Separator/>
-                                                                                        <MenuItem Header="삭제"
-                                                                                                        Click="BtnDeleteBookmark_Click"/>
-                                                                                </ContextMenu>
-                                                                        </StackPanel.ContextMenu>
-                                                                </StackPanel>
-                                                        </HierarchicalDataTemplate>
-                                                </TreeView.ItemTemplate>
-                                                <TreeView.ItemContainerStyle>
-                                                        <Style TargetType="TreeViewItem">
-                                                                <Setter Property="IsExpanded"
-                                                                                Value="{Binding IsExpanded, Mode=TwoWay}"/>
-                                                                <Setter Property="IsSelected"
-                                                                                Value="{Binding IsSelected, Mode=TwoWay}"/>
-                                                        </Style>
-                                                </TreeView.ItemContainerStyle>
-                                        </TreeView>
+                                                                        <ToolBar Background="Transparent"
+                                                                                        OverflowMode="Never">
+                                                                                <Button Content="➕"
+                                                                                                ToolTip="현재 페이지 추가"
+                                                                                                Click="BtnAddBookmark_Click"/>
+                                                                                <Button Content="➖"
+                                                                                                ToolTip="삭제"
+                                                                                                Click="BtnDeleteBookmark_Click"/>
+                                                                                <Separator/>
+                                                                                <Button Content="▲"
+                                                                                                ToolTip="위로"
+                                                                                                Click="BtnMoveBookmarkUp_Click"/>
+                                                                                <Button Content="▼"
+                                                                                                ToolTip="아래로"
+                                                                                                Click="BtnMoveBookmarkDown_Click"/>
+                                                                        </ToolBar>
+                                                                </ToolBarTray>
+
+                                                                <TreeView Grid.Row="1"
+                                                                                Name="BookmarkTree"
+                                                                                ItemsSource="{Binding SelectedDocument.Bookmarks}"
+                                                                                BorderThickness="0"
+                                                                                Background="Transparent"
+                                                                                AllowDrop="True"
+                                                                                PreviewMouseLeftButtonDown="BookmarkTree_PreviewMouseLeftButtonDown"
+                                                                                PreviewMouseMove="BookmarkTree_PreviewMouseMove"
+                                                                                Drop="BookmarkTree_Drop"
+                                                                                DragOver="BookmarkTree_DragOver"
+                                                                                SelectedItemChanged="BookmarkTree_SelectedItemChanged"
+                                                                                KeyDown="BookmarkTree_KeyDown">
+                                                                        <TreeView.ItemTemplate>
+                                                                                <HierarchicalDataTemplate ItemsSource="{Binding Children}">
+                                                                                        <StackPanel Orientation="Horizontal"
+                                                                                                        Background="Transparent">
+                                                                                                <Grid Margin="0,0,5,0">
+                                                                                                        <TextBlock Text="{Binding Title}"
+                                                                                                                        VerticalAlignment="Center">
+                                                                                                                <TextBlock.Style>
+                                                                                                                        <Style TargetType="TextBlock">
+                                                                                                                                <Setter Property="Visibility"
+                                                                                                                                                Value="Visible"/>
+                                                                                                                                <Style.Triggers>
+                                                                                                                                        <DataTrigger Binding="{Binding IsEditing}"
+                                                                                                                                                        Value="True">
+                                                                                                                                                <Setter Property="Visibility"
+                                                                                                                                                                Value="Collapsed"/>
+                                                                                                                                        </DataTrigger>
+                                                                                                                                </Style.Triggers>
+                                                                                                                        </Style>
+                                                                                                                </TextBlock.Style>
+                                                                                                        </TextBlock>
+                                                                                                        <TextBox Text="{Binding Title, UpdateSourceTrigger=PropertyChanged}"
+                                                                                                                        VerticalAlignment="Center"
+                                                                                                                        KeyDown="BookmarkRename_KeyDown"
+                                                                                                                        LostFocus="BookmarkRename_LostFocus"
+                                                                                                                        IsVisibleChanged="BookmarkRename_IsVisibleChanged">
+                                                                                                                <TextBox.Style>
+                                                                                                                        <Style TargetType="TextBox">
+                                                                                                                                <Setter Property="Visibility"
+                                                                                                                                                Value="Collapsed"/>
+                                                                                                                                <Style.Triggers>
+                                                                                                                                        <DataTrigger Binding="{Binding IsEditing}"
+                                                                                                                                                        Value="True">
+                                                                                                                                                <Setter Property="Visibility"
+                                                                                                                                                                Value="Visible"/>
+                                                                                                                                        </DataTrigger>
+                                                                                                                                </Style.Triggers>
+                                                                                                                        </Style>
+                                                                                                                </TextBox.Style>
+                                                                                                        </TextBox>
+                                                                                                </Grid>
+                                                                                                <TextBlock Text="{Binding PageNumber, StringFormat=' (p.{0})'}"
+                                                                                                                Foreground="Gray"
+                                                                                                                FontSize="10"
+                                                                                                                VerticalAlignment="Center"
+                                                                                                                IsHitTestVisible="False"/>
+                                                                                                <StackPanel.ContextMenu>
+                                                                                                        <ContextMenu>
+                                                                                                                <MenuItem Header="이름 변경 (F2)"
+                                                                                                                                Click="BtnRenameBookmark_Click"/>
+                                                                                                                <MenuItem Header="현재 페이지로 위치 갱신"
+                                                                                                                                Click="BtnUpdateBookmarkPage_Click"/>
+                                                                                                                <Separator/>
+                                                                                                                <MenuItem Header="삭제"
+                                                                                                                                Click="BtnDeleteBookmark_Click"/>
+                                                                                                        </ContextMenu>
+                                                                                                </StackPanel.ContextMenu>
+                                                                                        </StackPanel>
+                                                                                </HierarchicalDataTemplate>
+                                                                        </TreeView.ItemTemplate>
+                                                                        <TreeView.ItemContainerStyle>
+                                                                                <Style TargetType="TreeViewItem">
+                                                                                        <Setter Property="IsExpanded"
+                                                                                                        Value="{Binding IsExpanded, Mode=TwoWay}"/>
+                                                                                        <Setter Property="IsSelected"
+                                                                                                        Value="{Binding IsSelected, Mode=TwoWay}"/>
+                                                                                </Style>
+                                                                        </TreeView.ItemContainerStyle>
+                                                                </TreeView>
+                                                        </Grid>
+                                                </TabItem>
+                                        </TabControl>
                                 </Grid>
                         </Border>
 
-                        <GridSplitter Grid.Column="1"
+                        <GridSplitter x:Name="SidebarSplitter"
+                                        Grid.Column="1"
                                         Width="5"
-                                        HorizontalAlignment="Center"
+                                        HorizontalAlignment="Stretch"
                                         Background="LightGray"
-                                        ResizeBehavior="PreviousAndNext"/>
+                                        ResizeBehavior="PreviousAndNext"
+                                        Visibility="Collapsed"/>
 
                         <TabControl Name="MainTabControl"
                                         Grid.Column="2"
@@ -536,6 +646,7 @@
                                                                 Unloaded="PdfListView_Unloaded"
                                                                 Background="LightGray"
                                                                 BorderThickness="0"
+                                                                PreviewMouseWheel="DocumentZoom_PreviewMouseWheel"
                                                                 PreviewMouseDown="ListView_PreviewMouseDown">
                                                                                 <ListView.ItemContainerStyle>
                                                                                         <Style TargetType="ListViewItem">

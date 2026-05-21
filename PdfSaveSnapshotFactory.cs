@@ -39,7 +39,7 @@ namespace MinsPDFViewer
 
                         if (ann.Type == AnnotationType.FreeText && LooksLikeMojibake(ann.TextContent))
                         {
-                            log?.Invoke($"Skipping mojibake FreeText annotation during save. Text='{ann.TextContent}', X={ann.X}, Y={ann.Y}");
+                            log?.Invoke($"Skipping mojibake FreeText annotation during save. Length={ann.TextContent?.Length ?? 0}, X={ann.X}, Y={ann.Y}");
                             continue;
                         }
 

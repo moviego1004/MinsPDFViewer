@@ -14,7 +14,7 @@
 !define APP_EXE "MinsPDFViewer.exe"
 
 ; 빌드 경로 (본인의 실제 경로로 확인!)
-!define BUILD_DIR "bin\Release\net8.0-windows10.0.19041.0\win-x64"
+!define BUILD_DIR "bin\Release\net8.0-windows10.0.19041.0\win-x64\publish"
 
 Name "${APP_NAME}"
 OutFile "MinsPDFViewer_Setup_v${APP_VERSION}.exe"
@@ -49,36 +49,32 @@ Section "Install"
 
     SetOutPath "$INSTDIR"
     
-    ; 1. 메인 실행 파일 복사
+    ; 1. 메인 실행 파일 및 .NET 실행 설정 복사
     File "${BUILD_DIR}\${APP_EXE}"
+    File "${BUILD_DIR}\*.dll"
+    File "${BUILD_DIR}\*.json"
     
-    ; 2. 필수 DLL 복사 (pdfium.dll 등)
+    ; 2. 필수 native DLL 복사
     ; PdfiumViewer는 x64 폴더 안에 있는 pdfium.dll을 로드합니다.
     SetOutPath "$INSTDIR\x64"
     File "${BUILD_DIR}\x64\pdfium.dll"
     SetOutPath "$INSTDIR"
 
-    ; [추가] 단일 파일이 아닐 경우, 나머지 DLL들도 모두 복사
-    File "${BUILD_DIR}\*.dll" 
-    ;File "${BUILD_DIR}\*.json" 
-    ;File "${BUILD_DIR}\*.config"
-    File "MinsPDFViewer_ICO_32x32.ico"
+    ; 3. 바로가기 아이콘 복사
+    File "MinsPDFViewer.ico"
 
-    
-    ; [수정] tessdata 복사 부분 삭제함 (Windows OCR 사용 시 불필요)
-
-    ; 3. 언인스톨러 생성
+    ; 4. 언인스톨러 생성
     WriteUninstaller "$INSTDIR\Uninstall.exe"
     
-    ; 4. 시작 메뉴 단축키
+    ; 5. 시작 메뉴 단축키
     CreateDirectory "$SMPROGRAMS\${APP_NAME}"
     CreateShortCut "$SMPROGRAMS\${APP_NAME}\${APP_NAME}.lnk" "$INSTDIR\${APP_EXE}" "$INSTDIR\MinsPDFViewer.ico"
     CreateShortCut "$SMPROGRAMS\${APP_NAME}\Uninstall.lnk" "$INSTDIR\Uninstall.exe"
     
-    ; 5. 바탕화면 단축키
+    ; 6. 바탕화면 단축키
     CreateShortCut "$DESKTOP\${APP_NAME}.lnk" "$INSTDIR\${APP_EXE}" "$INSTDIR\MinsPDFViewer.ico"
 
-    ; 6. 레지스트리 등록
+    ; 7. 레지스트리 등록
     WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\${APP_NAME}" "DisplayName" "${APP_NAME}"  
     WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\${APP_NAME}" "UninstallString" "$\"$INSTDIR\Uninstall.exe$\""
     WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\${APP_NAME}" "Publisher" "${APP_PUBLISHER}"
@@ -95,7 +91,9 @@ Section "Uninstall"
     Delete "$INSTDIR\${APP_EXE}"
     Delete "$INSTDIR\x64\pdfium.dll"
     RMDir "$INSTDIR\x64"
-    Delete "$INSTDIR\pdfium.dll"
+    Delete "$INSTDIR\*.dll"
+    Delete "$INSTDIR\*.json"
+    Delete "$INSTDIR\MinsPDFViewer.ico"
     Delete "$INSTDIR\Uninstall.exe"
     
     RMDir "$INSTDIR"

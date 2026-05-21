@@ -54,14 +54,13 @@ namespace MinsPDFViewer
 
         private void LogException(Exception? ex, string source)
         {
-            string logFile = "crash_dump.txt";
             string message = $"[{DateTime.Now}] [{source}]\n{ex?.ToString() ?? "Unknown Error"}\n---------------------------------\n";
 
             try
             {
-                File.AppendAllText(logFile, message);
+                DebugLog.AppendRaw("crash_dump.txt", message);
                 // 치명적인 에러일 경우 사용자에게 알림
-                // MessageBox.Show($"오류가 발생했습니다.\n로그 파일: {logFile}\n내용: {ex?.Message}", "오류 발생", MessageBoxButton.OK, MessageBoxImage.Error);
+                // MessageBox.Show($"오류가 발생했습니다.\n로그 파일: crash_dump.txt\n내용: {ex?.Message}", "오류 발생", MessageBoxButton.OK, MessageBoxImage.Error);
             }
             catch { }
         }
