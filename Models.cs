@@ -49,6 +49,10 @@ namespace MinsPDFViewer
         {
             get; set;
         }
+        public byte[]? SourceBytes
+        {
+            get; set;
+        }
 
         public volatile bool IsDisposed = false;
 
@@ -77,6 +81,7 @@ namespace MinsPDFViewer
                         FileStream?.Close();
                         FileStream?.Dispose();
                         FileStream = null;
+                        SourceBytes = null;
                     }
                     catch { }
                 }
@@ -115,6 +120,7 @@ namespace MinsPDFViewer
                             FileStream?.Close();
                             FileStream?.Dispose();
                             FileStream = null;
+                            SourceBytes = null;
                         }
                         catch { }
                     }
@@ -371,6 +377,11 @@ namespace MinsPDFViewer
                 _height = value;
                 OnPropertyChanged(nameof(Height));
             }
+        }
+
+        public bool IsUserSized
+        {
+            get; set;
         }
 
         private AnnotationType _type;

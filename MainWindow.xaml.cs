@@ -454,6 +454,8 @@ namespace MinsPDFViewer
                 if (Keyboard.FocusedElement is TextBox)
                 {
                     Keyboard.ClearFocus();
+                    e.Handled = true;
+                    return;
                 }
 
                 if (SelectedDocument == null) return;
@@ -587,6 +589,7 @@ namespace MinsPDFViewer
         private bool CheckSignatureFieldClick(PdfPageViewModel pageVM, Point clickPoint)
         {
             if (SelectedDocument == null || !File.Exists(SelectedDocument.FilePath)) return false;
+            if (!pageVM.Annotations.Any(a => a.Type == AnnotationType.SignatureField)) return false;
 
             try
             {
@@ -1009,16 +1012,6 @@ namespace MinsPDFViewer
          
                 if (!tb.IsKeyboardFocusWithin)
                     return;
-
-                var formattedText = new FormattedText(tb.Text, CultureInfo.CurrentCulture, FlowDirection.LeftToRight,
-                    new Typeface(new System.Windows.Media.FontFamily(ann.FontFamily), FontStyles.Normal, ann.IsBold ? FontWeights.Bold : FontWeights.Normal, FontStretches.Normal),
-                    ann.FontSize, Brushes.Black, VisualTreeHelper.GetDpi(this).PixelsPerDip);
-
-                double newWidth = Math.Min(900, Math.Max(100, formattedText.Width + 25));
-                double newHeight = Math.Min(600, Math.Max(50, formattedText.Height + 30));
-
-                if (Math.Abs(ann.Width - newWidth) > 2) ann.Width = newWidth;
-                if (Math.Abs(ann.Height - newHeight) > 2) ann.Height = newHeight;
             }
         }
 
@@ -1233,7 +1226,7 @@ namespace MinsPDFViewer
                 _historyService.SaveHistory();
                 LogSaveStep("SaveHistory");
                 
-                await ReloadPdfFromPathAsync(originalPath, currentPageIndex);
+                await ReloadPdfFromPathAsync(originalPath, currentPageIndex, docToSave.Zoom);
                 LogSaveStep("ReloadPdfFromPath");
 
                 var newSv = GetCurrentScrollViewer();
@@ -1306,15 +1299,35 @@ namespace MinsPDFViewer
                     Mouse.OverrideCursor = Cursors.Wait;
                     TxtStatus.Text = "다른 이름으로 저장 중...";
                     LogSaveStep("start");
-                    await _pdfService.SavePdf(docToSave, savePath);
-                    LogSaveStep("SavePdf target");
+                    if (savePath.Equals(docToSave.FilePath, StringComparison.OrdinalIgnoreCase))
+                    {
+                        string tempPath = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString() + ".pdf");
+                        try
+                        {
+                            await _pdfService.SavePdf(docToSave, tempPath);
+                            LogSaveStep("SavePdf temp");
+                            await CloseOpenDocumentsForPathAsync(savePath);
+                            LogSaveStep("CloseOpenDocuments");
+                            await Task.Run(() => File.Copy(tempPath, savePath, true));
+                            LogSaveStep("CopyTempToOriginal");
+                        }
+                        finally
+                        {
+                            if (File.Exists(tempPath)) try { File.Delete(tempPath); } catch { }
+                        }
+                    }
+                    else
+                    {
+                        await _pdfService.SavePdf(docToSave, savePath);
+                        LogSaveStep("SavePdf target");
+                    }
                     PdfService.ClearPageCacheForFile(savePath);
 
                     _historyService.SetLastPage(savePath, currentPageIndex);
                     _historyService.SaveHistory();
                     LogSaveStep("SaveHistory");
 
-                    await ReloadPdfFromPathAsync(savePath, currentPageIndex);
+                    await ReloadPdfFromPathAsync(savePath, currentPageIndex, docToSave.Zoom);
                     LogSaveStep("ReloadPdfFromPath");
 
                     var newSv = GetCurrentScrollViewer();
@@ -1444,6 +1457,7 @@ namespace MinsPDFViewer
                 double height = Math.Max(minHeight, ann.Height + e.VerticalChange);
                 if (Math.Abs(width - ann.Width) >= 0.5) ann.Width = width;
                 if (Math.Abs(height - ann.Height) >= 0.5) ann.Height = height;
+                ann.IsUserSized = true;
             }
         }
         private void UpdateToolbarFromAnnotation(PdfAnnotation ann)
@@ -1527,11 +1541,24 @@ namespace MinsPDFViewer
 
         private void Window_PreviewKeyDown(object sender, KeyEventArgs e)
         {
-            if (e.Key == Key.V && (Keyboard.Modifiers & ModifierKeys.Control) == ModifierKeys.Control && !(Keyboard.FocusedElement is TextBox)) { PasteClipboardImageToCurrentPage(); e.Handled = true; }
+            bool isTextBoxFocused = Keyboard.FocusedElement is TextBox;
+            if (isTextBoxFocused)
+            {
+                if (e.Key == Key.Escape && _selectedAnnotation != null)
+                {
+                    _selectedAnnotation.IsSelected = false;
+                    _selectedAnnotation = null;
+                    CheckToolbarVisibility();
+                    e.Handled = true;
+                }
+                return;
+            }
+
+            if (e.Key == Key.V && (Keyboard.Modifiers & ModifierKeys.Control) == ModifierKeys.Control) { PasteClipboardImageToCurrentPage(); e.Handled = true; }
             else if (e.Key == Key.F && (Keyboard.Modifiers & ModifierKeys.Control) == ModifierKeys.Control) { TxtSearch.Focus(); TxtSearch.SelectAll(); e.Handled = true; }
             else if (e.Key == Key.Delete) BtnDeleteAnnotation_Click(this, new RoutedEventArgs());
             else if (e.Key == Key.Escape && _selectedAnnotation != null) { _selectedAnnotation.IsSelected = false; _selectedAnnotation = null; CheckToolbarVisibility(); }
-            if (e.Key == Key.Space && !_isSpacePressed && _currentTool != "TEXT" && !(Keyboard.FocusedElement is TextBox)) { _isSpacePressed = true; Mouse.OverrideCursor = Cursors.Hand; e.Handled = true; }
+            if (e.Key == Key.Space && !_isSpacePressed && _currentTool != "TEXT") { _isSpacePressed = true; Mouse.OverrideCursor = Cursors.Hand; e.Handled = true; }
             else if (e.Key == Key.PageUp || e.Key == Key.PageDown) { var sv = GetScrollViewer(); if (sv != null) { if (e.Key == Key.PageDown) sv.PageDown(); else sv.PageUp(); e.Handled = true; } }
         }
 
@@ -2430,7 +2457,7 @@ namespace MinsPDFViewer
             return SelectedDocument.Pages.Count - 1;
         }
 
-        public async Task OpenPdfFromPath(string path)
+        public async Task OpenPdfFromPath(string path, double initialZoom = 1.0)
         {
             if (!File.Exists(path)) return;
             Log($"[DEBUG] OpenPdfFromPath: {path}");
@@ -2454,6 +2481,7 @@ namespace MinsPDFViewer
             LogOpenStep("LoadPdfAsync");
             if (doc != null) 
             { 
+                doc.Zoom = Math.Max(0.1, Math.Min(5.0, initialZoom));
                 // [Fix] Zoom changed event handler to update page sizes
                 doc.PropertyChanged += (s, e) =>
                 {
@@ -2462,6 +2490,24 @@ namespace MinsPDFViewer
                         // 1. Update dimensions for ALL pages (required for scrollbar)
                         foreach (var p in doc.Pages)
                         {
+                            double oldWidth = p.Width;
+                            double oldHeight = p.Height;
+                            double newWidth = p.PdfPageWidthPoint * doc.Zoom;
+                            double newHeight = p.PdfPageHeightPoint * doc.Zoom;
+                            double scaleX = oldWidth > 0 ? newWidth / oldWidth : 1.0;
+                            double scaleY = oldHeight > 0 ? newHeight / oldHeight : 1.0;
+
+                            if (Math.Abs(scaleX - 1.0) > 0.0001 || Math.Abs(scaleY - 1.0) > 0.0001)
+                            {
+                                foreach (var annotation in p.Annotations)
+                                {
+                                    annotation.X *= scaleX;
+                                    annotation.Y *= scaleY;
+                                    annotation.Width *= scaleX;
+                                    annotation.Height *= scaleY;
+                                }
+                            }
+
                             p.Width = p.PdfPageWidthPoint * doc.Zoom;
                             p.Height = p.PdfPageHeightPoint * doc.Zoom;
                             
@@ -2517,7 +2563,7 @@ namespace MinsPDFViewer
             }
         }
 
-        private async Task ReloadPdfFromPathAsync(string path, int pageIndex = 0)
+        private async Task ReloadPdfFromPathAsync(string path, int pageIndex = 0, double zoom = 1.0)
         {
             await CloseOpenDocumentsForPathAsync(path);
             PdfService.ClearPageCacheForFile(path);
@@ -2527,7 +2573,7 @@ namespace MinsPDFViewer
             MainTabControl.Items.Refresh();
             await Dispatcher.InvokeAsync(() => { }, System.Windows.Threading.DispatcherPriority.ContextIdle);
 
-            await OpenPdfFromPath(path);
+            await OpenPdfFromPath(path, zoom);
 
             await Dispatcher.InvokeAsync(() => { }, System.Windows.Threading.DispatcherPriority.Loaded);
             MainTabControl.Items.Refresh();

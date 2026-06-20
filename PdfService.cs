@@ -11,6 +11,7 @@ using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
+using System.Runtime.InteropServices;
 using PdfiumViewer;
 using DrawingBitmap = System.Drawing.Bitmap;
 using DrawingRectangle = System.Drawing.Rectangle;
@@ -377,6 +378,9 @@ namespace MinsPDFViewer
             public static extern IntPtr FPDF_LoadDocument([System.Runtime.InteropServices.MarshalAs(System.Runtime.InteropServices.UnmanagedType.LPStr)] string path, [System.Runtime.InteropServices.MarshalAs(System.Runtime.InteropServices.UnmanagedType.LPStr)] string? password);
 
             [System.Runtime.InteropServices.DllImport("pdfium.dll", CallingConvention = System.Runtime.InteropServices.CallingConvention.Cdecl)]
+            public static extern IntPtr FPDF_LoadMemDocument(IntPtr data_buf, int size, [System.Runtime.InteropServices.MarshalAs(System.Runtime.InteropServices.UnmanagedType.LPStr)] string? password);
+
+            [System.Runtime.InteropServices.DllImport("pdfium.dll", CallingConvention = System.Runtime.InteropServices.CallingConvention.Cdecl)]
             public static extern void FPDF_CloseDocument(IntPtr document);
 
             [System.Runtime.InteropServices.DllImport("pdfium.dll", CallingConvention = System.Runtime.InteropServices.CallingConvention.Cdecl)]
@@ -624,15 +628,29 @@ namespace MinsPDFViewer
                     Log($"LoadPdfAsync: {filePath}, Bytes={fileInfo.Length}");
                     LogOpenProfile("stat file");
 
+                    byte[] pdfBytes = File.ReadAllBytes(filePath);
+                    LogOpenProfile("read file bytes");
+
+                    var pdfStream = new MemoryStream(pdfBytes);
                     IPdfDocument? pdfDoc = null;
-                    lock (PdfiumLock) { pdfDoc = PdfiumViewer.PdfDocument.Load(filePath); }
-                    LogOpenProfile("PdfDocument.Load file");
+                    try
+                    {
+                        lock (PdfiumLock) { pdfDoc = PdfiumViewer.PdfDocument.Load(pdfStream); }
+                    }
+                    catch
+                    {
+                        pdfStream.Dispose();
+                        throw;
+                    }
+                    LogOpenProfile("PdfDocument.Load stream");
 
                     var model = new PdfDocumentModel
                     {
                         FilePath = filePath,
                         FileName = Path.GetFileName(filePath),
-                        PdfDocument = pdfDoc
+                        PdfDocument = pdfDoc,
+                        FileStream = pdfStream,
+                        SourceBytes = pdfBytes
                     };
                     LogOpenProfile("create model");
                     return model;
@@ -895,13 +913,29 @@ namespace MinsPDFViewer
                 }
                 try
                 {
-                    string path = pageVM.OriginalFilePath ?? model.FilePath;
-                    if (!File.Exists(path)) return;
-
                     var extracted = new List<PdfAnnotation>();
+                    byte[]? sourceBytes = model.SourceBytes;
+                    GCHandle sourceHandle = default;
+                    IntPtr doc = IntPtr.Zero;
 
-                    IntPtr doc = NativeMethods.FPDF_LoadDocument(path, null);
-                    if (doc == IntPtr.Zero) return;
+                    if (sourceBytes != null && sourceBytes.Length > 0)
+                    {
+                        sourceHandle = GCHandle.Alloc(sourceBytes, GCHandleType.Pinned);
+                        doc = NativeMethods.FPDF_LoadMemDocument(sourceHandle.AddrOfPinnedObject(), sourceBytes.Length, null);
+                    }
+                    else
+                    {
+                        string path = pageVM.OriginalFilePath ?? model.FilePath;
+                        if (!File.Exists(path)) return;
+                        doc = NativeMethods.FPDF_LoadDocument(path, null);
+                    }
+
+                    if (doc == IntPtr.Zero)
+                    {
+                        if (sourceHandle.IsAllocated)
+                            sourceHandle.Free();
+                        return;
+                    }
 
                     try
                     {
@@ -1076,6 +1110,8 @@ namespace MinsPDFViewer
                     finally
                     {
                         NativeMethods.FPDF_CloseDocument(doc);
+                        if (sourceHandle.IsAllocated)
+                            sourceHandle.Free();
                     }
 
                     if (extracted.Count > 0)

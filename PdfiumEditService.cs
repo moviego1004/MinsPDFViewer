@@ -28,6 +28,7 @@ namespace MinsPDFViewer
         private const int FPDF_ANNOT_WIDGET = 12;
         private const int FPDF_PAGEOBJ_IMAGE = 3;
         private const int FPDFANNOT_COLORTYPE_Color = 0;
+        private const int FPDFANNOT_COLORTYPE_InteriorColor = 1;
         internal const string FreeTextMetadataPrefix = "MINS_FREETEXT_V1:";
         internal const string FreeTextMetadataV2Prefix = "MINS_FREETEXT_V2:";
         internal const string ImageStampMetadataPrefix = "MINS_IMAGESTAMP_V1:";
@@ -208,6 +209,7 @@ namespace MinsPDFViewer
                     return false;
 
                 IntPtr ocrFont = IntPtr.Zero;
+                var textFonts = new Dictionary<string, IntPtr>(StringComparer.OrdinalIgnoreCase);
                 try
                 {
                     bool hasReorderedPages = HasReorderedSourcePages(snapshot);
@@ -242,7 +244,7 @@ namespace MinsPDFViewer
 
                                 foreach (var annotation in pageSnapshot.Annotations)
                                 {
-                                    AddPersistentObject(document, page, pageSnapshot, annotation);
+                                    AddPersistentObject(document, page, pageSnapshot, annotation, textFonts);
                                 }
 
                                 AddOcrTextLayer(document, page, pageSnapshot, ref ocrFont);
@@ -261,7 +263,7 @@ namespace MinsPDFViewer
 
                     DeleteRemovedPages(document, snapshot);
                     LogProfile("delete removed pages", profileWatch);
-                    InsertBlankPages(document, snapshot, ref ocrFont);
+                    InsertBlankPages(document, snapshot, ref ocrFont, textFonts);
                     LogProfile("insert blank pages", profileWatch);
 
                     return SaveDocumentToFile(document, outputPath);
@@ -270,6 +272,8 @@ namespace MinsPDFViewer
                 {
                     if (ocrFont != IntPtr.Zero)
                         NativeMethods.FPDFFont_Close(ocrFont);
+                    foreach (var font in textFonts.Values)
+                        NativeMethods.FPDFFont_Close(font);
 
                     NativeMethods.FPDF_CloseDocument(document);
                 }
@@ -312,6 +316,7 @@ namespace MinsPDFViewer
             IntPtr modifiedSource = IntPtr.Zero;
             IntPtr reorderedDocument = IntPtr.Zero;
             IntPtr ocrFont = IntPtr.Zero;
+            var textFonts = new Dictionary<string, IntPtr>(StringComparer.OrdinalIgnoreCase);
 
             try
             {
@@ -342,7 +347,7 @@ namespace MinsPDFViewer
                     var pageSnapshot = snapshot.Pages[targetIndex];
                     if (pageSnapshot.IsBlankPage)
                     {
-                        InsertBlankPageAt(reorderedDocument, targetIndex, pageSnapshot, ref ocrFont);
+                        InsertBlankPageAt(reorderedDocument, targetIndex, pageSnapshot, ref ocrFont, textFonts);
                         targetIndex++;
                         continue;
                     }
@@ -377,6 +382,8 @@ namespace MinsPDFViewer
             {
                 if (ocrFont != IntPtr.Zero)
                     NativeMethods.FPDFFont_Close(ocrFont);
+                foreach (var font in textFonts.Values)
+                    NativeMethods.FPDFFont_Close(font);
                 if (reorderedDocument != IntPtr.Zero)
                     NativeMethods.FPDF_CloseDocument(reorderedDocument);
                 if (modifiedSource != IntPtr.Zero)
@@ -395,7 +402,47 @@ namespace MinsPDFViewer
             var writer = new NativeFileWriter(stream);
             bool saved = NativeMethods.FPDF_SaveAsCopy(document, ref writer.FileWrite, 0);
             LogToFile($"[SAVE_PROFILE] SaveAsCopy elapsed={profileWatch.ElapsedMilliseconds}ms output='{outputPath}'");
-            return saved;
+            stream.Flush(true);
+
+            if (saved)
+                return true;
+
+            bool hasCompletePdf = IsCompletePdfFile(outputPath);
+            LogToFile($"[SAVE_PROFILE] SaveAsCopy returned false. completePdf={hasCompletePdf} output='{outputPath}'");
+            return hasCompletePdf;
+        }
+
+        private static bool IsCompletePdfFile(string path)
+        {
+            try
+            {
+                var fileInfo = new FileInfo(path);
+                if (!fileInfo.Exists || fileInfo.Length < 16)
+                    return false;
+
+                using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+                Span<byte> header = stackalloc byte[5];
+                if (stream.Read(header) != header.Length ||
+                    header[0] != (byte)'%' ||
+                    header[1] != (byte)'P' ||
+                    header[2] != (byte)'D' ||
+                    header[3] != (byte)'F' ||
+                    header[4] != (byte)'-')
+                {
+                    return false;
+                }
+
+                int tailLength = (int)Math.Min(8192L, stream.Length);
+                byte[] tailBuffer = new byte[tailLength];
+                stream.Seek(-tailLength, SeekOrigin.End);
+                int read = stream.Read(tailBuffer, 0, tailBuffer.Length);
+                string tail = Encoding.ASCII.GetString(tailBuffer, 0, read);
+                return tail.Contains("%%EOF", StringComparison.Ordinal);
+            }
+            catch
+            {
+                return false;
+            }
         }
 
         private static void DeleteRemovedPages(IntPtr document, DocumentSnapshot snapshot)
@@ -411,7 +458,7 @@ namespace MinsPDFViewer
             }
         }
 
-        private static void InsertBlankPages(IntPtr document, DocumentSnapshot snapshot, ref IntPtr ocrFont)
+        private static void InsertBlankPages(IntPtr document, DocumentSnapshot snapshot, ref IntPtr ocrFont, Dictionary<string, IntPtr> textFonts)
         {
             for (int targetIndex = 0; targetIndex < snapshot.Pages.Count; targetIndex++)
             {
@@ -419,11 +466,11 @@ namespace MinsPDFViewer
                 if (!pageSnapshot.IsBlankPage)
                     continue;
 
-                InsertBlankPageAt(document, targetIndex, pageSnapshot, ref ocrFont);
+                InsertBlankPageAt(document, targetIndex, pageSnapshot, ref ocrFont, textFonts);
             }
         }
 
-        private static void InsertBlankPageAt(IntPtr document, int targetIndex, PageSnapshot pageSnapshot, ref IntPtr ocrFont)
+        private static void InsertBlankPageAt(IntPtr document, int targetIndex, PageSnapshot pageSnapshot, ref IntPtr ocrFont, Dictionary<string, IntPtr> textFonts)
         {
             double width = pageSnapshot.PdfWidth > 0 ? pageSnapshot.PdfWidth : 595;
             double height = pageSnapshot.PdfHeight > 0 ? pageSnapshot.PdfHeight : 842;
@@ -437,7 +484,7 @@ namespace MinsPDFViewer
                     NativeMethods.FPDFPage_SetRotation(page, pageSnapshot.Rotation / 90);
 
                 foreach (var annotation in pageSnapshot.Annotations)
-                    AddPersistentObject(document, page, pageSnapshot, annotation);
+                    AddPersistentObject(document, page, pageSnapshot, annotation, textFonts);
 
                 AddOcrTextLayer(document, page, pageSnapshot, ref ocrFont);
                 NativeMethods.FPDFPage_GenerateContent(page);
@@ -476,7 +523,7 @@ namespace MinsPDFViewer
             }
         }
 
-        private static void AddPersistentObject(IntPtr document, IntPtr page, PageSnapshot pageSnapshot, AnnotationSnapshot annotation)
+        private static void AddPersistentObject(IntPtr document, IntPtr page, PageSnapshot pageSnapshot, AnnotationSnapshot annotation, Dictionary<string, IntPtr> textFonts)
         {
             if (annotation.Type == AnnotationType.ImageStamp)
             {
@@ -484,10 +531,10 @@ namespace MinsPDFViewer
                 return;
             }
 
-            AddAnnotation(document, page, pageSnapshot, annotation);
+            AddAnnotation(document, page, pageSnapshot, annotation, textFonts);
         }
 
-        private static void AddAnnotation(IntPtr document, IntPtr page, PageSnapshot pageSnapshot, AnnotationSnapshot annotation)
+        private static void AddAnnotation(IntPtr document, IntPtr page, PageSnapshot pageSnapshot, AnnotationSnapshot annotation, Dictionary<string, IntPtr> textFonts)
         {
             int subtype = annotation.Type switch
             {
@@ -512,8 +559,10 @@ namespace MinsPDFViewer
 
                 if (annotation.Type == AnnotationType.FreeText)
                 {
+                    NativeMethods.FPDFAnnot_SetColor(pdfAnnotation, FPDFANNOT_COLORTYPE_Color, 0, 0, 0, 0);
+                    NativeMethods.FPDFAnnot_SetColor(pdfAnnotation, FPDFANNOT_COLORTYPE_InteriorColor, 255, 255, 255, 0);
                     NativeMethods.FPDFAnnot_SetStringValue(pdfAnnotation, "Contents", EncodeManagedFreeText(annotation));
-                    AddFreeTextAppearance(document, pdfAnnotation, rect, annotation);
+                    AddFreeTextAppearance(document, pdfAnnotation, rect, annotation, textFonts);
                 }
                 else
                 {
@@ -991,53 +1040,181 @@ namespace MinsPDFViewer
             return FreeTextMetadataV2Prefix + Convert.ToBase64String(Encoding.UTF8.GetBytes(json));
         }
 
-        private static void AddFreeTextAppearance(IntPtr document, IntPtr annotation, NativeMethods.FS_RECTF rect, AnnotationSnapshot snapshot)
+        private static void AddFreeTextAppearance(IntPtr document, IntPtr annotation, NativeMethods.FS_RECTF rect, AnnotationSnapshot snapshot, Dictionary<string, IntPtr> textFonts)
         {
-            string fontPath = GetFontPath(snapshot.FontFamily, snapshot.IsBold);
-            if (string.IsNullOrEmpty(fontPath) || !File.Exists(fontPath))
-                return;
-
-            byte[] fontBytes = File.ReadAllBytes(fontPath);
-            IntPtr font = NativeMethods.FPDFText_LoadFont(document, fontBytes, (uint)fontBytes.Length, 2, true);
+            IntPtr font = GetOrLoadTextFont(document, snapshot.FontFamily, snapshot.IsBold, textFonts);
             if (font == IntPtr.Zero)
                 return;
 
-            try
+            string text = snapshot.Text ?? string.Empty;
+            if (string.IsNullOrEmpty(text))
+                return;
+
+            string fontFamily = string.IsNullOrWhiteSpace(snapshot.FontFamily) ? "Malgun Gothic" : snapshot.FontFamily;
+            double innerWidth = Math.Max(1.0, rect.right - rect.left - 4);
+            double innerHeight = Math.Max(1.0, rect.top - rect.bottom - 4);
+            double uiInnerHeight = Math.Max(1.0, snapshot.Height - 4);
+            double fontSize = Math.Max(3.0, Math.Min(snapshot.FontSize * (innerHeight / uiInnerHeight), innerHeight));
+            List<string> lines = new List<string>();
+            double lineHeight;
+
+            while (true)
             {
-                float fontSize = (float)Math.Max(1.0, Math.Min(snapshot.FontSize, snapshot.Height));
-                IntPtr textObject = NativeMethods.FPDFPageObj_CreateTextObj(document, font, fontSize);
-                if (textObject == IntPtr.Zero)
+                lineHeight = Math.Max(1.0, fontSize * 1.25);
+                lines = WrapTextLines(text, fontFamily, snapshot.IsBold, fontSize, innerWidth);
+                if (lines.Count == 0)
                     return;
 
-                bool appended = false;
-                try
+                if (lines.Count * lineHeight <= innerHeight || fontSize <= 3.1)
+                    break;
+
+                fontSize = Math.Max(3.0, fontSize - 0.5);
+            }
+
+            double y = rect.top - 2 - fontSize;
+            foreach (string line in lines)
+            {
+                if (y < rect.bottom)
+                    break;
+
+                if (line.Length > 0)
+                    AddFreeTextLine(document, annotation, font, line, fontSize, innerWidth, rect.left + 2, y, snapshot.Foreground);
+                y -= lineHeight;
+            }
+        }
+
+        private static IntPtr GetOrLoadTextFont(IntPtr document, string? fontFamily, bool isBold, Dictionary<string, IntPtr> textFonts)
+        {
+            string fontPath = GetFontPath(fontFamily, isBold);
+            if (string.IsNullOrEmpty(fontPath) || !File.Exists(fontPath))
+                return IntPtr.Zero;
+
+            string key = $"{fontPath}|{isBold}";
+            if (textFonts.TryGetValue(key, out IntPtr cachedFont))
+                return cachedFont;
+
+            byte[] fontBytes = File.ReadAllBytes(fontPath);
+            IntPtr font = NativeMethods.FPDFText_LoadFont(document, fontBytes, (uint)fontBytes.Length, 2, true);
+            if (font != IntPtr.Zero)
+                textFonts[key] = font;
+            return font;
+        }
+
+        private static void AddFreeTextLine(IntPtr document, IntPtr annotation, IntPtr font, string line, double fontSize, double maxWidth, double x, double y, Color color)
+        {
+            IntPtr textObject = NativeMethods.FPDFPageObj_CreateTextObj(document, font, (float)fontSize);
+            if (textObject == IntPtr.Zero)
+                return;
+
+            bool appended = false;
+            try
+            {
+                if (!NativeMethods.FPDFText_SetText(textObject, line))
+                    return;
+
+                NativeMethods.FPDFText_SetFillColor(
+                    textObject,
+                    color.R,
+                    color.G,
+                    color.B,
+                    color.A == 0 ? 255u : color.A);
+
+                double horizontalScale = 1.0;
+                if (NativeMethods.FPDFPageObj_GetBounds(textObject, out float left, out _, out float right, out _))
                 {
-                    if (!NativeMethods.FPDFText_SetText(textObject, snapshot.Text))
-                        return;
-
-                    NativeMethods.FPDFText_SetFillColor(
-                        textObject,
-                        snapshot.Foreground.R,
-                        snapshot.Foreground.G,
-                        snapshot.Foreground.B,
-                        snapshot.Foreground.A == 0 ? 255u : snapshot.Foreground.A);
-
-                    double x = rect.left + 2;
-                    double y = rect.top - fontSize - 2;
-                    NativeMethods.FPDFPageObj_Transform(textObject, 1, 0, 0, 1, x, y);
-
-                    appended = NativeMethods.FPDFAnnot_AppendObject(annotation, textObject);
+                    float naturalWidth = right - left;
+                    if (naturalWidth > 0.1f && naturalWidth > maxWidth)
+                        horizontalScale = maxWidth / naturalWidth;
                 }
-                finally
-                {
-                    if (!appended)
-                        NativeMethods.FPDFPageObj_Destroy(textObject);
-                }
+
+                NativeMethods.FPDFPageObj_Transform(textObject, horizontalScale, 0, 0, 1, x, y);
+                appended = NativeMethods.FPDFAnnot_AppendObject(annotation, textObject);
             }
             finally
             {
-                NativeMethods.FPDFFont_Close(font);
+                if (!appended)
+                    NativeMethods.FPDFPageObj_Destroy(textObject);
             }
+        }
+
+        private static List<string> WrapTextLines(string text, string fontFamily, bool isBold, double fontSize, double maxWidth)
+        {
+            var result = new List<string>();
+            foreach (string paragraph in text.Replace("\r\n", "\n", StringComparison.Ordinal).Replace('\r', '\n').Split('\n'))
+            {
+                if (paragraph.Length == 0)
+                {
+                    result.Add(string.Empty);
+                    continue;
+                }
+
+                string current = string.Empty;
+                foreach (string token in SplitWrapTokens(paragraph))
+                {
+                    string candidate = current.Length == 0 ? token : current + token;
+                    if (MeasureTextWidth(candidate, fontFamily, isBold, fontSize) <= maxWidth)
+                    {
+                        current = candidate;
+                        continue;
+                    }
+
+                    if (current.Length > 0)
+                    {
+                        result.Add(current.TrimEnd());
+                        current = string.Empty;
+                    }
+
+                    foreach (char ch in token)
+                    {
+                        candidate = current + ch;
+                        if (current.Length > 0 && MeasureTextWidth(candidate, fontFamily, isBold, fontSize) > maxWidth)
+                        {
+                            result.Add(current);
+                            current = ch.ToString();
+                        }
+                        else
+                        {
+                            current = candidate;
+                        }
+                    }
+                }
+
+                if (current.Length > 0)
+                    result.Add(current.TrimEnd());
+            }
+
+            return result;
+        }
+
+        private static IEnumerable<string> SplitWrapTokens(string text)
+        {
+            var token = new StringBuilder();
+            foreach (char ch in text)
+            {
+                token.Append(ch);
+                if (char.IsWhiteSpace(ch))
+                {
+                    yield return token.ToString();
+                    token.Clear();
+                }
+            }
+
+            if (token.Length > 0)
+                yield return token.ToString();
+        }
+
+        private static double MeasureTextWidth(string text, string fontFamily, bool isBold, double fontSize)
+        {
+            var formattedText = new FormattedText(
+                text,
+                CultureInfo.CurrentCulture,
+                FlowDirection.LeftToRight,
+                new Typeface(new FontFamily(fontFamily), FontStyles.Normal, isBold ? FontWeights.Bold : FontWeights.Normal, FontStretches.Normal),
+                fontSize,
+                Brushes.Black,
+                1.0);
+
+            return formattedText.WidthIncludingTrailingWhitespace;
         }
 
         private static string GetFontPath(string? fontFamily, bool isBold)
@@ -1121,12 +1298,18 @@ namespace MinsPDFViewer
 
         private static NativeMethods.FS_RECTF ToPdfRect(PageSnapshot page, AnnotationSnapshot annotation)
         {
-            double scaleX = page.PdfWidth / page.Width;
-            double scaleY = page.PdfHeight / page.Height;
+            double pageWidth = page.Width > 0 ? page.Width : page.PdfWidth;
+            double pageHeight = page.Height > 0 ? page.Height : page.PdfHeight;
+            double scaleX = page.PdfWidth / Math.Max(1.0, pageWidth);
+            double scaleY = page.PdfHeight / Math.Max(1.0, pageHeight);
             float left = (float)(annotation.X * scaleX);
             float right = (float)((annotation.X + annotation.Width) * scaleX);
             float top = (float)(page.PdfHeight - (annotation.Y * scaleY));
             float bottom = (float)(page.PdfHeight - ((annotation.Y + annotation.Height) * scaleY));
+            if (Math.Abs(right - left) < 1.0f)
+                right = left + 1.0f;
+            if (Math.Abs(top - bottom) < 1.0f)
+                bottom = top - 1.0f;
 
             return new NativeMethods.FS_RECTF
             {
