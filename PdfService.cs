@@ -39,6 +39,7 @@ namespace MinsPDFViewer
 
         // LIFO render queue: most recent requests are processed first
         private static readonly ConcurrentStack<RenderRequest> _renderStack = new ConcurrentStack<RenderRequest>();
+        public static bool HasPendingRenders => !_renderStack.IsEmpty;
         private static readonly SemaphoreSlim _renderSignal = new SemaphoreSlim(0);
         private static readonly Thread _renderWorker;
         private static volatile bool _shutdownRequested = false;
@@ -749,36 +750,41 @@ private static string? PromptPasswordDialog(string? prompt)
             {
                 if (model.IsDisposed) return;
                 int pageCount = 0;
-                lock (PdfiumLock) { if (model.PdfDocument != null) pageCount = model.PdfDocument.PageCount; }
-                if (pageCount == 0) return;
-                Log($"InitializeDocumentAsync: {model.FilePath}, PageCount={pageCount}");
-
                 var tempPageList = new List<PdfPageViewModel>();
-                for (int i = 0; i < pageCount; i++)
+
+                lock (PdfiumLock)
                 {
-                    double pageW = 0, pageH = 0;
-                    lock (PdfiumLock)
+                    if (model.PdfDocument != null)
                     {
-                        if (model.PdfDocument != null)
+                        pageCount = model.PdfDocument.PageCount;
+                        if (pageCount > 0)
                         {
-                            var size = model.PdfDocument.PageSizes[i];
-                            pageW = size.Width;
-                            pageH = size.Height;
+                            var sizes = model.PdfDocument.PageSizes;
+                            for (int i = 0; i < pageCount; i++)
+                            {
+                                var size = sizes[i];
+                                double pageW = size.Width;
+                                double pageH = size.Height;
+                                tempPageList.Add(new PdfPageViewModel
+                                {
+                                    PageIndex = i,
+                                    OriginalFilePath = model.FilePath,
+                                    OriginalPageIndex = i,
+                                    Width = pageW * model.Zoom,
+                                    Height = pageH * model.Zoom,
+                                    PdfPageWidthPoint = pageW,
+                                    PdfPageHeightPoint = pageH,
+                                    CropWidthPoint = pageW,
+                                    CropHeightPoint = pageH
+                                });
+                            }
                         }
                     }
-                    tempPageList.Add(new PdfPageViewModel
-                    {
-                        PageIndex = i,
-                        OriginalFilePath = model.FilePath,
-                        OriginalPageIndex = i,
-                        Width = pageW,
-                        Height = pageH,
-                        PdfPageWidthPoint = pageW,
-                        PdfPageHeightPoint = pageH,
-                        CropWidthPoint = pageW,
-                        CropHeightPoint = pageH
-                    });
                 }
+
+                if (tempPageList.Count == 0) return;
+                Log($"InitializeDocumentAsync: {model.FilePath}, PageCount={pageCount}");
+
                 RunOnUiDispatcherOrDirect(() => { foreach (var p in tempPageList) model.Pages.Add(p); });
             });
         }
@@ -956,12 +962,77 @@ private static string? PromptPasswordDialog(string? prompt)
             LoadAnnotationsLazy(model, pageVM);
         }
 
-        public static BitmapSource ToBitmapSource(DrawingBitmap bitmap)
+        private static readonly byte[] GammaLut = CreateGammaLut(1.20);
+
+        private static byte[] CreateGammaLut(double gamma)
+        {
+            var lut = new byte[256];
+            for (int i = 0; i < 256; i++)
+            {
+                double normalized = i / 255.0;
+                double adjusted = Math.Pow(normalized, gamma);
+                lut[i] = (byte)Math.Clamp(Math.Round(adjusted * 255.0), 0, 255);
+            }
+            return lut;
+        }
+
+        public static BitmapSource ToBitmapSource(DrawingBitmap bitmap, bool applyStemDarkening = true)
         {
             var rect = new DrawingRectangle(0, 0, bitmap.Width, bitmap.Height);
-            var bitmapData = bitmap.LockBits(rect, System.Drawing.Imaging.ImageLockMode.ReadOnly, System.Drawing.Imaging.PixelFormat.Format32bppPArgb);
-            try { return BitmapSource.Create(bitmap.Width, bitmap.Height, bitmap.HorizontalResolution, bitmap.VerticalResolution, PixelFormats.Bgra32, null, bitmapData.Scan0, bitmapData.Stride * bitmap.Height, bitmapData.Stride); } 
-            finally { bitmap.UnlockBits(bitmapData); }
+            var bitmapData = bitmap.LockBits(rect, System.Drawing.Imaging.ImageLockMode.ReadWrite, System.Drawing.Imaging.PixelFormat.Format32bppArgb);
+            try
+            {
+                if (applyStemDarkening)
+                {
+                    unsafe
+                    {
+                        byte* scan0 = (byte*)bitmapData.Scan0;
+                        int stride = bitmapData.Stride;
+                        int height = bitmap.Height;
+                        int width = bitmap.Width;
+
+                        if (stride == width * 4)
+                        {
+                            int totalBytes = stride * height;
+                            for (int i = 0; i < totalBytes; i += 4)
+                            {
+                                scan0[i] = GammaLut[scan0[i]];         // B
+                                scan0[i + 1] = GammaLut[scan0[i + 1]]; // G
+                                scan0[i + 2] = GammaLut[scan0[i + 2]]; // R
+                            }
+                        }
+                        else
+                        {
+                            for (int y = 0; y < height; y++)
+                            {
+                                byte* row = scan0 + (y * stride);
+                                for (int x = 0; x < width; x++)
+                                {
+                                    int idx = x * 4;
+                                    row[idx] = GammaLut[row[idx]];         // B
+                                    row[idx + 1] = GammaLut[row[idx + 1]]; // G
+                                    row[idx + 2] = GammaLut[row[idx + 2]]; // R
+                                }
+                            }
+                        }
+                    }
+                }
+
+                return BitmapSource.Create(
+                    bitmap.Width,
+                    bitmap.Height,
+                    bitmap.HorizontalResolution,
+                    bitmap.VerticalResolution,
+                    PixelFormats.Bgra32,
+                    null,
+                    bitmapData.Scan0,
+                    bitmapData.Stride * bitmap.Height,
+                    bitmapData.Stride);
+            }
+            finally
+            {
+                bitmap.UnlockBits(bitmapData);
+            }
         }
 
         private static void LoadAnnotationsLazy(PdfDocumentModel model, PdfPageViewModel pageVM, CancellationToken ct = default)

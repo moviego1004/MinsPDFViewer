@@ -216,6 +216,46 @@ namespace MinsPDFViewer.Tests
             await reloadedModel.CloseAsync();
         }
 
+        // [Task 6] Stem Darkening LUT 비트맵 변환 검증 (안티앨리어싱 그레이 픽셀의 농도 강화 확인)
+        [Fact]
+        public void ToBitmapSource_WithStemDarkening_DarkensIntermediatePixels()
+        {
+            using var bmp = new System.Drawing.Bitmap(2, 2, System.Drawing.Imaging.PixelFormat.Format32bppArgb);
+            bmp.SetPixel(0, 0, System.Drawing.Color.FromArgb(255, 255, 255, 255));
+            bmp.SetPixel(1, 0, System.Drawing.Color.FromArgb(255, 0, 0, 0));
+            bmp.SetPixel(0, 1, System.Drawing.Color.FromArgb(255, 180, 180, 180));
+            bmp.SetPixel(1, 1, System.Drawing.Color.FromArgb(255, 100, 100, 100));
+
+            var result = PdfService.ToBitmapSource(bmp, applyStemDarkening: true);
+            Assert.NotNull(result);
+            Assert.Equal(2, result.PixelWidth);
+            Assert.Equal(2, result.PixelHeight);
+
+            byte[] pixels = new byte[2 * 2 * 4];
+            result.CopyPixels(pixels, 2 * 4, 0);
+
+            // White 유지
+            Assert.Equal(255, pixels[0]);
+            Assert.Equal(255, pixels[1]);
+            Assert.Equal(255, pixels[2]);
+
+            // Black 유지
+            Assert.Equal(0, pixels[4]);
+            Assert.Equal(0, pixels[5]);
+            Assert.Equal(0, pixels[6]);
+
+            // Mid gray 어두워짐 검증 (180 -> <180, 100 -> <100)
+            Assert.True(pixels[8] < 180, $"Expected pixel to be darkened, got {pixels[8]}");
+            Assert.True(pixels[12] < 100, $"Expected pixel to be darkened, got {pixels[12]}");
+        }
+
+        // [Task 6] HasPendingRenders 상태 노출 확인
+        [Fact]
+        public void HasPendingRenders_Property_IsAccessible()
+        {
+            Assert.False(PdfService.HasPendingRenders);
+        }
+
         private static byte[] CreateMinimalPdf()
         {
             var objects = new[]

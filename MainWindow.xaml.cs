@@ -2316,7 +2316,7 @@ namespace MinsPDFViewer
             StartThumbnailRendering(SelectedDocument);
         }
 
-        private void StartThumbnailRendering(PdfDocumentModel document)
+        private void StartThumbnailRendering(PdfDocumentModel document, int? focusPageIndex = null)
         {
             _thumbnailRenderCts?.Cancel();
             _thumbnailRenderCts = new CancellationTokenSource();
@@ -2328,7 +2328,7 @@ namespace MinsPDFViewer
                     PageThumbnailList.UpdateLayout();
             }, System.Windows.Threading.DispatcherPriority.ContextIdle);
 
-            var pages = GetThumbnailRenderCandidates(document);
+            var pages = GetThumbnailRenderCandidates(document, focusPageIndex);
             if (pages.Count == 0)
                 return;
 
@@ -2336,10 +2336,22 @@ namespace MinsPDFViewer
             {
                 try
                 {
+                    // Yield briefly on start so visible page render gets immediate lock access
+                    await Task.Delay(100, token);
+
                     foreach (var page in pages)
                     {
                         token.ThrowIfCancellationRequested();
                         if (document.IsDisposed)
+                            return;
+
+                        // Give priority to main high-res rendering queue
+                        while (PdfService.HasPendingRenders && !token.IsCancellationRequested)
+                        {
+                            await Task.Delay(40, token);
+                        }
+
+                        if (token.IsCancellationRequested || document.IsDisposed)
                             return;
 
                         await _pdfService.RenderThumbnailAsync(document, page, 140, token);
@@ -2351,13 +2363,13 @@ namespace MinsPDFViewer
             }, token);
         }
 
-        private List<PdfPageViewModel> GetThumbnailRenderCandidates(PdfDocumentModel document)
+        private List<PdfPageViewModel> GetThumbnailRenderCandidates(PdfDocumentModel document, int? focusPageIndex = null)
         {
             if (!ReferenceEquals(SelectedDocument, document))
                 return new List<PdfPageViewModel>();
 
             var indexes = new SortedSet<int>();
-            int currentIndex = GetCurrentPageIndex();
+            int currentIndex = focusPageIndex ?? GetCurrentPageIndex();
             AddThumbnailRange(indexes, document, currentIndex - ThumbnailRenderPagesBefore, currentIndex + ThumbnailRenderPagesAfter);
 
             if (PageThumbnailList.SelectedItem is PdfPageViewModel selectedPage)
@@ -2550,15 +2562,20 @@ namespace MinsPDFViewer
                 SelectedDocument = doc;
                 LogOpenStep("add and select document");
                 int initialPageIndex = Math.Max(0, Math.Min(_historyService.GetLastPage(path), doc.Pages.Count - 1));
-                RenderPagesAround(initialPageIndex, 0, 2);
+                RenderPagesAround(initialPageIndex, 1, 2);
                 LogOpenStep("queue initial visible render");
-                StartThumbnailRendering(doc);
+                StartThumbnailRendering(doc, initialPageIndex);
                 LogOpenStep("queue lazy thumbnails");
                 _ = _pdfService.LoadBookmarksAsync(doc);
 
                 await Dispatcher.InvokeAsync(() =>
                 {
                     ScrollToPage(initialPageIndex);
+                    if (initialPageIndex > 0 && initialPageIndex < doc.Pages.Count)
+                    {
+                        PageThumbnailList.SelectedIndex = initialPageIndex;
+                        PageThumbnailList.ScrollIntoView(doc.Pages[initialPageIndex]);
+                    }
                     TxtStatus.Text = initialPageIndex > 0
                         ? $"{initialPageIndex + 1}페이지에서 다시 열었습니다."
                         : "준비";
