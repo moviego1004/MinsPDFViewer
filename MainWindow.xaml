@@ -672,6 +672,8 @@
                                                                                 <Grid Width="{Binding Width}"
                                                                                                 Height="{Binding Height}"
                                                                                                 Tag="{Binding PageIndex}"
+                                                                                                SnapsToDevicePixels="True"
+                                                                                                UseLayoutRounding="True"
                                                                                                 Loaded="PageGrid_Loaded"
                                                                                                 Unloaded="PageGrid_Unloaded"
                                                                                                 PreviewMouseDown="Page_MouseDown"
@@ -682,6 +684,10 @@
                                                                                                         Stretch="Uniform"
                                                                                                         HorizontalAlignment="Left"
                                                                                                         VerticalAlignment="Top"
+                                                                                                        SnapsToDevicePixels="True"
+                                                                                                        UseLayoutRounding="True"
+                                                                                                        RenderOptions.BitmapScalingMode="HighQuality"
+                                                                                                        RenderOptions.ClearTypeHint="Enabled"
                                                                                                         IsHitTestVisible="False">
                                                                                                 <Image.LayoutTransform>
                                                                                                         <RotateTransform Angle="{Binding Rotation}"/>

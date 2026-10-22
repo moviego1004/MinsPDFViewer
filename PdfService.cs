@@ -167,6 +167,22 @@ namespace MinsPDFViewer
         /// <summary>
         /// Phase 1: Fast low-res render only. Shows content immediately at reduced quality.
         /// </summary>
+                private static double GetDisplayDpiScale()
+        {
+            try
+            {
+                var window = Application.Current?.MainWindow;
+                if (window != null)
+                {
+                    var dpi = VisualTreeHelper.GetDpi(window);
+                    if (dpi.DpiScaleX > 0.1)
+                        return dpi.DpiScaleX;
+                }
+            }
+            catch { }
+            return 1.0;
+        }
+
         private static void ExecuteFastRender(RenderRequest req)
         {
             var model = req.Model;
@@ -181,12 +197,12 @@ namespace MinsPDFViewer
                 if (ct.IsCancellationRequested || model.IsDisposed || model.PdfDocument == null) return;
                 try
                 {
-                    // [Dynamic Scale] Use 1:1 scale for fast render (capped at 1.5x for performance)
-                    // This fixes the "blurry" issue by matching screen pixels initially.
-                    double scale = Math.Min(req.Zoom, 1.5);
-                    int fastW = Math.Max(1, (int)(pageVM.Width * scale));
-                    int fastH = Math.Max(1, (int)(pageVM.Height * scale));
-                    using (var bitmap = model.PdfDocument.Render(pageVM.OriginalPageIndex, fastW, fastH, (int)(96 * scale), (int)(96 * scale), PdfRenderFlags.Annotations))
+                    double dpiScale = GetDisplayDpiScale();
+                    int fastW = Math.Max(1, (int)Math.Round(pageVM.Width * dpiScale));
+                    int fastH = Math.Max(1, (int)Math.Round(pageVM.Height * dpiScale));
+                    float dpi = (float)(96.0 * dpiScale);
+                    var flags = PdfRenderFlags.Annotations | PdfRenderFlags.LcdText | PdfRenderFlags.CorrectFromDpi;
+                    using (var bitmap = model.PdfDocument.Render(pageVM.OriginalPageIndex, fastW, fastH, dpi, dpi, flags))
                     {
                         fastBmp = ToBitmapSource((DrawingBitmap)bitmap);
                         fastBmp.Freeze();
@@ -229,11 +245,12 @@ namespace MinsPDFViewer
                 if (ct.IsCancellationRequested || model.IsDisposed || model.PdfDocument == null) return;
                 try
                 {
-                    // [Dynamic Scale] Render at 1.5x zoom for crisp text (Supersampling)
-                    double scale = req.Zoom * 1.5;
-                    int hiW = (int)(pageVM.Width * scale);
-                    int hiH = (int)(pageVM.Height * scale);
-                    using (var bitmap = model.PdfDocument.Render(pageVM.OriginalPageIndex, hiW, hiH, (int)(96 * scale), (int)(96 * scale), PdfRenderFlags.Annotations))
+                    double dpiScale = GetDisplayDpiScale();
+                    int hiW = Math.Max(1, (int)Math.Round(pageVM.Width * dpiScale));
+                    int hiH = Math.Max(1, (int)Math.Round(pageVM.Height * dpiScale));
+                    float dpi = (float)(96.0 * dpiScale);
+                    var flags = PdfRenderFlags.Annotations | PdfRenderFlags.LcdText | PdfRenderFlags.CorrectFromDpi;
+                    using (var bitmap = model.PdfDocument.Render(pageVM.OriginalPageIndex, hiW, hiH, dpi, dpi, flags))
                     {
                         highBmp = ToBitmapSource((DrawingBitmap)bitmap);
                         highBmp.Freeze();
@@ -917,10 +934,12 @@ private static string? PromptPasswordDialog(string? prompt)
                     {
                         try
                         {
-                            double scale = model.Zoom * 1.5;
-                            int renderW = (int)(pageVM.Width * scale);
-                            int renderH = (int)(pageVM.Height * scale);
-                            using (var bitmap = model.PdfDocument.Render(pageVM.OriginalPageIndex, renderW, renderH, (int)(96 * scale), (int)(96 * scale), PdfRenderFlags.Annotations))
+                            double dpiScale = GetDisplayDpiScale();
+                            int renderW = Math.Max(1, (int)Math.Round(pageVM.Width * dpiScale));
+                            int renderH = Math.Max(1, (int)Math.Round(pageVM.Height * dpiScale));
+                            float dpi = (float)(96.0 * dpiScale);
+                            var flags = PdfRenderFlags.Annotations | PdfRenderFlags.LcdText | PdfRenderFlags.CorrectFromDpi;
+                            using (var bitmap = model.PdfDocument.Render(pageVM.OriginalPageIndex, renderW, renderH, dpi, dpi, flags))
                             {
                                 bmpSource = ToBitmapSource((DrawingBitmap)bitmap);
                                 bmpSource.Freeze();
