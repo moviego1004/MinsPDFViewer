@@ -384,6 +384,9 @@ namespace MinsPDFViewer
             public static extern void FPDF_CloseDocument(IntPtr document);
 
             [System.Runtime.InteropServices.DllImport("pdfium.dll", CallingConvention = System.Runtime.InteropServices.CallingConvention.Cdecl)]
+            public static extern int FPDF_GetLastError();
+
+            [System.Runtime.InteropServices.DllImport("pdfium.dll", CallingConvention = System.Runtime.InteropServices.CallingConvention.Cdecl)]
             public static extern IntPtr FPDF_LoadPage(IntPtr document, int page_index);
 
             [System.Runtime.InteropServices.DllImport("pdfium.dll", CallingConvention = System.Runtime.InteropServices.CallingConvention.Cdecl)]
@@ -470,14 +473,14 @@ namespace MinsPDFViewer
             public const int FPDF_MATCHWHOLEWORD = 0x00000002;
         }
 
-        public List<Rect> FindTextRects(string filePath, int pageIndex, string keyword)
+        public List<Rect> FindTextRects(string filePath, int pageIndex, string keyword, string? password = null)
         {
             var results = new List<Rect>();
             if (!File.Exists(filePath)) return results;
 
             lock (PdfiumLock)
             {
-                IntPtr doc = NativeMethods.FPDF_LoadDocument(filePath, null);
+                IntPtr doc = NativeMethods.FPDF_LoadDocument(filePath, password);
                 if (doc == IntPtr.Zero) return results;
 
                 try
@@ -549,7 +552,7 @@ namespace MinsPDFViewer
             return results;
         }
 
-        public string ExtractTextInRect(string filePath, int pageIndex, Rect uiRect, double viewWidth, double viewHeight, double pdfWidth, double pdfHeight)
+        public string ExtractTextInRect(string filePath, int pageIndex, Rect uiRect, double viewWidth, double viewHeight, double pdfWidth, double pdfHeight, string? password = null)
         {
             if (!File.Exists(filePath) || uiRect.Width <= 0 || uiRect.Height <= 0 || viewWidth <= 0 || viewHeight <= 0)
                 return string.Empty;
@@ -563,7 +566,7 @@ namespace MinsPDFViewer
 
             lock (PdfiumLock)
             {
-                IntPtr doc = NativeMethods.FPDF_LoadDocument(filePath, null);
+                IntPtr doc = NativeMethods.FPDF_LoadDocument(filePath, password);
                 if (doc == IntPtr.Zero) return string.Empty;
 
                 try
@@ -610,7 +613,33 @@ namespace MinsPDFViewer
             }
         }
 
-        public async Task<PdfDocumentModel?> LoadPdfAsync(string filePath)
+                private static IPdfDocument LoadPdfiumDocument(Stream stream, string? password)
+        {
+            if (string.IsNullOrEmpty(password))
+                return PdfiumViewer.PdfDocument.Load(stream);
+
+            var method = typeof(PdfiumViewer.PdfDocument).GetMethod("Load", new[] { typeof(Stream), typeof(string) });
+            if (method == null)
+                throw new InvalidOperationException("PdfDocument.Load(Stream, string) method not found.");
+            return (IPdfDocument)method.Invoke(null, new object[] { stream, password })!;
+        }
+
+private static string? PromptPasswordDialog(string? prompt)
+        {
+            string? result = null;
+            RunOnUiDispatcherOrDirect(() =>
+            {
+                var owner = Application.Current?.MainWindow;
+                var dlg = new PasswordDialog(prompt, owner);
+                if (dlg.ShowDialog() == true)
+                {
+                    result = dlg.PasswordText;
+                }
+            });
+            return result;
+        }
+
+        public async Task<PdfDocumentModel?> LoadPdfAsync(string filePath, string? password = null)
         {
             if (!File.Exists(filePath)) return null;
             return await Task.Run(() =>
@@ -622,44 +651,77 @@ namespace MinsPDFViewer
                     profileWatch.Restart();
                 }
 
-                try
+                var fileInfo = new FileInfo(filePath);
+                Log($"LoadPdfAsync: {filePath}, Bytes={fileInfo.Length}");
+                LogOpenProfile("stat file");
+
+                byte[] pdfBytes = File.ReadAllBytes(filePath);
+                LogOpenProfile("read file bytes");
+
+                string? currentPassword = password;
+                bool passwordPrompted = false;
+                IPdfDocument? pdfDoc = null;
+                MemoryStream? pdfStream = null;
+
+                while (true)
                 {
-                    var fileInfo = new FileInfo(filePath);
-                    Log($"LoadPdfAsync: {filePath}, Bytes={fileInfo.Length}");
-                    LogOpenProfile("stat file");
-
-                    byte[] pdfBytes = File.ReadAllBytes(filePath);
-                    LogOpenProfile("read file bytes");
-
-                    var pdfStream = new MemoryStream(pdfBytes);
-                    IPdfDocument? pdfDoc = null;
                     try
                     {
-                        lock (PdfiumLock) { pdfDoc = PdfiumViewer.PdfDocument.Load(pdfStream); }
+                        pdfStream?.Dispose();
+                        pdfStream = new MemoryStream(pdfBytes);
+                        lock (PdfiumLock)
+                        {
+                            pdfDoc = LoadPdfiumDocument(pdfStream, currentPassword);
+                        }
+                        LogOpenProfile("PdfDocument.Load stream");
+                        break;
                     }
-                    catch
+                    catch (Exception ex)
                     {
-                        pdfStream.Dispose();
-                        throw;
-                    }
-                    LogOpenProfile("PdfDocument.Load stream");
+                        bool isPasswordError = ex.Message.IndexOf("password", StringComparison.OrdinalIgnoreCase) >= 0;
+                        if (!isPasswordError)
+                        {
+                            lock (PdfiumLock)
+                            {
+                                if (NativeMethods.FPDF_GetLastError() == 4) // FPDF_ERR_PASSWORD
+                                    isPasswordError = true;
+                            }
+                        }
 
-                    var model = new PdfDocumentModel
-                    {
-                        FilePath = filePath,
-                        FileName = Path.GetFileName(filePath),
-                        PdfDocument = pdfDoc,
-                        FileStream = pdfStream,
-                        SourceBytes = pdfBytes
-                    };
-                    LogOpenProfile("create model");
-                    return model;
+                        if (isPasswordError)
+                        {
+                            string prompt = passwordPrompted
+                                ? "암호가 올바르지 않습니다. 다시 입력해 주세요."
+                                : "문서가 암호로 보호되어 있습니다.\n비밀번호를 입력해 주세요.";
+                            string? entered = PromptPasswordDialog(prompt);
+                            if (entered == null)
+                            {
+                                pdfStream?.Dispose();
+                                return null;
+                            }
+                            currentPassword = entered;
+                            passwordPrompted = true;
+                        }
+                        else
+                        {
+                            pdfStream?.Dispose();
+                            MessageBox.Show($"PDF 로드 실패: {ex.Message}");
+                            return null;
+                        }
+                    }
                 }
-                catch (Exception ex)
+
+                var model = new PdfDocumentModel
                 {
-                    MessageBox.Show($"PDF 로드 실패: {ex.Message}");
-                    return null;
-                }
+                    FilePath = filePath,
+                    FileName = Path.GetFileName(filePath),
+                    PdfDocument = pdfDoc,
+                    FileStream = pdfStream,
+                    SourceBytes = pdfBytes,
+                    Password = currentPassword
+                };
+                LogOpenProfile("create model");
+                return model;
             });
         }
 
@@ -921,13 +983,13 @@ namespace MinsPDFViewer
                     if (sourceBytes != null && sourceBytes.Length > 0)
                     {
                         sourceHandle = GCHandle.Alloc(sourceBytes, GCHandleType.Pinned);
-                        doc = NativeMethods.FPDF_LoadMemDocument(sourceHandle.AddrOfPinnedObject(), sourceBytes.Length, null);
+                        doc = NativeMethods.FPDF_LoadMemDocument(sourceHandle.AddrOfPinnedObject(), sourceBytes.Length, model.Password);
                     }
                     else
                     {
                         string path = pageVM.OriginalFilePath ?? model.FilePath;
                         if (!File.Exists(path)) return;
-                        doc = NativeMethods.FPDF_LoadDocument(path, null);
+                        doc = NativeMethods.FPDF_LoadDocument(path, model.Password);
                     }
 
                     if (doc == IntPtr.Zero)
@@ -1194,6 +1256,20 @@ namespace MinsPDFViewer
                 if (await pdfiumEditService.TrySaveAnnotationsAsync(model, outputPath))
                 {
                     LogProfile("pdfium edit save");
+                    var ocrPages = model.Pages.Where(p => p.OcrWords != null && p.OcrWords.Count > 0).Select(p => new OcrPageData
+                    {
+                        PageIndex = p.PageIndex,
+                        WidthPoint = p.PdfPageWidthPoint > 0 ? p.PdfPageWidthPoint : (p.Width > 0 ? p.Width : 595.0),
+                        HeightPoint = p.PdfPageHeightPoint > 0 ? p.PdfPageHeightPoint : (p.Height > 0 ? p.Height : 842.0),
+                        Words = p.OcrWords!
+                    }).ToList();
+
+                    if (ocrPages.Count > 0)
+                    {
+                        await new PdfGlyphlessOcrService(LogToFile).InjectOcrLayerAsync(outputPath, ocrPages);
+                        LogProfile("glyphless ocr layer inject");
+                    }
+
                     if (shouldRewriteBookmarks)
                     {
                         await new PdfBookmarkRewriteService(LogToFile).RewriteBookmarksAsync(outputPath, pdfiumBookmarkSnapshot);

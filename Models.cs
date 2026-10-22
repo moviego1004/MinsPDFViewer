@@ -41,6 +41,7 @@ namespace MinsPDFViewer
         }
 
         // [PdfiumViewer] 문서 객체
+        public string? Password { get; set; }
         public IPdfDocument? PdfDocument
         {
             get; set;

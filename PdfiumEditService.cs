@@ -187,7 +187,7 @@ namespace MinsPDFViewer
                 pages.Add(pageSnapshot);
             }
 
-            return new DocumentSnapshot(model.FilePath, sourcePageCount, pages);
+            return new DocumentSnapshot(model.FilePath, sourcePageCount, pages, model.Password);
         }
 
         private static bool IsPersistentAnnotation(PdfAnnotation annotation)
@@ -203,7 +203,7 @@ namespace MinsPDFViewer
             var profileWatch = Stopwatch.StartNew();
             lock (PdfService.PdfiumLock)
             {
-                IntPtr document = NativeMethods.FPDF_LoadDocument(snapshot.SourcePath, null);
+                IntPtr document = NativeMethods.FPDF_LoadDocument(snapshot.SourcePath, snapshot.Password);
                 LogProfile("LoadDocument", profileWatch);
                 if (document == IntPtr.Zero)
                     return false;
@@ -235,10 +235,13 @@ namespace MinsPDFViewer
                         try
                         {
                             if (pageSnapshot.Rotation != 0)
-                                NativeMethods.FPDFPage_SetRotation(page, pageSnapshot.Rotation / 90);
+                            {
+                                int currentRot = NativeMethods.FPDFPage_GetRotation(page);
+                                int deltaRot = ((pageSnapshot.Rotation / 90) % 4 + 4) % 4;
+                                NativeMethods.FPDFPage_SetRotation(page, (currentRot + deltaRot) % 4);
+                            }
 
-                            if (pageSnapshot.ShouldRewriteAnnotations &&
-                                (pageSnapshot.Annotations.Count > 0 || pageSnapshot.OcrWords.Count > 0))
+                            if (pageSnapshot.ShouldRewriteAnnotations && pageSnapshot.Annotations.Count > 0)
                             {
                                 RemoveEditableAnnotations(page);
 
@@ -247,7 +250,6 @@ namespace MinsPDFViewer
                                     AddPersistentObject(document, page, pageSnapshot, annotation, textFonts);
                                 }
 
-                                AddOcrTextLayer(document, page, pageSnapshot, ref ocrFont);
                                 NativeMethods.FPDFPage_GenerateContent(page);
                             }
                         }
@@ -288,8 +290,7 @@ namespace MinsPDFViewer
         private static bool NeedsPageMutation(PageSnapshot pageSnapshot)
         {
             return pageSnapshot.Rotation != 0 ||
-                   (pageSnapshot.ShouldRewriteAnnotations &&
-                    (pageSnapshot.Annotations.Count > 0 || pageSnapshot.OcrWords.Count > 0));
+                   (pageSnapshot.ShouldRewriteAnnotations && pageSnapshot.Annotations.Count > 0);
         }
 
         private static bool HasReorderedSourcePages(DocumentSnapshot snapshot)
@@ -1353,7 +1354,7 @@ namespace MinsPDFViewer
             };
         }
 
-        private sealed record DocumentSnapshot(string SourcePath, int SourcePageCount, List<PageSnapshot> Pages);
+        private sealed record DocumentSnapshot(string SourcePath, int SourcePageCount, List<PageSnapshot> Pages, string? Password = null);
 
         private sealed class PageSnapshot
         {
@@ -1551,6 +1552,9 @@ namespace MinsPDFViewer
                 IntPtr srcDocument,
                 [MarshalAs(UnmanagedType.LPStr)] string pageRange,
                 int index);
+
+            [DllImport("pdfium.dll", CallingConvention = CallingConvention.Cdecl)]
+            public static extern int FPDFPage_GetRotation(IntPtr page);
 
             [DllImport("pdfium.dll", CallingConvention = CallingConvention.Cdecl)]
             public static extern IntPtr FPDF_LoadPage(IntPtr document, int pageIndex);

@@ -428,10 +428,13 @@ namespace MinsPDFViewer
                 if (result == MessageBoxResult.OK)
                 {
                     _searchService.ResetSearch();
-                    if (isPrev)
-                        await _searchService.FindPrevAsync(SelectedDocument!, query);
-                    else
-                        await _searchService.FindNextAsync(SelectedDocument!, query);
+                    var wrapMatch = isPrev
+                        ? await _searchService.FindPrevAsync(SelectedDocument!, query)
+                        : await _searchService.FindNextAsync(SelectedDocument!, query);
+                    if (wrapMatch != null)
+                    {
+                        HandleSearchResult(wrapMatch, query, isPrev);
+                    }
                 }
                 else
                 {
@@ -2730,8 +2733,59 @@ namespace MinsPDFViewer
                 TxtPageInfo.Text = $"{Math.Min(currentPageIndex + 1, SelectedDocument.Pages.Count)} / {SelectedDocument.Pages.Count}";
             }
         }
-        private void BtnRotateLeft_Click(object sender, RoutedEventArgs e) { if (SelectedDocument != null) foreach (var p in SelectedDocument.Pages) p.Rotation = (p.Rotation + 270) % 360; }
-        private void BtnRotateRight_Click(object sender, RoutedEventArgs e) { if (SelectedDocument != null) foreach (var p in SelectedDocument.Pages) p.Rotation = (p.Rotation + 90) % 360; }
+        private void BtnRotateLeft_Click(object sender, RoutedEventArgs e)
+        {
+            RotateSelectedPages(270);
+        }
+        private List<PdfPageViewModel> GetTargetPagesForAction()
+        {
+            if (SelectedDocument == null || SelectedDocument.Pages.Count == 0)
+                return new List<PdfPageViewModel>();
+
+            if (PageThumbnailList != null && PageThumbnailList.SelectedItems.Count > 0)
+            {
+                var selected = PageThumbnailList.SelectedItems.OfType<PdfPageViewModel>().ToList();
+                if (selected.Count > 0)
+                    return selected;
+            }
+
+            int currentIdx = GetCurrentPageIndex();
+            if (currentIdx >= 0 && currentIdx < SelectedDocument.Pages.Count)
+            {
+                return new List<PdfPageViewModel> { SelectedDocument.Pages[currentIdx] };
+            }
+
+            return new List<PdfPageViewModel> { SelectedDocument.Pages[0] };
+        }
+
+        private void RotateSelectedPages(int deltaAngle)
+        {
+            var targets = GetTargetPagesForAction();
+            if (targets.Count == 0) return;
+
+            foreach (var page in targets)
+            {
+                int newRotation = (page.Rotation + deltaAngle) % 360;
+                if (newRotation < 0) newRotation += 360;
+                page.Rotation = newRotation;
+
+                if (deltaAngle == 90 || deltaAngle == 270)
+                {
+                    double tempW = page.Width;
+                    page.Width = page.Height;
+                    page.Height = tempW;
+
+                    double tempPointW = page.PdfPageWidthPoint;
+                    page.PdfPageWidthPoint = page.PdfPageHeightPoint;
+                    page.PdfPageHeightPoint = tempPointW;
+                }
+            }
+        }
+
+        private void BtnRotateRight_Click(object sender, RoutedEventArgs e)
+        {
+            RotateSelectedPages(90);
+        }
 
         private void RefreshPageIndexes()
         {

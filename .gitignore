@@ -491,3 +491,5 @@ $RECYCLE.BIN/
 crash_dump.txt
 build_output.txt
 TestFiles/테스트_부산_OCR*.pdf
+
+*.7z
