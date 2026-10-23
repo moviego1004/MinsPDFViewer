@@ -493,6 +493,12 @@ build_output.txt
 # 대용량 테스트 PDF (로컬 전용)
 tests/TestFiles/테스트_부산_OCR*.pdf
 
+# 빌드 산출물 (Directory.Build.props: build\Debug, build\Release, build\publish, build\obj)
+/build/Debug/
+/build/Release/
+/build/publish/
+/build/obj/
+
 # 배포 산출물 (build/release.bat 결과)
 dist/
 

@@ -13,8 +13,8 @@
 !define APP_VERSION "1.0.0"
 !define APP_EXE "MinsPDFViewer.exe"
 
-; 경로는 이 스크립트(build\) 기준. publish.bat이 만든 결과를 설치 파일로 묶어 dist\에 둔다.
-!define BUILD_DIR "..\src\MinsPDFViewer\bin\Release\net8.0-windows10.0.19041.0\win-x64\publish"
+; 경로는 이 스크립트(build\) 기준. publish.bat이 만든 build\publish를 설치 파일로 묶어 dist\에 둔다.
+!define BUILD_DIR "publish"
 !define APP_ICON "..\src\MinsPDFViewer\Assets\MinsPDFViewer.ico"
 
 Name "${APP_NAME}"

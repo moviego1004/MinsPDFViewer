@@ -21,6 +21,8 @@ tests/
 doc/                        개발 문서
 assets/                     디자인 원본 (로고·아이콘 PNG/ICO, 설치 파일 아이콘)
 build/                      빌드·배포 스크립트, NSIS 설치 스크립트
+  Debug/ Release/           빌드 결과 (프로젝트별 하위 폴더, git 제외)
+  publish/ obj/             게시 결과·중간 파일 (git 제외)
 lib/                        NuGet에 없는 외부 라이브러리 자리 (현재 비어 있음)
 dist/                       설치 파일 출력 (git 제외)
 ```
@@ -33,13 +35,14 @@ dotnet run --project src\MinsPDFViewer
 dotnet test tests\MinsPDFViewer.Tests
 ```
 
-실행 파일: `src\MinsPDFViewer\bin\Debug\net8.0-windows10.0.19041.0\win-x64\MinsPDFViewer.exe`
-(self-contained 빌드라 .NET 런타임이 같은 폴더에 들어 있다. 테스트 출력 폴더에는 exe를 두지 않는다.)
+실행 파일: `build\Debug\MinsPDFViewer\MinsPDFViewer.exe` (Release는 `build\Release\MinsPDFViewer\`)
+- 모든 프로젝트의 출력 경로는 루트 `Directory.Build.props`에서 정한다. `src\`·`tests\`에는 소스만 남는다.
+- self-contained 빌드라 .NET 런타임이 exe와 같은 폴더에 들어 있다. 테스트 출력 폴더에는 exe를 두지 않는다.
 
 ## 배포
 
 ```bat
 build\release.bat        :: publish + 설치 파일 → dist\MinsPDFViewer_Setup_v<버전>.exe
-build\publish.bat        :: publish만
+build\publish.bat        :: publish만 → build\publish
 build\makeSetup.bat      :: 설치 파일만 (NSIS 필요: C:\Program Files (x86)\NSIS)
 ```

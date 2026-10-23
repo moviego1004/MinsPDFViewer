@@ -28,7 +28,7 @@
   <!--
     앱은 self-contained(런타임 동봉)라, 참조하면 앱 exe만 이 출력 폴더로 복사되고 런타임은 빠진다.
     그 exe는 실행되지 않으므로("You must install .NET Desktop Runtime") 지운다. 테스트는 dll만 쓴다.
-    앱 실행: src\MinsPDFViewer\bin\<구성>\net8.0-windows10.0.19041.0\win-x64\MinsPDFViewer.exe
+    앱 실행: build\<구성>\MinsPDFViewer\MinsPDFViewer.exe (Directory.Build.props)
   -->
   <Target Name="RemoveCopiedAppHost" AfterTargets="Build">
     <Delete Files="$(OutDir)MinsPDFViewer.exe" />
