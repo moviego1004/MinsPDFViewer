@@ -33,6 +33,9 @@ dotnet run --project src\MinsPDFViewer
 dotnet test tests\MinsPDFViewer.Tests
 ```
 
+실행 파일: `src\MinsPDFViewer\bin\Debug\net8.0-windows10.0.19041.0\win-x64\MinsPDFViewer.exe`
+(self-contained 빌드라 .NET 런타임이 같은 폴더에 들어 있다. 테스트 출력 폴더에는 exe를 두지 않는다.)
+
 ## 배포
 
 ```bat
