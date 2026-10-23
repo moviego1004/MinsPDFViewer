@@ -54,13 +54,22 @@ namespace MinsPDFViewer
             var result = new SignatureValidationResult();
             try
             {
-                byte[] fileBytes = File.ReadAllBytes(filePath);
-                int totalLen = field.ByteRange[1] + field.ByteRange[3];
-                byte[] signedContent = new byte[totalLen];
-                Buffer.BlockCopy(fileBytes, field.ByteRange[0], signedContent, 0, field.ByteRange[1]);
-                Buffer.BlockCopy(fileBytes, field.ByteRange[2], signedContent, field.ByteRange[1], field.ByteRange[3]);
+                using var file = new FileStream(filePath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+                long[] range = field.ByteRange;
+                if (range.Length != 4 || range[0] != 0 || range[1] < 0 || range[2] < range[1] || range[3] < 0 || range[2] + range[3] > file.Length)
+                    throw new Exception("서명 범위(/ByteRange)가 잘못되었습니다.");
 
-                var processable = new CmsProcessableByteArray(signedContent);
+                // 서명이 빠진 구간은 정확히 /Contents <...> 여야 한다 (다른 내용을 서명 밖으로 빼는 위조 방지)
+                file.Position = range[1];
+                int open = file.ReadByte();
+                file.Position = range[2] - 1;
+                int close = file.ReadByte();
+                if (open != '<' || close != '>')
+                    throw new Exception("서명 범위가 서명 값(/Contents)과 맞지 않습니다.");
+
+                result.CoversWholeDocument = range[2] + range[3] == file.Length;
+
+                var processable = new PdfSignatureService.FileRangeProcessable(file, range);
                 var cmsMsg = new CmsSignedData(processable, field.Contents);
                 var signerStore = cmsMsg.GetSignerInfos();
                 var signers = signerStore.GetSigners();
@@ -79,8 +88,10 @@ namespace MinsPDFViewer
                     if (signer.Verify(cert))
                     {
                         result.IsValid = true;
-                        result.IsDocumentModified = false;
-                        result.Message = "서명이 유효하며, 문서가 수정되지 않았습니다.";
+                        result.IsDocumentModified = !result.CoversWholeDocument;
+                        result.Message = result.CoversWholeDocument
+                            ? "서명이 유효하며, 문서가 수정되지 않았습니다."
+                            : "서명한 판은 그대로입니다. 서명 이후 덧붙여 저장된 변경(주석·다른 서명 등)이 있습니다.";
                     }
                     else
                     {
@@ -120,6 +131,13 @@ namespace MinsPDFViewer
                 if (string.IsNullOrEmpty(result.SignerName))
                     result.SignerName = "서명자 정보 없음";
             }
+            catch (CmsException ex) when (ex.Message.Contains("digest", StringComparison.OrdinalIgnoreCase))
+            {
+                // 서명 범위의 바이트가 서명할 때와 다름 = 변조
+                result.IsValid = false;
+                result.IsDocumentModified = true;
+                result.Message = "문서 데이터와 서명 해시값이 일치하지 않습니다. (변조됨)";
+            }
             catch (Exception ex)
             {
                 result.IsValid = false;
@@ -129,150 +147,218 @@ namespace MinsPDFViewer
             return result;
         }
 
+        /// <summary>서명 필드(위젯 + 서명 사전). xref 스트림·객체 스트림 문서도 읽는다.</summary>
         private static List<SignatureFieldInfo> ReadSignatureFields(string filePath)
         {
-            string text = Encoding.Latin1.GetString(File.ReadAllBytes(filePath));
-            var objects = ReadObjects(text);
-            var pageIndexByObject = BuildPageIndexMap(objects);
             var result = new List<SignatureFieldInfo>();
+            using var store = PdfObjectStore.Open(filePath);
 
-            foreach (var field in objects.Values)
+            var pages = store.GetPageRefs();
+            var pageIndexByObject = new Dictionary<(int, int), int>();
+            var pageByWidget = new Dictionary<(int, int), int>();
+            var directWidgets = new List<(string Dict, int PageIndex)>();
+            for (int i = 0; i < pages.Count; i++)
             {
-                if (!Regex.IsMatch(field.Content, @"/Subtype\s*/Widget") ||
-                    !Regex.IsMatch(field.Content, @"/FT\s*/Sig"))
+                pageIndexByObject[pages[i]] = i;
+                if (!store.TryGetValue(pages[i], out var pageObj))
+                    continue;
+                string? annots = store.ResolveValue(PdfSyntax.GetValue(PdfSyntax.ExtractLeadingDictionary(pageObj.Content), "Annots"));
+                if (annots == null || !annots.StartsWith("[", StringComparison.Ordinal))
+                    continue;
+                foreach (var item in PdfSyntax.ParseArrayItems(annots))
+                {
+                    if (PdfSyntax.TryParseReference(item, out int n, out int g))
+                        pageByWidget[(n, g)] = i;
+                    else if (item.TrimStart().StartsWith("<<", StringComparison.Ordinal))
+                        directWidgets.Add((item.Trim(), i)); // /Annots 안에 직접 쓴 주석 사전
+                }
+            }
+
+            var candidates = new List<(string Dict, int Number, int PageIndex)>();
+            foreach (int number in store.ObjectNumbers)
+            {
+                var obj = store.GetObject(number, 0);
+                if (obj == null || !obj.Content.StartsWith("<<", StringComparison.Ordinal))
+                    continue;
+                try
+                {
+                    candidates.Add((PdfSyntax.ExtractLeadingDictionary(obj.Content), number, pageByWidget.TryGetValue((number, 0), out int wp) ? wp : -1));
+                }
+                catch (FormatException)
+                {
+                }
+            }
+            candidates.AddRange(directWidgets.Select(d => (d.Dict, -1, d.PageIndex)));
+
+            foreach (var (widget, number, annotsPage) in candidates)
+            {
+                if (PdfSyntax.GetValue(widget, "Subtype") != "/Widget")
                     continue;
 
-                var valueRef = TryReadReference(field.Content, "V");
-                if (valueRef == null || !objects.TryGetValue((valueRef.ObjectNumber, valueRef.Generation), out var sigObject))
+                // /FT·/V·/T는 위젯에 없으면 부모 필드에서
+                string? ft = InheritedFieldValue(store, widget, "FT");
+                if (ft != "/Sig")
                     continue;
+                // 서명 값은 보통 간접 객체지만 직접 사전으로 넣는 도구도 있다
+                string? sig = store.ResolveValue(InheritedFieldValue(store, widget, "V"));
+                if (sig == null || !sig.StartsWith("<<", StringComparison.Ordinal))
+                    continue;
+                sig = PdfSyntax.ExtractLeadingDictionary(sig);
 
-                var pageRef = TryReadReference(field.Content, "P");
-                int pageIndex = pageRef != null && pageIndexByObject.TryGetValue((pageRef.ObjectNumber, pageRef.Generation), out int idx)
-                    ? idx
-                    : -1;
+                int pageIndex = -1;
+                if (PdfSyntax.TryParseReference(PdfSyntax.GetValue(widget, "P"), out int pn, out int pg) &&
+                    pageIndexByObject.TryGetValue((pn, pg), out int idx))
+                    pageIndex = idx;
+                else
+                    pageIndex = annotsPage;
 
-                if (!TryReadRect(field.Content, out var rect) ||
-                    !TryReadByteRange(sigObject.Content, out var byteRange) ||
-                    !TryReadContents(sigObject.Content, out var contents))
+                if (!TryReadRect(store.ResolveValue(PdfSyntax.GetValue(widget, "Rect")) ?? "", out var rect) ||
+                    !TryReadByteRange(store.ResolveValue(PdfSyntax.GetValue(sig, "ByteRange")) ?? "", out var byteRange) ||
+                    !TryReadContents(PdfSyntax.GetValue(sig, "Contents") ?? "", out var contents))
                     continue;
 
                 result.Add(new SignatureFieldInfo
                 {
-                    FieldName = ReadLiteral(field.Content, "T"),
+                    FieldName = DecodeTextString(InheritedFieldValue(store, widget, "T")),
                     PageIndex = pageIndex,
                     Rect = rect,
                     ByteRange = byteRange,
                     Contents = contents,
-                    Reason = ReadTextString(sigObject.Content, "Reason"),
-                    Location = ReadTextString(sigObject.Content, "Location"),
-                    SigningTime = ReadPdfDate(sigObject.Content)
+                    Reason = DecodeTextString(PdfSyntax.GetValue(sig, "Reason")),
+                    Location = DecodeTextString(PdfSyntax.GetValue(sig, "Location")),
+                    SigningTime = ReadPdfDate(DecodeTextString(PdfSyntax.GetValue(sig, "M")))
                 });
             }
 
             return result;
         }
 
-        private static Dictionary<(int Number, int Generation), int> BuildPageIndexMap(Dictionary<(int Number, int Generation), PdfObjectInfo> objects)
+        private static string? InheritedFieldValue(PdfObjectStore store, string dict, string key)
         {
-            var map = new Dictionary<(int, int), int>();
-            var catalog = objects.Values.LastOrDefault(o => Regex.IsMatch(o.Content, @"/Type\s*/Catalog"));
-            if (catalog == null)
-                return map;
-
-            var pagesRef = TryReadReference(catalog.Content, "Pages");
-            if (pagesRef == null)
-                return map;
-
-            var pages = new List<PageRef>();
-            VisitPageTree(pagesRef, objects, new HashSet<(int, int)>(), pages);
-            for (int i = 0; i < pages.Count; i++)
-                map[(pages[i].ObjectNumber, pages[i].Generation)] = i;
-            return map;
-        }
-
-        private static void VisitPageTree(PageRef node, Dictionary<(int Number, int Generation), PdfObjectInfo> objects, HashSet<(int, int)> visited, List<PageRef> pages)
-        {
-            if (!visited.Add((node.ObjectNumber, node.Generation)))
-                return;
-            if (!objects.TryGetValue((node.ObjectNumber, node.Generation), out var obj))
-                return;
-            if (Regex.IsMatch(obj.Content, @"/Type\s*/Page\b") && !Regex.IsMatch(obj.Content, @"/Type\s*/Pages\b"))
+            var visited = new HashSet<(int, int)>();
+            for (int depth = 0; depth < 32; depth++)
             {
-                pages.Add(node);
-                return;
+                string? value = PdfSyntax.GetValue(dict, key);
+                if (value != null)
+                    return value;
+                if (!PdfSyntax.TryParseReference(PdfSyntax.GetValue(dict, "Parent"), out int n, out int g) || !visited.Add((n, g)) ||
+                    !store.TryGetValue((n, g), out var parent))
+                    return null;
+                dict = PdfSyntax.ExtractLeadingDictionary(parent.Content);
             }
-
-            foreach (var child in ReadReferencesFromArray(obj.Content, "Kids"))
-                VisitPageTree(child, objects, visited, pages);
+            return null;
         }
 
-        private static Dictionary<(int Number, int Generation), PdfObjectInfo> ReadObjects(string text)
+        /// <summary>PDF 문자열 값 (리터럴 또는 16진, UTF-16BE BOM 지원).</summary>
+        internal static string? DecodeTextString(string? value)
         {
-            var objects = new Dictionary<(int, int), PdfObjectInfo>();
-            foreach (Match match in Regex.Matches(text, @"(?s)(\d+)\s+(\d+)\s+obj\s*(.*?)\s*endobj"))
-            {
-                int number = int.Parse(match.Groups[1].Value, CultureInfo.InvariantCulture);
-                int generation = int.Parse(match.Groups[2].Value, CultureInfo.InvariantCulture);
-                objects[(number, generation)] = new PdfObjectInfo(number, generation, match.Groups[3].Value.Trim());
-            }
-            return objects;
-        }
-
-        private static PageRef? TryReadReference(string text, string key)
-        {
-            var match = Regex.Match(text, @$"/{Regex.Escape(key)}\s+(\d+)\s+(\d+)\s+R");
-            if (!match.Success)
+            if (value == null)
                 return null;
-            return new PageRef(int.Parse(match.Groups[1].Value, CultureInfo.InvariantCulture), int.Parse(match.Groups[2].Value, CultureInfo.InvariantCulture));
+            value = value.Trim();
+            byte[] bytes;
+            if (value.StartsWith("<", StringComparison.Ordinal) && value.EndsWith(">", StringComparison.Ordinal))
+            {
+                string hex = new string(value.Substring(1, value.Length - 2).Where(Uri.IsHexDigit).ToArray());
+                if (hex.Length % 2 == 1)
+                    hex += "0";
+                bytes = Convert.FromHexString(hex);
+            }
+            else if (value.StartsWith("(", StringComparison.Ordinal) && value.EndsWith(")", StringComparison.Ordinal))
+            {
+                bytes = UnescapeLiteralBytes(value.Substring(1, value.Length - 2));
+            }
+            else
+            {
+                return value;
+            }
+
+            if (bytes.Length >= 2 && bytes[0] == 0xFE && bytes[1] == 0xFF)
+                return Encoding.BigEndianUnicode.GetString(bytes, 2, bytes.Length - 2);
+            return Encoding.Latin1.GetString(bytes);
         }
 
-        private static List<PageRef> ReadReferencesFromArray(string text, string key)
+        private static byte[] UnescapeLiteralBytes(string s)
         {
-            var match = Regex.Match(text, @$"/{Regex.Escape(key)}\s*\[(.*?)\]", RegexOptions.Singleline);
-            if (!match.Success)
-                return new List<PageRef>();
-            return Regex.Matches(match.Groups[1].Value, @"(\d+)\s+(\d+)\s+R")
-                .Select(m => new PageRef(int.Parse(m.Groups[1].Value, CultureInfo.InvariantCulture), int.Parse(m.Groups[2].Value, CultureInfo.InvariantCulture)))
-                .ToList();
+            var output = new List<byte>(s.Length);
+            for (int i = 0; i < s.Length; i++)
+            {
+                char c = s[i];
+                if (c != '\\' || i + 1 >= s.Length)
+                {
+                    output.Add((byte)c);
+                    continue;
+                }
+                char n = s[++i];
+                switch (n)
+                {
+                    case 'n': output.Add((byte)'\n'); break;
+                    case 'r': output.Add((byte)'\r'); break;
+                    case 't': output.Add((byte)'\t'); break;
+                    case 'b': output.Add((byte)'\b'); break;
+                    case 'f': output.Add((byte)'\f'); break;
+                    case '\r':
+                        if (i + 1 < s.Length && s[i + 1] == '\n') i++;
+                        break;
+                    case '\n': break;
+                    default:
+                        if (n >= '0' && n <= '7')
+                        {
+                            int code = n - '0';
+                            for (int k = 0; k < 2 && i + 1 < s.Length && s[i + 1] >= '0' && s[i + 1] <= '7'; k++)
+                                code = code * 8 + (s[++i] - '0');
+                            output.Add((byte)code);
+                        }
+                        else
+                        {
+                            output.Add((byte)n);
+                        }
+                        break;
+                }
+            }
+            return output.ToArray();
         }
 
         private static bool TryReadRect(string text, out SignaturePdfRect rect)
         {
             rect = default;
-            var match = Regex.Match(text, @"/Rect\s*\[\s*([-\d.]+)\s+([-\d.]+)\s+([-\d.]+)\s+([-\d.]+)\s*\]");
-            if (!match.Success)
+            var items = PdfSyntax.ParseArrayItems(text);
+            if (items.Count != 4)
                 return false;
-            double left = double.Parse(match.Groups[1].Value, CultureInfo.InvariantCulture);
-            double bottom = double.Parse(match.Groups[2].Value, CultureInfo.InvariantCulture);
-            double right = double.Parse(match.Groups[3].Value, CultureInfo.InvariantCulture);
-            double top = double.Parse(match.Groups[4].Value, CultureInfo.InvariantCulture);
+            var n = new double[4];
+            for (int i = 0; i < 4; i++)
+            {
+                if (!PdfSyntax.TryParseNumber(items[i], out n[i]))
+                    return false;
+            }
+            double left = Math.Min(n[0], n[2]), right = Math.Max(n[0], n[2]);
+            double bottom = Math.Min(n[1], n[3]), top = Math.Max(n[1], n[3]);
             rect = new SignaturePdfRect(left, bottom, right - left, top - bottom);
             return true;
         }
 
-        private static bool TryReadByteRange(string text, out int[] byteRange)
+        private static bool TryReadByteRange(string text, out long[] byteRange)
         {
-            byteRange = Array.Empty<int>();
-            var match = Regex.Match(text, @"/ByteRange\s*\[\s*(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s*\]");
-            if (!match.Success)
+            byteRange = Array.Empty<long>();
+            var items = PdfSyntax.ParseArrayItems(text);
+            if (items.Count != 4)
                 return false;
-            byteRange = new[]
+            var values = new long[4];
+            for (int i = 0; i < 4; i++)
             {
-                int.Parse(match.Groups[1].Value, CultureInfo.InvariantCulture),
-                int.Parse(match.Groups[2].Value, CultureInfo.InvariantCulture),
-                int.Parse(match.Groups[3].Value, CultureInfo.InvariantCulture),
-                int.Parse(match.Groups[4].Value, CultureInfo.InvariantCulture)
-            };
+                if (!long.TryParse(items[i].Trim(), NumberStyles.None, CultureInfo.InvariantCulture, out values[i]))
+                    return false;
+            }
+            byteRange = values;
             return true;
         }
 
         private static bool TryReadContents(string text, out byte[] contents)
         {
             contents = Array.Empty<byte>();
-            var match = Regex.Match(text, @"/Contents\s*<([0-9A-Fa-f\s]+)>", RegexOptions.Singleline);
-            if (!match.Success)
+            text = text.Trim();
+            if (!text.StartsWith("<", StringComparison.Ordinal) || !text.EndsWith(">", StringComparison.Ordinal))
                 return false;
-            string hex = Regex.Replace(match.Groups[1].Value, @"\s+", "");
+            string hex = new string(text.Substring(1, text.Length - 2).Where(Uri.IsHexDigit).ToArray());
             if (hex.Length % 2 == 1)
                 hex += "0";
             byte[] paddedContents = Convert.FromHexString(hex);
@@ -310,29 +396,8 @@ namespace MinsPDFViewer
             return paddedContents.Take(length).ToArray();
         }
 
-        private static string? ReadLiteral(string text, string key)
+        private static DateTime? ReadPdfDate(string? value)
         {
-            var match = Regex.Match(text, @$"/{Regex.Escape(key)}\s*\((.*?)\)", RegexOptions.Singleline);
-            return match.Success ? UnescapeLiteral(match.Groups[1].Value) : null;
-        }
-
-        private static string? ReadTextString(string text, string key)
-        {
-            var hex = Regex.Match(text, @$"/{Regex.Escape(key)}\s*<([0-9A-Fa-f]+)>");
-            if (hex.Success)
-            {
-                byte[] bytes = Convert.FromHexString(hex.Groups[1].Value);
-                if (bytes.Length >= 2 && bytes[0] == 0xFE && bytes[1] == 0xFF)
-                    return Encoding.BigEndianUnicode.GetString(bytes, 2, bytes.Length - 2);
-                return Encoding.Latin1.GetString(bytes);
-            }
-
-            return ReadLiteral(text, key);
-        }
-
-        private static DateTime? ReadPdfDate(string text)
-        {
-            string? value = ReadLiteral(text, "M");
             if (string.IsNullOrWhiteSpace(value))
                 return null;
             value = value.StartsWith("D:", StringComparison.Ordinal) ? value.Substring(2) : value;
@@ -340,11 +405,6 @@ namespace MinsPDFViewer
                 DateTime.TryParseExact(value.Substring(0, 14), "yyyyMMddHHmmss", CultureInfo.InvariantCulture, DateTimeStyles.None, out var parsed))
                 return parsed;
             return null;
-        }
-
-        private static string UnescapeLiteral(string value)
-        {
-            return value.Replace("\\(", "(").Replace("\\)", ")").Replace("\\\\", "\\");
         }
 
         private string ParseCnFromDn(string dn)
@@ -363,15 +423,13 @@ namespace MinsPDFViewer
             catch { return dn; }
         }
 
-        private sealed record PdfObjectInfo(int Number, int Generation, string Content);
-        private sealed record PageRef(int ObjectNumber, int Generation);
 
         private sealed class SignatureFieldInfo
         {
             public string? FieldName { get; set; }
             public int PageIndex { get; set; }
             public SignaturePdfRect Rect { get; set; }
-            public int[] ByteRange { get; set; } = Array.Empty<int>();
+            public long[] ByteRange { get; set; } = Array.Empty<long>();
             public byte[] Contents { get; set; } = Array.Empty<byte>();
             public string? Reason { get; set; }
             public string? Location { get; set; }

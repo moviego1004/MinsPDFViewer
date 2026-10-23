@@ -21,12 +21,19 @@ namespace MinsPDFViewer
     /// </summary>
     public sealed class PrintSource : IDisposable
     {
-        internal PrintSource(PdfiumDocument document, string documentName, bool fromPendingEdits, bool printRestricted)
+        private readonly Func<bool, PdfiumDocument> _open;
+        private readonly object _sync = new();
+        private PdfiumDocument? _plain;
+        private PdfiumDocument? _flattened;
+
+        /// <param name="open">flatten=true면 주석·위젯(서명 도장 등)을 내용으로 굳혀 여는 인쇄용 사본.</param>
+        internal PrintSource(Func<bool, PdfiumDocument> open, string documentName, bool fromPendingEdits, bool printRestricted)
         {
-            Document = document;
+            _open = open;
             DocumentName = documentName;
             FromPendingEdits = fromPendingEdits;
             PrintRestricted = printRestricted;
+            var document = GetDocument(includeAnnotations: false);
             lock (PdfService.PdfiumLock)
             {
                 PageCount = document.PageCount;
@@ -34,7 +41,22 @@ namespace MinsPDFViewer
             }
         }
 
-        internal PdfiumDocument Document { get; }
+        /// <summary>
+        /// 인쇄용 문서. 프린터 DC에는 위젯(서명 도장·양식 칸)을 따로 덧그릴 수 없어서, 주석을 포함할 때는
+        /// 페이지를 열 때 평탄화한 사본을 쓴다 (메모리에서만, 원본·임시본 파일은 그대로). 미리보기도 같은 사본.
+        /// </summary>
+        internal PdfiumDocument GetDocument(bool includeAnnotations)
+        {
+            lock (_sync)
+            {
+                if (_disposed)
+                    throw new ObjectDisposedException(nameof(PrintSource));
+                return includeAnnotations
+                    ? _flattened ??= _open(true)
+                    : _plain ??= _open(false);
+            }
+        }
+
         public string DocumentName { get; }
         public int PageCount { get; }
 
@@ -51,14 +73,22 @@ namespace MinsPDFViewer
 
         public void Dispose()
         {
-            if (_disposed)
-                return;
-            _disposed = true;
+            PdfiumDocument? plain, flattened;
+            lock (_sync)
+            {
+                if (_disposed)
+                    return;
+                _disposed = true;
+                plain = _plain;
+                flattened = _flattened;
+                _plain = _flattened = null;
+            }
             lock (PdfService.PdfiumLock)
             {
                 try
                 {
-                    Document.Dispose();
+                    plain?.Dispose();
+                    flattened?.Dispose();
                 }
                 catch
                 {
@@ -152,10 +182,10 @@ namespace MinsPDFViewer
             var result = await Task.Run(() =>
             {
                 // 화면 문서와 별도의 PDFium 문서 (인쇄 중에도 화면 렌더링은 그대로)
-                var document = bytes != null
-                    ? PdfiumDocument.OpenBytes(bytes, null)
-                    : PdfiumDocument.Open(filePath, password);
-                return new PrintSource(document, model.FileName, pendingEdits, restricted);
+                Func<bool, PdfiumDocument> open = bytes != null
+                    ? flatten => PdfiumDocument.OpenBytes(bytes, null, flatten)
+                    : flatten => PdfiumDocument.Open(filePath, password, flatten);
+                return new PrintSource(open, model.FileName, pendingEdits, restricted);
             });
 
             Log($"PrepareAsync pages={result.PageCount} pendingEdits={pendingEdits} restricted={result.PrintRestricted} elapsed={watch.ElapsedMilliseconds}ms");
@@ -264,7 +294,7 @@ namespace MinsPDFViewer
             if (pageIndex < 0 || pageIndex >= source.PageCount || pixelWidth <= 0 || pixelHeight <= 0)
                 return null;
 
-            return PdfService.RenderBitmap(source.Document, pageIndex, pixelWidth, pixelHeight, 0,
+            return PdfService.RenderBitmap(source.GetDocument(includeAnnotations), pageIndex, pixelWidth, pixelHeight, 0,
                 GetRenderFlags(includeAnnotations, grayscale), PixelRegion.Full(pixelWidth, pixelHeight), postProcess: false);
         }
 
@@ -278,7 +308,7 @@ namespace MinsPDFViewer
                 var watch = Stopwatch.StartNew();
                 using var document = new MinsPrintDocument(source, options, progress, ct);
                 document.Print();
-                Log($"Printed {document.PrintedPages} page(s) to '{options.PrinterName}' copies={options.Copies} elapsed={watch.ElapsedMilliseconds}ms restricted={source.PrintRestricted}");
+                Log($"Printed {document.PrintedPages} page(s) to '{options.PrinterName}' copies={options.Copies} rotatedFallback={document.RotatedPages} elapsed={watch.ElapsedMilliseconds}ms restricted={source.PrintRestricted}");
             }, ct);
         }
 
@@ -295,6 +325,8 @@ namespace MinsPDFViewer
             private int _cursor;
 
             public int PrintedPages { get; private set; }
+            /// <summary>드라이버가 용지 방향을 무시해서 내용을 돌려 찍은 페이지 수.</summary>
+            public int RotatedPages { get; private set; }
 
             public MinsPrintDocument(PrintSource source, PrintOptions options, IProgress<int>? progress, CancellationToken ct)
             {
@@ -376,7 +408,13 @@ namespace MinsPDFViewer
                 double hardY = e.PageSettings.HardMarginY;
                 var clip = graphics.VisibleClipBounds;
                 var printable = new PrintRect(hardX, hardY, clip.Width, clip.Height);
-                var rect = PrintLayout.Compute(size.Width, size.Height, e.PageBounds.Width, e.PageBounds.Height, printable, _options.ScaleMode);
+
+                // 드라이버가 이 페이지의 용지 방향 요청을 무시했으면 내용을 반시계 90° 돌려 꽉 차게 (일반 드라이버의 가로 인쇄와 같은 방향: 위쪽이 왼쪽)
+                bool rotateContent = PrintLayout.NeedsContentRotation(size.Width, size.Height, e.PageBounds.Width, e.PageBounds.Height,
+                    _options.Orientation, DefaultPageSettings.Landscape);
+                double layoutW = rotateContent ? size.Height : size.Width;
+                double layoutH = rotateContent ? size.Width : size.Height;
+                var rect = PrintLayout.Compute(layoutW, layoutH, e.PageBounds.Width, e.PageBounds.Height, printable, _options.ScaleMode);
 
                 // 장치 픽셀 (원점 = 인쇄 가능 영역 왼쪽 위)
                 float dpiX = graphics.DpiX;
@@ -392,7 +430,8 @@ namespace MinsPDFViewer
                 {
                     lock (PdfService.PdfiumLock)
                     {
-                        _source.Document.RenderToDC(pageIndex, hdc, bounds.X, bounds.Y, bounds.Width, bounds.Height, 0, GetRenderFlags(_options));
+                        _source.GetDocument(_options.IncludeAnnotations).RenderToDC(pageIndex, hdc, bounds.X, bounds.Y, bounds.Width, bounds.Height,
+                            rotateContent ? 3 : 0, GetRenderFlags(_options));
                     }
                 }
                 finally
@@ -400,6 +439,8 @@ namespace MinsPDFViewer
                     graphics.ReleaseHdc(hdc);
                 }
 
+                if (rotateContent)
+                    RotatedPages++;
                 _cursor++;
                 PrintedPages++;
                 _progress?.Report(PrintedPages);

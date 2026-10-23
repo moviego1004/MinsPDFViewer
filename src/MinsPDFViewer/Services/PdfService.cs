@@ -117,8 +117,8 @@ namespace MinsPDFViewer
                             PageIndex = i,
                             OriginalFilePath = model.FilePath,
                             OriginalPageIndex = i,
-                            Width = w * model.Zoom,
-                            Height = h * model.Zoom,
+                            Width = w * model.Zoom * PdfDocumentModel.DipPerPoint,
+                            Height = h * model.Zoom * PdfDocumentModel.DipPerPoint,
                             PdfPageWidthPoint = w,
                             PdfPageHeightPoint = h,
                             CropWidthPoint = w,
@@ -321,10 +321,13 @@ namespace MinsPDFViewer
                         return;
                     }
 
-                    var (pageW, pageH) = document.GetPageSize(pageVM.OriginalPageIndex);
                     bool hasSignatures = document.SignatureCount > 0;
-                    double sx = pageVM.Width / Math.Max(1.0, pageW);
-                    double sy = pageVM.Height / Math.Max(1.0, pageH);
+                    int index = pageVM.OriginalPageIndex;
+                    int rotate = ToPdfiumRotate(pageVM.Rotation);
+                    double viewW = pageVM.Width, viewH = pageVM.Height;
+                    // PDF 사용자 공간 → 화면(페이지 DIP): CropBox 오프셋·원본 /Rotate·앱 회전을 PDFium과 같게
+                    Rect ToView(double l, double t, double r, double b) => document.PageRectToView(index, viewW, viewH, rotate, l, t, r, b);
+                    double dipPerPoint = pageVM.PdfPageWidthPoint > 0 ? pageVM.Width / pageVM.PdfPageWidthPoint : 1.0;
 
                     document.ReadAnnotations(pageVM.OriginalPageIndex, info =>
                     {
@@ -333,7 +336,7 @@ namespace MinsPDFViewer
                             info.ImageBytes = imageBytes;
                     }).ForEach(info =>
                     {
-                        var annotation = ToPdfAnnotation(info, pageH, sx, sy, hasSignatures);
+                        var annotation = ToPdfAnnotation(info, ToView, dipPerPoint, hasSignatures);
                         if (annotation != null)
                             extracted.Add(annotation);
                     });
@@ -357,7 +360,8 @@ namespace MinsPDFViewer
             }
         }
 
-        private static PdfAnnotation? ToPdfAnnotation(PdfiumDocument.AnnotationInfo info, double pageH, double sx, double sy, bool hasSignatures)
+        /// <param name="dipPerPoint">지금 화면에서 1포인트의 DIP (글자 크기 변환).</param>
+        private static PdfAnnotation? ToPdfAnnotation(PdfiumDocument.AnnotationInfo info, Func<double, double, double, double, Rect> toView, double dipPerPoint, bool hasSignatures)
         {
             int subtype = info.Subtype;
             bool isWidget = subtype == PdfiumNative.FPDF_ANNOT_WIDGET;
@@ -368,10 +372,11 @@ namespace MinsPDFViewer
             if (isWidget && (!hasSignatures || string.IsNullOrEmpty(info.FieldName)))
                 return null;
 
-            double uiX = info.Left * sx;
-            double uiY = (pageH - info.Top) * sy;
-            double uiW = Math.Abs(info.Right - info.Left) * sx;
-            double uiH = Math.Abs(info.Top - info.Bottom) * sy;
+            var view = toView(info.Left, info.Top, info.Right, info.Bottom);
+            double uiX = view.X;
+            double uiY = view.Y;
+            double uiW = view.Width;
+            double uiH = view.Height;
 
             string content = info.Contents;
             if (!isWidget && content.StartsWith("Title: ", StringComparison.Ordinal))
@@ -390,7 +395,8 @@ namespace MinsPDFViewer
                 if (!string.IsNullOrEmpty(da))
                 {
                     var fs = Regex.Match(da, @"([\d.]+)\s+Tf");
-                    if (fs.Success) double.TryParse(fs.Groups[1].Value, NumberStyles.Float, CultureInfo.InvariantCulture, out fontSize);
+                    if (fs.Success && double.TryParse(fs.Groups[1].Value, NumberStyles.Float, CultureInfo.InvariantCulture, out double pt))
+                        fontSize = pt * dipPerPoint;
                     var rgb = Regex.Match(da, @"([\d.]+)\s+([\d.]+)\s+([\d.]+)\s+rg");
                     if (rgb.Success)
                     {
@@ -406,7 +412,7 @@ namespace MinsPDFViewer
                 if (PdfiumEditService.TryDecodeManagedFreeText(content, out PdfiumEditService.ManagedFreeTextMetadata managed))
                 {
                     content = managed.Text;
-                    fontSize = managed.FontSize;
+                    fontSize = managed.FontSizePt.HasValue ? managed.FontSizePt.Value * dipPerPoint : managed.FontSize;
                     fontFamily = managed.FontFamily;
                     isBold = managed.IsBold;
                     foreground = Frozen(new SolidColorBrush(managed.ForegroundColor));

@@ -148,6 +148,32 @@ namespace MinsPDFViewer
         [DllImport(Dll, CallingConvention = CallingConvention.Cdecl)]
         public static extern void FPDF_RenderPage_Close(IntPtr page);
 
+        // ── 양식(위젯: 서명 도장·입력 칸) ──
+        // FPDF_ANNOT만으로는 위젯이 그려지지 않는다. 양식 환경을 열고 페이지를 그린 뒤 FPDF_FFLDraw로 덧그린다.
+        public const int FormFillInfoSize = 512; // FPDF_FORMFILLINFO (version 1, 콜백은 모두 비움 = 읽기 전용)
+
+        [DllImport(Dll, CallingConvention = CallingConvention.Cdecl)]
+        public static extern IntPtr FPDFDOC_InitFormFillEnvironment(IntPtr document, IntPtr formInfo);
+
+        [DllImport(Dll, CallingConvention = CallingConvention.Cdecl)]
+        public static extern void FPDFDOC_ExitFormFillEnvironment(IntPtr form);
+
+        [DllImport(Dll, CallingConvention = CallingConvention.Cdecl)]
+        public static extern void FORM_OnAfterLoadPage(IntPtr page, IntPtr form);
+
+        [DllImport(Dll, CallingConvention = CallingConvention.Cdecl)]
+        public static extern void FORM_OnBeforeClosePage(IntPtr page, IntPtr form);
+
+        [DllImport(Dll, CallingConvention = CallingConvention.Cdecl)]
+        public static extern void FPDF_FFLDraw(IntPtr form, IntPtr bitmap, IntPtr page, int startX, int startY, int sizeX, int sizeY, int rotate, int flags);
+
+        // ── 평탄화 (인쇄: 프린터 DC에는 FFLDraw를 못 쓰므로 주석·위젯을 내용으로 굳혀 그린다) ──
+        public const int FLAT_PRINT = 1;
+        public const int FLATTEN_SUCCESS = 1;
+
+        [DllImport(Dll, CallingConvention = CallingConvention.Cdecl)]
+        public static extern int FPDFPage_Flatten(IntPtr page, int flag);
+
         // ── 텍스트 ──
         [DllImport(Dll, CallingConvention = CallingConvention.Cdecl)]
         public static extern IntPtr FPDFText_LoadPage(IntPtr page);

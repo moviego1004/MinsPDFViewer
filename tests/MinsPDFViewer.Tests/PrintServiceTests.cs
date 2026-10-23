@@ -103,6 +103,17 @@ namespace MinsPDFViewer.Tests
             Assert.False(PrintLayout.IsLandscape(842, 595, PrintOrientationMode.Portrait));
         }
 
+        [Theory]
+        [InlineData(842, 595, 850, 1100, PrintOrientationMode.Auto, true)]   // 가로 페이지인데 세로 용지가 옴 → 돌림
+        [InlineData(842, 595, 1100, 850, PrintOrientationMode.Auto, false)]  // 가로 용지가 옴 → 그대로
+        [InlineData(595, 842, 850, 1100, PrintOrientationMode.Auto, false)]
+        [InlineData(595, 842, 850, 1100, PrintOrientationMode.Landscape, true)]
+        [InlineData(600, 600, 850, 1100, PrintOrientationMode.Auto, false)]  // 정사각형 페이지는 돌리지 않음
+        public void ContentRotation_WhenDriverIgnoresOrientation(double w, double h, double paperW, double paperH, PrintOrientationMode mode, bool expected)
+        {
+            Assert.Equal(expected, PrintLayout.NeedsContentRotation(w, h, paperW, paperH, mode));
+        }
+
         // ── 현재 상태 판단 ──
 
         [Fact]

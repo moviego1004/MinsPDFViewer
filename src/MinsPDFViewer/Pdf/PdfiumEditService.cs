@@ -271,7 +271,9 @@ namespace MinsPDFViewer
                     InsertBlankPages(document, snapshot, ref ocrFont, textFonts);
                     LogProfile("insert blank pages", profileWatch);
 
-                    return SaveDocumentToFile(document, outputPath, snapshot.RemoveSecurity);
+                    bool incremental = ShouldSaveIncrementally(document, snapshot);
+                    LogProfile($"incremental={incremental}", profileWatch);
+                    return SaveDocumentToFile(document, outputPath, snapshot.RemoveSecurity, incremental);
                 }
                 finally
                 {
@@ -402,12 +404,49 @@ namespace MinsPDFViewer
 
         private const uint FPDF_REMOVE_SECURITY = 1 << 2; // 예전 값 3은 폐지 예정(FPDF_REMOVE_SECURITY_DEPRECATED)
 
-        private static bool SaveDocumentToFile(IntPtr document, string outputPath, bool removeSecurity = false)
+        private const uint FPDF_INCREMENTAL = 1;
+
+        /// <summary>
+        /// 전자서명이 있는 문서는 원본 바이트를 그대로 두고 뒤에 덧붙여 저장해야 기존 서명이 유지된다.
+        /// 페이지 구성(삭제·삽입·순서)이 그대로이고, 원본 xref가 표 형식이며(PDFium의 증분 저장은
+        /// xref 스트림 문서에서 깨진 파일을 만든다 — 158.0.8111에서 확인), 암호화되지 않았을 때만.
+        /// </summary>
+        private static bool ShouldSaveIncrementally(IntPtr document, DocumentSnapshot snapshot)
+        {
+            if (snapshot.RemoveSecurity || PdfiumNative.FPDF_GetSignatureCount(document) <= 0)
+                return false;
+            bool sameStructure = !snapshot.Pages.Any(p => p.IsBlankPage) &&
+                                 snapshot.Pages.Count == snapshot.SourcePageCount &&
+                                 !HasReorderedSourcePages(snapshot);
+            if (!sameStructure)
+            {
+                LogToFile("[SAVE] Signed document with page changes: full save (existing signatures will no longer cover the file)");
+                return false;
+            }
+            try
+            {
+                using var store = PdfObjectStore.Open(snapshot.SourcePath);
+                if (store.LastXrefIsStream || store.IsEncrypted)
+                {
+                    LogToFile($"[SAVE] Signed document but xrefStream={store.LastXrefIsStream} encrypted={store.IsEncrypted}: full save");
+                    return false;
+                }
+                return true;
+            }
+            catch (Exception ex)
+            {
+                LogToFile($"[SAVE] Incremental check failed: {ex.Message}");
+                return false;
+            }
+        }
+
+        private static bool SaveDocumentToFile(IntPtr document, string outputPath, bool removeSecurity = false, bool incremental = false)
         {
             var profileWatch = Stopwatch.StartNew();
             using var stream = new FileStream(outputPath, FileMode.Create, FileAccess.Write, FileShare.None);
             var writer = new NativeFileWriter(stream);
-            bool saved = NativeMethods.FPDF_SaveAsCopy(document, ref writer.FileWrite, removeSecurity ? FPDF_REMOVE_SECURITY : 0);
+            uint flags = removeSecurity ? FPDF_REMOVE_SECURITY : incremental ? FPDF_INCREMENTAL : 0;
+            bool saved = NativeMethods.FPDF_SaveAsCopy(document, ref writer.FileWrite, flags);
             LogToFile($"[SAVE_PROFILE] SaveAsCopy elapsed={profileWatch.ElapsedMilliseconds}ms output='{outputPath}'");
             stream.Flush(true);
 
@@ -481,6 +520,9 @@ namespace MinsPDFViewer
         {
             double width = pageSnapshot.PdfWidth > 0 ? pageSnapshot.PdfWidth : 595;
             double height = pageSnapshot.PdfHeight > 0 ? pageSnapshot.PdfHeight : 842;
+            // PdfWidth·PdfHeight는 회전 후(화면) 크기 → 90°/270°면 돌리기 전 크기로 만든다
+            if (pageSnapshot.Rotation % 180 == 90)
+                (width, height) = (height, width);
             IntPtr page = NativeMethods.FPDFPage_New(document, targetIndex, width, height);
             if (page == IntPtr.Zero)
                 return;
@@ -560,7 +602,8 @@ namespace MinsPDFViewer
 
             try
             {
-                var rect = ToPdfRect(pageSnapshot, annotation);
+                var frame = MapToPage(page, pageSnapshot, annotation.X, annotation.Y, annotation.Width, annotation.Height);
+                var rect = frame.Rect;
                 NativeMethods.FPDFAnnot_SetRect(pdfAnnotation, ref rect);
                 NativeMethods.FPDFAnnot_SetFlags(pdfAnnotation, 4);
 
@@ -568,8 +611,9 @@ namespace MinsPDFViewer
                 {
                     NativeMethods.FPDFAnnot_SetColor(pdfAnnotation, FPDFANNOT_COLORTYPE_Color, 0, 0, 0, 0);
                     NativeMethods.FPDFAnnot_SetColor(pdfAnnotation, FPDFANNOT_COLORTYPE_InteriorColor, 255, 255, 255, 0);
-                    NativeMethods.FPDFAnnot_SetStringValue(pdfAnnotation, "Contents", EncodeManagedFreeText(annotation));
-                    AddFreeTextAppearance(document, pdfAnnotation, rect, annotation, textFonts);
+                    NativeMethods.FPDFAnnot_SetStringValue(pdfAnnotation, "Contents",
+                        EncodeManagedFreeText(annotation, frame.Height / Math.Max(0.001, annotation.Height)));
+                    AddFreeTextAppearance(document, pdfAnnotation, frame, annotation, textFonts);
                 }
                 else
                 {
@@ -585,7 +629,7 @@ namespace MinsPDFViewer
                         color.B,
                         color.A == 0 ? (byte)80 : color.A);
 
-                    var quadPoints = ToQuadPoints(rect);
+                    var quadPoints = frame.Quad;
                     NativeMethods.FPDFAnnot_SetAttachmentPoints(pdfAnnotation, 0, ref quadPoints);
                 }
             }
@@ -607,11 +651,12 @@ namespace MinsPDFViewer
 
             try
             {
-                var rect = ToPdfRect(pageSnapshot, annotation);
+                var frame = MapToPage(page, pageSnapshot, annotation.X, annotation.Y, annotation.Width, annotation.Height);
+                var rect = frame.Rect;
                 NativeMethods.FPDFAnnot_SetRect(pdfAnnotation, ref rect);
                 NativeMethods.FPDFAnnot_SetFlags(pdfAnnotation, 4);
                 NativeMethods.FPDFAnnot_SetStringValue(pdfAnnotation, "Contents", EncodeManagedImageStamp(annotation));
-                AddImageAppearance(document, page, pdfAnnotation, rect, annotation.ImageBytes);
+                AddImageAppearance(document, page, pdfAnnotation, frame, annotation.ImageBytes);
             }
             finally
             {
@@ -619,7 +664,7 @@ namespace MinsPDFViewer
             }
         }
 
-        private static void AddImageAppearance(IntPtr document, IntPtr page, IntPtr annotation, NativeMethods.FS_RECTF rect, byte[] imageBytes)
+        private static void AddImageAppearance(IntPtr document, IntPtr page, IntPtr annotation, PageFrame frame, byte[] imageBytes)
         {
             IntPtr imageObject = NativeMethods.FPDFPageObj_NewImageObj(document);
             if (imageObject == IntPtr.Zero)
@@ -648,11 +693,13 @@ namespace MinsPDFViewer
                     }
                 }
 
-                double width = Math.Max(0.1, rect.right - rect.left);
-                double height = Math.Max(0.1, rect.top - rect.bottom);
-                NativeMethods.FPDFPageObj_Transform(imageObject, width, 0, 0, height, rect.left, rect.bottom);
+                // 화면에서 바로 선 그림: 위쪽이 화면 위가 되게 (페이지 /Rotate 반영)
+                double width = Math.Max(0.1, frame.Width);
+                double height = Math.Max(0.1, frame.Height);
+                NativeMethods.FPDFPageObj_Transform(imageObject, width, 0, 0, height, 0, 0);
+                frame.Apply(imageObject);
                 appended = NativeMethods.FPDFAnnot_AppendObject(annotation, imageObject);
-                LogToFile($"ImageStamp annotation inserted. Rect=({rect.left},{rect.bottom},{width},{height}), Bytes={imageBytes.Length}, Appended={appended}");
+                LogToFile($"ImageStamp annotation inserted. Rect=({frame.Rect.left},{frame.Rect.bottom},{frame.Rect.right},{frame.Rect.top}) rot={frame.Rotation}, Bytes={imageBytes.Length}, Appended={appended}");
             }
             finally
             {
@@ -1030,13 +1077,14 @@ namespace MinsPDFViewer
             }
         }
 
-        private static string EncodeManagedFreeText(AnnotationSnapshot snapshot)
+        private static string EncodeManagedFreeText(AnnotationSnapshot snapshot, double pointsPerDip)
         {
             var metadata = new ManagedFreeTextMetadata
             {
                 Text = snapshot.Text ?? string.Empty,
                 FontFamily = snapshot.FontFamily ?? "Malgun Gothic",
                 FontSize = snapshot.FontSize,
+                FontSizePt = Math.Round(snapshot.FontSize * pointsPerDip, 2),
                 IsBold = snapshot.IsBold,
                 ForegroundA = snapshot.Foreground.A,
                 ForegroundR = snapshot.Foreground.R,
@@ -1047,8 +1095,10 @@ namespace MinsPDFViewer
             return FreeTextMetadataV2Prefix + Convert.ToBase64String(Encoding.UTF8.GetBytes(json));
         }
 
-        private static void AddFreeTextAppearance(IntPtr document, IntPtr annotation, NativeMethods.FS_RECTF rect, AnnotationSnapshot snapshot, Dictionary<string, IntPtr> textFonts)
+        private static void AddFreeTextAppearance(IntPtr document, IntPtr annotation, PageFrame frame, AnnotationSnapshot snapshot, Dictionary<string, IntPtr> textFonts)
         {
+            // 글자는 화면 방향의 가상 사각형(왼쪽 아래 원점)에 배치한 뒤 frame으로 페이지에 놓는다
+            var rect = new NativeMethods.FS_RECTF { left = 0, bottom = 0, right = (float)frame.Width, top = (float)frame.Height };
             IntPtr font = GetOrLoadTextFont(document, snapshot.FontFamily, snapshot.IsBold, textFonts);
             if (font == IntPtr.Zero)
                 return;
@@ -1085,7 +1135,7 @@ namespace MinsPDFViewer
                     break;
 
                 if (line.Length > 0)
-                    AddFreeTextLine(document, annotation, font, line, fontSize, innerWidth, rect.left + 2, y, snapshot.Foreground);
+                    AddFreeTextLine(document, annotation, font, line, fontSize, innerWidth, rect.left + 2, y, snapshot.Foreground, frame);
                 y -= lineHeight;
             }
         }
@@ -1107,7 +1157,7 @@ namespace MinsPDFViewer
             return font;
         }
 
-        private static void AddFreeTextLine(IntPtr document, IntPtr annotation, IntPtr font, string line, double fontSize, double maxWidth, double x, double y, Color color)
+        private static void AddFreeTextLine(IntPtr document, IntPtr annotation, IntPtr font, string line, double fontSize, double maxWidth, double x, double y, Color color, PageFrame frame)
         {
             IntPtr textObject = NativeMethods.FPDFPageObj_CreateTextObj(document, font, (float)fontSize);
             if (textObject == IntPtr.Zero)
@@ -1135,6 +1185,7 @@ namespace MinsPDFViewer
                 }
 
                 NativeMethods.FPDFPageObj_Transform(textObject, horizontalScale, 0, 0, 1, x, y);
+                frame.Apply(textObject);
                 appended = NativeMethods.FPDFAnnot_AppendObject(annotation, textObject);
             }
             finally
@@ -1303,27 +1354,85 @@ namespace MinsPDFViewer
             watch.Restart();
         }
 
-        private static NativeMethods.FS_RECTF ToPdfRect(PageSnapshot page, AnnotationSnapshot annotation)
+        /// <summary>
+        /// 화면의 주석 사각형(페이지 DIP, 왼쪽 위 원점)을 PDF 사용자 공간에 놓는 틀.
+        /// 페이지 /Rotate(앱 회전 포함, 이미 FPDFPage_SetRotation으로 반영됨)와 CropBox 오프셋을 PDFium과 같은 방식(FPDF_DeviceToPage)으로 처리한다.
+        /// Apply: 화면 방향의 가상 좌표(x 오른쪽, y 위, 원점 = 사각형 왼쪽 아래, 포인트) → 사용자 공간.
+        /// </summary>
+        private readonly struct PageFrame
         {
-            double pageWidth = page.Width > 0 ? page.Width : page.PdfWidth;
-            double pageHeight = page.Height > 0 ? page.Height : page.PdfHeight;
-            double scaleX = page.PdfWidth / Math.Max(1.0, pageWidth);
-            double scaleY = page.PdfHeight / Math.Max(1.0, pageHeight);
-            float left = (float)(annotation.X * scaleX);
-            float right = (float)((annotation.X + annotation.Width) * scaleX);
-            float top = (float)(page.PdfHeight - (annotation.Y * scaleY));
-            float bottom = (float)(page.PdfHeight - ((annotation.Y + annotation.Height) * scaleY));
-            if (Math.Abs(right - left) < 1.0f)
+            public NativeMethods.FS_RECTF Rect { get; init; }
+            public NativeMethods.FS_QUADPOINTSF Quad { get; init; }
+            public double Width { get; init; }
+            public double Height { get; init; }
+            public int Rotation { get; init; }
+            public double A { get; init; }
+            public double B { get; init; }
+            public double C { get; init; }
+            public double D { get; init; }
+            public double E { get; init; }
+            public double F { get; init; }
+
+            public void Apply(IntPtr pageObject) => NativeMethods.FPDFPageObj_Transform(pageObject, A, B, C, D, E, F);
+        }
+
+        private const int MapPrecision = 16;
+
+        private static PageFrame MapToPage(IntPtr page, PageSnapshot ps, double x, double y, double w, double h)
+        {
+            double viewWidthPt = ps.PdfWidth > 0 ? ps.PdfWidth : 595;
+            double viewHeightPt = ps.PdfHeight > 0 ? ps.PdfHeight : 842;
+            double viewWidthDip = ps.Width > 0 ? ps.Width : viewWidthPt;
+            double s = viewWidthPt / Math.Max(1.0, viewWidthDip); // 포인트 / DIP
+            int sizeX = Math.Max(1, (int)Math.Round(viewWidthPt * MapPrecision));
+            int sizeY = Math.Max(1, (int)Math.Round(viewHeightPt * MapPrecision));
+
+            (double X, double Y) ToUser(double vx, double vy)
+            {
+                PdfiumNative.FPDF_DeviceToPage(page, 0, 0, sizeX, sizeY, 0,
+                    (int)Math.Round(vx * s * MapPrecision), (int)Math.Round(vy * s * MapPrecision), out double px, out double py);
+                return (px, py);
+            }
+
+            var ul = ToUser(x, y);
+            var ur = ToUser(x + w, y);
+            var ll = ToUser(x, y + h);
+            var lr = ToUser(x + w, y + h);
+
+            float left = (float)Math.Min(Math.Min(ul.X, ur.X), Math.Min(ll.X, lr.X));
+            float right = (float)Math.Max(Math.Max(ul.X, ur.X), Math.Max(ll.X, lr.X));
+            float bottom = (float)Math.Min(Math.Min(ul.Y, ur.Y), Math.Min(ll.Y, lr.Y));
+            float top = (float)Math.Max(Math.Max(ul.Y, ur.Y), Math.Max(ll.Y, lr.Y));
+            if (right - left < 1.0f)
                 right = left + 1.0f;
-            if (Math.Abs(top - bottom) < 1.0f)
+            if (top - bottom < 1.0f)
                 bottom = top - 1.0f;
 
-            return new NativeMethods.FS_RECTF
+            int rotation = ((NativeMethods.FPDFPage_GetRotation(page) % 4) + 4) % 4;
+            // 화면 오른쪽·위쪽이 사용자 공간에서 가리키는 방향 (/Rotate는 시계 방향)
+            var (a, b, c, d) = rotation switch
             {
-                left = Math.Min(left, right),
-                right = Math.Max(left, right),
-                top = Math.Max(top, bottom),
-                bottom = Math.Min(top, bottom)
+                1 => (0.0, 1.0, -1.0, 0.0),
+                2 => (-1.0, 0.0, 0.0, -1.0),
+                3 => (0.0, -1.0, 1.0, 0.0),
+                _ => (1.0, 0.0, 0.0, 1.0)
+            };
+
+            return new PageFrame
+            {
+                Rect = new NativeMethods.FS_RECTF { left = left, right = right, top = top, bottom = bottom },
+                Quad = new NativeMethods.FS_QUADPOINTSF
+                {
+                    x1 = (float)ul.X, y1 = (float)ul.Y,
+                    x2 = (float)ur.X, y2 = (float)ur.Y,
+                    x3 = (float)ll.X, y3 = (float)ll.Y,
+                    x4 = (float)lr.X, y4 = (float)lr.Y
+                },
+                Width = Math.Max(1.0, w * s),
+                Height = Math.Max(1.0, h * s),
+                Rotation = rotation * 90,
+                A = a, B = b, C = c, D = d,
+                E = ll.X, F = ll.Y
             };
         }
 
@@ -1341,21 +1450,6 @@ namespace MinsPDFViewer
                 right = Math.Max(left, right),
                 top = Math.Max(top, bottom),
                 bottom = Math.Min(top, bottom)
-            };
-        }
-
-        private static NativeMethods.FS_QUADPOINTSF ToQuadPoints(NativeMethods.FS_RECTF rect)
-        {
-            return new NativeMethods.FS_QUADPOINTSF
-            {
-                x1 = rect.left,
-                y1 = rect.top,
-                x2 = rect.right,
-                y2 = rect.top,
-                x3 = rect.left,
-                y3 = rect.bottom,
-                x4 = rect.right,
-                y4 = rect.bottom
             };
         }
 
@@ -1395,7 +1489,10 @@ namespace MinsPDFViewer
         {
             public string Text { get; set; } = string.Empty;
             public string FontFamily { get; set; } = "Malgun Gothic";
+            /// <summary>예전 형식: 저장할 때 화면 단위 (줌에 따라 다름).</summary>
             public double FontSize { get; set; } = 12;
+            /// <summary>글자 크기(포인트). 있으면 이것을 쓴다 (2026-10-23부터 기록).</summary>
+            public double? FontSizePt { get; set; }
             public bool IsBold { get; set; }
             public byte ForegroundA { get; set; } = 255;
             public byte ForegroundR { get; set; }

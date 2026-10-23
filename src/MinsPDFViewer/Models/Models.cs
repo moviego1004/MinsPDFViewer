@@ -20,7 +20,11 @@ namespace MinsPDFViewer
         public string FilePath { get; set; } = "";
         public string FileName { get; set; } = "";
 
+        /// <summary>1포인트(1/72인치)를 화면 DIP(1/96인치)로: 100% = 실제 크기.</summary>
+        public const double DipPerPoint = 96.0 / 72.0;
+
         private double _zoom = 1.0;
+        /// <summary>1.0 = 실제 크기 (페이지 화면 크기 = 포인트 × Zoom × <see cref="DipPerPoint"/>).</summary>
         public double Zoom
         {
             get => _zoom; set

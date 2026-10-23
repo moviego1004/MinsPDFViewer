@@ -23,8 +23,16 @@ namespace MinsPDFViewer
                 TxtIcon.Text = "✅";
                 TxtTitle.Text = "서명이 유효합니다";
                 TxtTitle.Foreground = Brushes.Green;
-                TxtIntegrity.Text = "문서가 서명 이후 수정되지 않았습니다.";
-                TxtIntegrity.Foreground = Brushes.Green;
+                if (result.CoversWholeDocument)
+                {
+                    TxtIntegrity.Text = "문서가 서명 이후 수정되지 않았습니다.";
+                    TxtIntegrity.Foreground = Brushes.Green;
+                }
+                else
+                {
+                    TxtIntegrity.Text = "서명한 판은 그대로입니다. 서명 이후 추가된 변경(주석·다른 서명 등)이 있습니다.";
+                    TxtIntegrity.Foreground = Brushes.DarkOrange;
+                }
             }
             else
             {

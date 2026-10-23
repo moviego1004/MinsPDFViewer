@@ -589,18 +589,11 @@ namespace MinsPDFViewer
 
             try
             {
-                // UI Coordinate -> PDF Coordinate Logic
-                // clickPoint is relative to Grid (Page View).
-                // PDF Origin is Bottom-Left. UI is Top-Left.
-                
-                // Calculate Scale
-                double scaleX = pageVM.Width / pageVM.PdfPageWidthPoint;
-                double scaleY = pageVM.Height / pageVM.PdfPageHeightPoint;
-                
-                if (scaleX <= 0 || scaleY <= 0) return false;
-
-                double pdfX = clickPoint.X / scaleX;
-                double pdfY = pageVM.PdfPageHeightPoint - (clickPoint.Y / scaleY);
+                // 화면 좌표 → PDF 사용자 공간 (CropBox·/Rotate·앱 회전 반영)
+                var pdfPoint = ViewPointToPdf(SelectedDocument, pageVM, clickPoint);
+                if (pdfPoint == null) return false;
+                double pdfX = pdfPoint.Value.X;
+                double pdfY = pdfPoint.Value.Y;
 
                 var result = _signatureVerificationService.VerifySignatureAtPoint(
                     SelectedDocument.FilePath,
@@ -901,14 +894,7 @@ namespace MinsPDFViewer
                 {
                     try
                     {
-                        double effectivePdfWidth = (targetPage.CropWidthPoint > 0) ? targetPage.CropWidthPoint : targetPage.PdfPageWidthPoint;
-                        double effectivePdfHeight = (targetPage.CropHeightPoint > 0) ? targetPage.CropHeightPoint : targetPage.PdfPageHeightPoint;
-                        double scaleX = effectivePdfWidth / targetPage.Width;
-                        double scaleY = effectivePdfHeight / targetPage.Height;
-                        double pdfX = targetPage.CropX + (ann.X * scaleX);
-                        double pdfY = (targetPage.CropY + effectivePdfHeight) - ((ann.Y + ann.Height) * scaleY);
-
-                        var pdfRect = new SignaturePdfRect(pdfX, pdfY, ann.Width * scaleX, ann.Height * scaleY);
+                        var pdfRect = ViewRectToPdf(SelectedDocument, targetPage, new Rect(ann.X, ann.Y, ann.Width, ann.Height));
                         string tempPath = Path.GetTempFileName();
                         string signedPath = saveDlg.FileName;
 
@@ -934,6 +920,39 @@ namespace MinsPDFViewer
                     catch (Exception ex) { MessageBox.Show($"서명 실패: {ex.Message}"); }
                 }
             }
+        }
+
+        /// <summary>화면의 점(페이지 DIP) → PDF 사용자 공간. 빈 페이지는 null.</summary>
+        private static Point? ViewPointToPdf(PdfDocumentModel model, PdfPageViewModel page, Point viewPoint)
+        {
+            var document = model.Document;
+            if (document == null || page.IsBlankPage)
+                return null;
+            lock (PdfService.PdfiumLock)
+            {
+                if (document.IsDisposed)
+                    return null;
+                var p = document.ViewToPage(page.OriginalPageIndex, page.Width, page.Height, PdfService.ToPdfiumRotate(page.Rotation), viewPoint.X, viewPoint.Y);
+                return new Point(p.X, p.Y);
+            }
+        }
+
+        /// <summary>
+        /// 화면의 사각형(페이지 DIP) → PDF 사용자 공간 사각형. CropBox 오프셋·원본 /Rotate·앱 회전 반영.
+        /// 저장(PDFium)은 페이지 사용자 공간을 바꾸지 않으므로 저장본에도 그대로 쓴다. 빈 페이지는 회전 없는 새 페이지 기준.
+        /// </summary>
+        private static SignaturePdfRect ViewRectToPdf(PdfDocumentModel model, PdfPageViewModel page, Rect viewRect)
+        {
+            var a = ViewPointToPdf(model, page, viewRect.TopLeft);
+            var b = ViewPointToPdf(model, page, viewRect.BottomRight);
+            if (a == null || b == null)
+            {
+                double s = page.PdfPageWidthPoint / Math.Max(1.0, page.Width);
+                return new SignaturePdfRect(viewRect.X * s, page.PdfPageHeightPoint - viewRect.Bottom * s, viewRect.Width * s, viewRect.Height * s);
+            }
+            double left = Math.Min(a.Value.X, b.Value.X), right = Math.Max(a.Value.X, b.Value.X);
+            double bottom = Math.Min(a.Value.Y, b.Value.Y), top = Math.Max(a.Value.Y, b.Value.Y);
+            return new SignaturePdfRect(left, bottom, right - left, top - bottom);
         }
 
         private FrameworkElement? GetParentContentPresenter(DependencyObject child)
@@ -1390,17 +1409,25 @@ namespace MinsPDFViewer
         }
 
         private void BtnZoomIn_Click(object sender, RoutedEventArgs e) => AdjustDocumentZoom(1);
+        /// <summary>100% = 실제 크기 (1인치 = 화면 1인치).</summary>
+        private void BtnActualSize_Click(object sender, RoutedEventArgs e)
+        {
+            if (SelectedDocument != null)
+                SelectedDocument.Zoom = 1.0;
+        }
         private void BtnZoomOut_Click(object sender, RoutedEventArgs e) => AdjustDocumentZoom(-1);
         private void BtnFitWidth_Click(object sender, RoutedEventArgs e) {
             if (SelectedDocument != null && SelectedDocument.Pages.Count > 0) {
                 double viewWidth = MainTabControl.ActualWidth - 60;
-                if (viewWidth > 0 && SelectedDocument.Pages[0].Width > 0) SelectedDocument.Zoom = viewWidth / SelectedDocument.Pages[0].Width;
+                double pageWidthDip = SelectedDocument.Pages[0].PdfPageWidthPoint * PdfDocumentModel.DipPerPoint;
+                if (viewWidth > 0 && pageWidthDip > 0) SelectedDocument.Zoom = Math.Clamp(viewWidth / pageWidthDip, 0.1, 5.0);
             }
         }
         private void BtnFitHeight_Click(object sender, RoutedEventArgs e) {
             if (SelectedDocument != null && SelectedDocument.Pages.Count > 0) {
                 double viewHeight = MainTabControl.ActualHeight - 60;
-                if (viewHeight > 0 && SelectedDocument.Pages[0].Height > 0) SelectedDocument.Zoom = viewHeight / SelectedDocument.Pages[0].Height;
+                double pageHeightDip = SelectedDocument.Pages[0].PdfPageHeightPoint * PdfDocumentModel.DipPerPoint;
+                if (viewHeight > 0 && pageHeightDip > 0) SelectedDocument.Zoom = Math.Clamp(viewHeight / pageHeightDip, 0.1, 5.0);
             }
         }
         private void DocumentZoom_PreviewMouseWheel(object sender, MouseWheelEventArgs e)
@@ -1458,6 +1485,9 @@ namespace MinsPDFViewer
 
             if (EditToolsToolbar != null)
                 EditToolsToolbar.Visibility = IsEditMode ? Visibility.Visible : Visibility.Collapsed;
+
+            if (EditToolItems != null)
+                EditToolItems.Visibility = IsEditMode ? Visibility.Visible : Visibility.Collapsed;
 
             bool shouldShowTextTools = IsEditMode &&
                 (_currentTool == "TEXT" ||
@@ -1517,10 +1547,10 @@ namespace MinsPDFViewer
             {
                 if (sender is RadioButton rb && rb.IsChecked == true)
                 {
-                    string content = rb.Content.ToString();
-                    if (content.Contains("선택")) _currentTool = "CURSOR";
-                    else if (content.Contains("형광펜")) _currentTool = "HIGHLIGHT";
-                    else if (content.Contains("텍스트"))
+                    // 단추 내용은 아이콘+글자 묶음이라 이름으로 구분한다
+                    if (rb == RbCursor) _currentTool = "CURSOR";
+                    else if (rb == RbHighlight) _currentTool = "HIGHLIGHT";
+                    else if (rb == RbText)
                     {
                         _currentTool = "TEXT";
                         IsEditMode = true;
@@ -1583,6 +1613,11 @@ namespace MinsPDFViewer
                 return;
             }
 
+            bool ctrl = (Keyboard.Modifiers & ModifierKeys.Control) == ModifierKeys.Control;
+            if (ctrl && e.Key == Key.O) { BtnOpen_Click(this, new RoutedEventArgs()); e.Handled = true; return; }
+            if (ctrl && e.Key == Key.S) { BtnSave_Click(this, new RoutedEventArgs()); e.Handled = true; return; }
+            if (ctrl && (e.Key == Key.D0 || e.Key == Key.NumPad0)) { BtnActualSize_Click(this, new RoutedEventArgs()); e.Handled = true; return; }
+
             if (e.Key == Key.V && (Keyboard.Modifiers & ModifierKeys.Control) == ModifierKeys.Control) { PasteClipboardImageToCurrentPage(); e.Handled = true; }
             else if (e.Key == Key.F && (Keyboard.Modifiers & ModifierKeys.Control) == ModifierKeys.Control) { TxtSearch.Focus(); TxtSearch.SelectAll(); e.Handled = true; }
             else if (e.Key == Key.Delete) BtnDeleteAnnotation_Click(this, new RoutedEventArgs());
@@ -1625,8 +1660,9 @@ namespace MinsPDFViewer
 
             double dpiX = image.DpiX > 0 ? image.DpiX : 96;
             double dpiY = image.DpiY > 0 ? image.DpiY : 96;
-            double naturalWidth = image.PixelWidth * 72.0 / dpiX * SelectedDocument.Zoom;
-            double naturalHeight = image.PixelHeight * 72.0 / dpiY * SelectedDocument.Zoom;
+            // 이미지 원래 크기(인치) → 화면 DIP (100% = 실제 크기)
+            double naturalWidth = image.PixelWidth * 96.0 / dpiX * SelectedDocument.Zoom;
+            double naturalHeight = image.PixelHeight * 96.0 / dpiY * SelectedDocument.Zoom;
             if (naturalWidth <= 0 || naturalHeight <= 0)
                 return;
 
@@ -1804,17 +1840,12 @@ namespace MinsPDFViewer
                         return;
                     }
 
-                    double scaleX = pageVM.PdfPageWidthPoint / pageVM.Width;
-                    double scaleY = pageVM.PdfPageHeightPoint / pageVM.Height;
-                    var pdfRect = new SignaturePdfRect(
-                        ann.X * scaleX,
-                        pageVM.PdfPageHeightPoint - ((ann.Y + ann.Height) * scaleY),
-                        ann.Width * scaleX,
-                        ann.Height * scaleY);
+                    var pdfRect = ViewRectToPdf(SelectedDocument, pageVM, new Rect(ann.X, ann.Y, ann.Width, ann.Height));
 
+                    // 파일 속 페이지 번호 (화면에서 순서를 바꿨어도 파일은 원래 순서)
                     var result = _signatureVerificationService.VerifySignatureForAnnotation(
                         SelectedDocument.FilePath,
-                        pageIndex,
+                        pageVM.OriginalPageIndex,
                         ann.FieldName,
                         pdfRect);
 
@@ -2642,8 +2673,8 @@ namespace MinsPDFViewer
                         {
                             double oldWidth = p.Width;
                             double oldHeight = p.Height;
-                            double newWidth = p.PdfPageWidthPoint * doc.Zoom;
-                            double newHeight = p.PdfPageHeightPoint * doc.Zoom;
+                            double newWidth = p.PdfPageWidthPoint * doc.Zoom * PdfDocumentModel.DipPerPoint;
+                            double newHeight = p.PdfPageHeightPoint * doc.Zoom * PdfDocumentModel.DipPerPoint;
                             double scaleX = oldWidth > 0 ? newWidth / oldWidth : 1.0;
                             double scaleY = oldHeight > 0 ? newHeight / oldHeight : 1.0;
 
@@ -2655,11 +2686,14 @@ namespace MinsPDFViewer
                                     annotation.Y *= scaleY;
                                     annotation.Width *= scaleX;
                                     annotation.Height *= scaleY;
+                                    // 글자 크기도 화면 단위라 상자와 같이 (저장할 때 상자 비율로 포인트로 바꾼다)
+                                    if (annotation.Type == AnnotationType.FreeText)
+                                        annotation.FontSize = Math.Max(1.0, annotation.FontSize * scaleY);
                                 }
                             }
 
-                            p.Width = p.PdfPageWidthPoint * doc.Zoom;
-                            p.Height = p.PdfPageHeightPoint * doc.Zoom;
+                            p.Width = newWidth;
+                            p.Height = newHeight;
                             
                             // Optional: Clear ImageSource to force refresh? 
                             // No, keep old image (blurry) until new one arrives to avoid flashing white.
@@ -2676,8 +2710,8 @@ namespace MinsPDFViewer
                 // Initial size calculation based on default Zoom (1.0)
                 foreach(var p in doc.Pages)
                 {
-                    p.Width = p.PdfPageWidthPoint * doc.Zoom;
-                    p.Height = p.PdfPageHeightPoint * doc.Zoom;
+                    p.Width = p.PdfPageWidthPoint * doc.Zoom * PdfDocumentModel.DipPerPoint;
+                    p.Height = p.PdfPageHeightPoint * doc.Zoom * PdfDocumentModel.DipPerPoint;
                 }
                 LogOpenStep("initial page size calculation");
                 
@@ -2908,6 +2942,25 @@ namespace MinsPDFViewer
                 int newRotation = (page.Rotation + deltaAngle) % 360;
                 if (newRotation < 0) newRotation += 360;
                 page.Rotation = newRotation;
+
+                // 화면 주석(형광펜·텍스트 상자·도장·검색 표시)도 페이지와 함께 돈다 → 저장할 때 같은 자리
+                double oldW = page.Width, oldH = page.Height;
+                foreach (var a in page.Annotations)
+                {
+                    double x = a.X, y = a.Y, w = a.Width, h = a.Height;
+                    switch (((deltaAngle % 360) + 360) % 360)
+                    {
+                        case 90:
+                            (a.X, a.Y, a.Width, a.Height) = (oldH - (y + h), x, h, w);
+                            break;
+                        case 180:
+                            (a.X, a.Y) = (oldW - (x + w), oldH - (y + h));
+                            break;
+                        case 270:
+                            (a.X, a.Y, a.Width, a.Height) = (y, oldW - (x + w), h, w);
+                            break;
+                    }
+                }
 
                 if (deltaAngle == 90 || deltaAngle == 270)
                 {

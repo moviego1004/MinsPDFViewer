@@ -88,5 +88,10 @@ namespace MinsPDFViewer
         {
             get; set;
         }// 문서 변조 여부
+        /// <summary>서명 범위가 파일 끝까지인지. false면 서명 이후 증분 저장(주석·다른 서명 등)이 덧붙었다.</summary>
+        public bool CoversWholeDocument
+        {
+            get; set;
+        }
     }
 }

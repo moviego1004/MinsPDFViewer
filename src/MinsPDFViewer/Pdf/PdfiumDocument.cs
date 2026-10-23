@@ -36,17 +36,39 @@ namespace MinsPDFViewer
             public IntPtr TextPage;
         }
 
-        private PdfiumDocument(IntPtr document, string? filePath)
+        private IntPtr _form;
+        private IntPtr _formInfo;
+        private readonly bool _flattenForPrint;
+
+        private PdfiumDocument(IntPtr document, string? filePath, bool flattenForPrint)
         {
             _document = document;
             FilePath = filePath;
             PageCount = PdfiumNative.FPDF_GetPageCount(document);
+            _flattenForPrint = flattenForPrint;
+            if (!flattenForPrint)
+                InitForms();
+        }
+
+        /// <summary>읽기 전용 양식 환경 (콜백 없음). 위젯(서명 도장·입력 칸)을 그리는 데만 쓴다.</summary>
+        private void InitForms()
+        {
+            _formInfo = Marshal.AllocHGlobal(PdfiumNative.FormFillInfoSize);
+            Marshal.Copy(new byte[PdfiumNative.FormFillInfoSize], 0, _formInfo, PdfiumNative.FormFillInfoSize);
+            Marshal.WriteInt32(_formInfo, 0, 1); // version 1
+            _form = PdfiumNative.FPDFDOC_InitFormFillEnvironment(_document, _formInfo);
+            if (_form == IntPtr.Zero)
+            {
+                Marshal.FreeHGlobal(_formInfo);
+                _formInfo = IntPtr.Zero;
+            }
         }
 
         // ── 열기 ─────────────────────────────────────────────────────────
 
         /// <summary>파일을 스트림으로 연다 (통째로 메모리에 올리지 않음). 실패하면 <see cref="PdfiumException"/>.</summary>
-        public static PdfiumDocument Open(string path, string? password)
+        /// <param name="flattenForPrint">페이지를 열 때 주석·위젯을 내용으로 굳힌다 (인쇄용 별도 문서만, 저장하지 않음).</param>
+        public static PdfiumDocument Open(string path, string? password, bool flattenForPrint = false)
         {
             Pdfium.EnsureInitialized();
             var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete, 1, FileOptions.RandomAccess);
@@ -77,7 +99,7 @@ namespace MinsPDFViewer
                     if (doc == IntPtr.Zero)
                         throw new PdfiumException(PdfiumNative.FPDF_GetLastError(), "PDF를 열 수 없습니다");
 
-                    var result = new PdfiumDocument(doc, path)
+                    var result = new PdfiumDocument(doc, path, flattenForPrint)
                     {
                         _stream = stream,
                         _fileAccess = access,
@@ -98,7 +120,7 @@ namespace MinsPDFViewer
         }
 
         /// <summary>메모리의 PDF를 연다 (배열은 문서를 닫을 때까지 고정됨).</summary>
-        public static PdfiumDocument OpenBytes(byte[] bytes, string? password)
+        public static PdfiumDocument OpenBytes(byte[] bytes, string? password, bool flattenForPrint = false)
         {
             Pdfium.EnsureInitialized();
             var handle = GCHandle.Alloc(bytes, GCHandleType.Pinned);
@@ -109,7 +131,7 @@ namespace MinsPDFViewer
                     IntPtr doc = PdfiumNative.FPDF_LoadMemDocument64(handle.AddrOfPinnedObject(), (UIntPtr)bytes.Length, password);
                     if (doc == IntPtr.Zero)
                         throw new PdfiumException(PdfiumNative.FPDF_GetLastError(), "PDF를 열 수 없습니다");
-                    var result = new PdfiumDocument(doc, null) { _pinnedBytes = handle };
+                    var result = new PdfiumDocument(doc, null, flattenForPrint) { _pinnedBytes = handle };
                     handle = default;
                     return result;
                 }
@@ -199,6 +221,17 @@ namespace MinsPDFViewer
             if (page == IntPtr.Zero)
                 return IntPtr.Zero;
 
+            if (_flattenForPrint && PdfiumNative.FPDFPage_Flatten(page, PdfiumNative.FLAT_PRINT) == PdfiumNative.FLATTEN_SUCCESS)
+            {
+                // 평탄화한 내용은 페이지를 다시 열어야 반영된다 (메모리에서만, 파일은 그대로)
+                PdfiumNative.FPDF_ClosePage(page);
+                page = PdfiumNative.FPDF_LoadPage(_document, pageIndex);
+                if (page == IntPtr.Zero)
+                    return IntPtr.Zero;
+            }
+            if (_form != IntPtr.Zero)
+                PdfiumNative.FORM_OnAfterLoadPage(page, _form);
+
             _pages[pageIndex] = new CachedPage { Page = page };
             _pageOrder.AddFirst(pageIndex);
             while (_pageOrder.Count > PageCacheCapacity)
@@ -222,12 +255,16 @@ namespace MinsPDFViewer
             return cached.TextPage;
         }
 
-        private static void ClosePage(CachedPage cached)
+        private void ClosePage(CachedPage cached)
         {
             if (cached.TextPage != IntPtr.Zero)
                 PdfiumNative.FPDFText_ClosePage(cached.TextPage);
             if (cached.Page != IntPtr.Zero)
+            {
+                if (_form != IntPtr.Zero)
+                    PdfiumNative.FORM_OnBeforeClosePage(cached.Page, _form);
                 PdfiumNative.FPDF_ClosePage(cached.Page);
+            }
             cached.TextPage = IntPtr.Zero;
             cached.Page = IntPtr.Zero;
         }
@@ -264,6 +301,7 @@ namespace MinsPDFViewer
                 if (shouldCancel == null)
                 {
                     PdfiumNative.FPDF_RenderPageBitmap(bitmap, page, -region.X, -region.Y, fullWidth, fullHeight, rotate & 3, flags);
+                    DrawForms(bitmap, page, region, fullWidth, fullHeight, rotate, flags);
                     return buffer;
                 }
 
@@ -283,7 +321,10 @@ namespace MinsPDFViewer
                             return null;
                         status = PdfiumNative.FPDF_RenderPage_Continue(page, ref pause);
                     }
-                    return status == PdfiumNative.FPDF_RENDER_DONE ? buffer : null;
+                    if (status != PdfiumNative.FPDF_RENDER_DONE)
+                        return null;
+                    DrawForms(bitmap, page, region, fullWidth, fullHeight, rotate, flags);
+                    return buffer;
                 }
                 finally
                 {
@@ -297,6 +338,12 @@ namespace MinsPDFViewer
                     PdfiumNative.FPDFBitmap_Destroy(bitmap);
                 handle.Free();
             }
+        }
+
+        private void DrawForms(IntPtr bitmap, IntPtr page, PixelRegion region, int fullWidth, int fullHeight, int rotate, int flags)
+        {
+            if (_form != IntPtr.Zero && (flags & PdfiumNative.FPDF_ANNOT) != 0)
+                PdfiumNative.FPDF_FFLDraw(_form, bitmap, page, -region.X, -region.Y, fullWidth, fullHeight, rotate & 3, flags);
         }
 
         /// <summary>GDI DC(프린터)에 직접 그린다. 좌표는 장치 픽셀 (DC 원점 기준).</summary>
@@ -562,8 +609,19 @@ namespace MinsPDFViewer
                     ClosePage(cached);
                 _pages.Clear();
                 _pageOrder.Clear();
+                if (_form != IntPtr.Zero)
+                {
+                    PdfiumNative.FPDFDOC_ExitFormFillEnvironment(_form);
+                    _form = IntPtr.Zero;
+                }
                 PdfiumNative.FPDF_CloseDocument(_document);
                 _document = IntPtr.Zero;
+            }
+
+            if (_formInfo != IntPtr.Zero)
+            {
+                Marshal.FreeHGlobal(_formInfo);
+                _formInfo = IntPtr.Zero;
             }
 
             if (_fileAccess != IntPtr.Zero)

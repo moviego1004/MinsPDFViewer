@@ -60,26 +60,31 @@ namespace MinsPDFViewer
 
         public bool InjectOcrLayer(string pdfPath, List<OcrPageData> ocrPages)
         {
-            byte[] originalBytes = File.ReadAllBytes(pdfPath);
-            string originalText = Encoding.Latin1.GetString(originalBytes);
-
-            var trailer = ReadTrailer(originalText);
-            if (trailer.IsEncrypted)
+            byte[]? append;
+            using (var objects = PdfObjectStore.Open(pdfPath))
             {
-                // 암호화 문서는 새 객체도 암호화해야 한다. 평문 스트림을 덧붙이면 깨지므로 건너뛴다.
-                _log?.Invoke("[GlyphlessOCR] Skipped: encrypted PDF (text layer would need encryption).");
-                return false;
+                if (objects.IsEncrypted)
+                {
+                    // 암호화 문서는 새 객체도 암호화해야 한다. 평문 스트림을 덧붙이면 깨지므로 건너뛴다.
+                    _log?.Invoke("[GlyphlessOCR] Skipped: encrypted PDF (text layer would need encryption).");
+                    return false;
+                }
+                append = BuildOcrAppend(objects, ocrPages);
             }
 
-            var objects = ReadObjects(originalText);
-            if (!objects.TryGetValue((trailer.RootObjectNumber, trailer.RootGeneration), out var rootObject))
-                throw new InvalidOperationException("PDF catalog object was not found.");
+            if (append == null)
+                return false;
+            PdfIncrementalWriter.AppendToFile(pdfPath, append);
+            return true;
+        }
 
-            var pageRefs = ReadPageReferences(objects, rootObject.Content);
+        private byte[]? BuildOcrAppend(PdfObjectStore objects, List<OcrPageData> ocrPages)
+        {
+            var pageRefs = objects.GetPageRefs().Select(r => new PageRef(r.Number, r.Generation)).ToList();
             if (pageRefs.Count == 0)
                 throw new InvalidOperationException("PDF page tree could not be parsed.");
 
-            int nextObjectNumber = trailer.Size;
+            int nextObjectNumber = objects.Size;
             var writes = new List<(int Number, int Generation, byte[] Data)>();
             void Put(int number, int generation, byte[] data)
             {
@@ -169,39 +174,13 @@ namespace MinsPDFViewer
             if (injectedWordCount == 0)
             {
                 _log?.Invoke("No OCR words to inject.");
-                return false;
+                return null;
             }
 
-            // 3. 증분 객체 + xref + trailer 덧붙이기
-            var objectStream = new MemoryStream();
-            long currentOffset = originalBytes.Length;
-            // 원본이 줄바꿈 없이 %%EOF로 끝나면 새 객체가 같은 줄에 붙지 않게
-            if (originalBytes.Length > 0 && originalBytes[^1] != (byte)'\n' && originalBytes[^1] != (byte)'\r')
-            {
-                objectStream.WriteByte((byte)'\n');
-                currentOffset++;
-            }
-
-            var xrefEntries = new List<(int Number, int Generation, long Offset)>();
-            foreach (var obj in writes)
-            {
-                xrefEntries.Add((obj.Number, obj.Generation, currentOffset));
-                objectStream.Write(obj.Data, 0, obj.Data.Length);
-                currentOffset += obj.Data.Length;
-            }
-
-            string xref = BuildXrefAndTrailer(xrefEntries, trailer, nextObjectNumber, currentOffset);
-            byte[] xrefBytes = Encoding.Latin1.GetBytes(xref);
-            objectStream.Write(xrefBytes, 0, xrefBytes.Length);
-
-            using (var fileStream = new FileStream(pdfPath, FileMode.Append, FileAccess.Write, FileShare.None))
-            {
-                byte[] appendBytes = objectStream.ToArray();
-                fileStream.Write(appendBytes, 0, appendBytes.Length);
-            }
-
-            _log?.Invoke($"[GlyphlessOCR] Injected OCR text layer. Pages={injectedPageCount}, Words={injectedWordCount}, ObjectsWritten={writes.Count}");
-            return true;
+            // 3. 증분 객체 + xref + trailer (원본이 xref 스트림이면 스트림으로)
+            byte[] append = PdfIncrementalWriter.BuildAppend(objects, writes, out _);
+            _log?.Invoke($"[GlyphlessOCR] Injected OCR text layer. Pages={injectedPageCount}, Words={injectedWordCount}, ObjectsWritten={writes.Count}, XrefStream={objects.LastXrefIsStream}");
+            return append;
         }
 
         /// <summary>ToUnicode: CID = UTF-16 코드 단위. beginbfrange 한 블록은 100개까지(PDF 규격) → 100·100·56으로 나눈다.</summary>
@@ -256,7 +235,7 @@ namespace MinsPDFViewer
                 return (int)(Math.Round(r / 90.0) * 90) % 360;
             }
 
-            internal static PageGeometry Read(string pageDict, Dictionary<(int Number, int Generation), PdfObjectInfo> objects, int userRotation)
+            internal static PageGeometry Read(string pageDict, PdfObjectStore objects, int userRotation)
             {
                 double[] media = ReadBox(GetInheritedValue(pageDict, "MediaBox", objects), objects) ?? new double[] { 0, 0, 612, 792 };
                 double[] crop = ReadBox(GetInheritedValue(pageDict, "CropBox", objects), objects) ?? media;
@@ -277,7 +256,7 @@ namespace MinsPDFViewer
                 return new PageGeometry(llx, lly, urx, ury, sourceRotation);
             }
 
-            private static double[]? ReadBox(string? value, Dictionary<(int Number, int Generation), PdfObjectInfo> objects)
+            private static double[]? ReadBox(string? value, PdfObjectStore objects)
             {
                 value = ResolveValue(value, objects);
                 if (value == null)
@@ -303,42 +282,9 @@ namespace MinsPDFViewer
             }
         }
 
-        /// <summary>간접 참조면 대상 객체 본문(스트림이면 사전만)을, 아니면 값 그대로 돌려준다.</summary>
-        private static string? ResolveValue(string? value, Dictionary<(int Number, int Generation), PdfObjectInfo> objects)
-        {
-            if (value == null)
-                return null;
-            if (!PdfSyntax.TryParseReference(value, out int num, out int gen))
-                return value;
-            if (!objects.TryGetValue((num, gen), out var obj))
-                return null;
-            string content = obj.Content;
-            int streamIdx = content.IndexOf("stream", StringComparison.Ordinal);
-            if (content.TrimStart().StartsWith("<<", StringComparison.Ordinal))
-                return PdfSyntax.ExtractLeadingDictionary(content);
-            return streamIdx >= 0 ? content.Substring(0, streamIdx).Trim() : content.Trim();
-        }
+        private static string? ResolveValue(string? value, PdfObjectStore objects) => objects.ResolveValue(value);
 
-        /// <summary>페이지 사전에서 상속 가능한 키(MediaBox, CropBox, Rotate, Resources)를 /Parent를 따라 찾는다.</summary>
-        private static string? GetInheritedValue(string pageDict, string key, Dictionary<(int Number, int Generation), PdfObjectInfo> objects)
-        {
-            string current = pageDict;
-            var visited = new HashSet<(int, int)>();
-            for (int depth = 0; depth < 64; depth++)
-            {
-                string? value = PdfSyntax.GetValue(current, key);
-                if (value != null)
-                    return value;
-
-                string? parent = PdfSyntax.GetValue(current, "Parent");
-                if (!PdfSyntax.TryParseReference(parent, out int num, out int gen) || !visited.Add((num, gen)))
-                    return null;
-                if (!objects.TryGetValue((num, gen), out var parentObj))
-                    return null;
-                current = PdfSyntax.ExtractLeadingDictionary(parentObj.Content);
-            }
-            return null;
-        }
+        private static string? GetInheritedValue(string pageDict, string key, PdfObjectStore objects) => objects.GetInheritedValue(pageDict, key);
 
         private static string BuildPageOcrStream(OcrPageData pageData, PageGeometry geometry, out int wordCount)
         {
@@ -557,7 +503,7 @@ namespace MinsPDFViewer
             int prefixStreamNum,
             int newContentStreamNum,
             int type0FontNum,
-            Dictionary<(int Number, int Generation), PdfObjectInfo> objects,
+            PdfObjectStore objects,
             Action<int, int, byte[]> put)
         {
             // 1. /Contents
@@ -628,7 +574,7 @@ namespace MinsPDFViewer
             return pageDict;
         }
 
-        private static bool IsOwnStream(string item, Dictionary<(int Number, int Generation), PdfObjectInfo> objects)
+        private static bool IsOwnStream(string item, PdfObjectStore objects)
         {
             if (!PdfSyntax.TryParseReference(item, out int num, out int gen) || !objects.TryGetValue((num, gen), out var obj))
                 return false;
@@ -643,7 +589,7 @@ namespace MinsPDFViewer
             }
         }
 
-        private static string AddFontToResources(string resDict, string fontRef, Dictionary<(int Number, int Generation), PdfObjectInfo> objects)
+        private static string AddFontToResources(string resDict, string fontRef, PdfObjectStore objects)
         {
             string? font = PdfSyntax.GetValue(resDict, "Font");
             string fontDict;
@@ -708,163 +654,6 @@ namespace MinsPDFViewer
             return sb.ToString();
         }
 
-        private static string BuildXrefAndTrailer(
-            List<(int Number, int Generation, long Offset)> entries,
-            TrailerInfo trailer,
-            int nextObjectNumber,
-            long xrefOffset)
-        {
-            var sb = new StringBuilder();
-            sb.Append("xref\n");
-
-            var sorted = entries.OrderBy(e => e.Number).ToList();
-            int i = 0;
-            while (i < sorted.Count)
-            {
-                int start = sorted[i].Number;
-                int count = 1;
-                while (i + count < sorted.Count && sorted[i + count].Number == start + count)
-                    count++;
-
-                sb.Append($"{start} {count}\n");
-                for (int j = 0; j < count; j++)
-                    sb.Append($"{sorted[i + j].Offset:D10} {sorted[i + j].Generation:D5} n \n");
-
-                i += count;
-            }
-
-            sb.Append("trailer\n<< ");
-            sb.Append($"/Size {nextObjectNumber} ");
-            sb.Append($"/Root {trailer.RootObjectNumber} {trailer.RootGeneration} R ");
-            if (!string.IsNullOrEmpty(trailer.InfoRef))
-                sb.Append($"/Info {trailer.InfoRef} ");
-            sb.Append($"/Prev {trailer.PreviousXrefOffset} ");
-            if (!string.IsNullOrEmpty(trailer.IdRaw))
-                sb.Append($"/ID {trailer.IdRaw} ");
-            sb.Append(">>\n");
-            sb.Append($"startxref\n{xrefOffset}\n%%EOF\n");
-
-            return sb.ToString();
-        }
-
-        private static TrailerInfo ReadTrailer(string text)
-        {
-            int startXref = text.LastIndexOf("startxref", StringComparison.Ordinal);
-            if (startXref < 0)
-                throw new InvalidOperationException("PDF startxref marker was not found.");
-
-            var startXrefMatch = Regex.Match(text.Substring(startXref), @"startxref\s+(\d+)");
-            if (!startXrefMatch.Success)
-                throw new InvalidOperationException("PDF startxref offset could not be parsed.");
-
-            long previousXrefOffset = long.Parse(startXrefMatch.Groups[1].Value, CultureInfo.InvariantCulture);
-            if (previousXrefOffset < 0 || previousXrefOffset >= text.Length ||
-                string.CompareOrdinal(text, (int)previousXrefOffset, "xref", 0, 4) != 0)
-            {
-                // 교차 참조 스트림(PDF 1.5+)은 이 단순 증분 기록기가 이어 쓸 수 없다.
-                throw new InvalidOperationException("PDF uses a cross-reference stream; OCR text layer cannot be appended.");
-            }
-
-            int trailerIndex = text.IndexOf("trailer", (int)previousXrefOffset, StringComparison.Ordinal);
-            if (trailerIndex < 0)
-                throw new InvalidOperationException("PDF trailer was not found.");
-
-            string trailerDictionary = PdfSyntax.ExtractLeadingDictionary(text.Substring(trailerIndex, Math.Min(64 * 1024, text.Length - trailerIndex)));
-            if (!PdfSyntax.TryParseReference(PdfSyntax.GetValue(trailerDictionary, "Root"), out int rootNum, out int rootGen))
-                throw new InvalidOperationException("Reference for /Root was not found.");
-            string? sizeValue = PdfSyntax.GetValue(trailerDictionary, "Size");
-            if (sizeValue == null || !int.TryParse(sizeValue, NumberStyles.Integer, CultureInfo.InvariantCulture, out int size))
-                throw new InvalidOperationException("Integer value for /Size was not found.");
-
-            string? infoValue = PdfSyntax.GetValue(trailerDictionary, "Info");
-            string? infoRef = PdfSyntax.TryParseReference(infoValue, out _, out _) ? infoValue : null;
-
-            return new TrailerInfo(
-                size,
-                rootNum,
-                rootGen,
-                previousXrefOffset,
-                PdfSyntax.GetValue(trailerDictionary, "ID"),
-                infoRef,
-                PdfSyntax.GetValue(trailerDictionary, "Encrypt") != null);
-        }
-
-        private static Dictionary<(int Number, int Generation), PdfObjectInfo> ReadObjects(string text)
-        {
-            var objects = new Dictionary<(int, int), PdfObjectInfo>();
-            foreach (Match match in Regex.Matches(text, @"(?s)(\d+)\s+(\d+)\s+obj\s*(.*?)\s*endobj"))
-            {
-                int number = int.Parse(match.Groups[1].Value, CultureInfo.InvariantCulture);
-                int generation = int.Parse(match.Groups[2].Value, CultureInfo.InvariantCulture);
-                objects[(number, generation)] = new PdfObjectInfo(number, generation, match.Groups[3].Value.Trim());
-            }
-            return objects;
-        }
-
-        private static List<PageRef> ReadPageReferences(Dictionary<(int Number, int Generation), PdfObjectInfo> objects, string catalog)
-        {
-            var result = new List<PageRef>();
-            string catalogDict = PdfSyntax.ExtractLeadingDictionary(catalog);
-            if (PdfSyntax.TryParseReference(PdfSyntax.GetValue(catalogDict, "Pages"), out int pagesNum, out int pagesGen))
-            {
-                var visited = new HashSet<(int, int)>();
-                VisitPageTree(new PageRef(pagesNum, pagesGen), objects, visited, result);
-            }
-
-            if (result.Count == 0)
-            {
-                foreach (var obj in objects.Values.OrderBy(o => o.Number))
-                {
-                    if (Regex.IsMatch(obj.Content, @"/Type\s*/Page\b") && !Regex.IsMatch(obj.Content, @"/Type\s*/Pages\b"))
-                        result.Add(new PageRef(obj.Number, obj.Generation));
-                }
-            }
-
-            return result;
-        }
-
-        private static void VisitPageTree(
-            PageRef node,
-            Dictionary<(int Number, int Generation), PdfObjectInfo> objects,
-            HashSet<(int, int)> visited,
-            List<PageRef> pages)
-        {
-            if (!visited.Add((node.ObjectNumber, node.Generation)))
-                return;
-
-            if (!objects.TryGetValue((node.ObjectNumber, node.Generation), out var obj))
-                return;
-
-            string dict;
-            try
-            {
-                dict = PdfSyntax.ExtractLeadingDictionary(obj.Content);
-            }
-            catch (FormatException)
-            {
-                return;
-            }
-
-            string? type = PdfSyntax.GetValue(dict, "Type");
-            if (type == "/Page")
-            {
-                pages.Add(node);
-                return;
-            }
-
-            string? kids = ResolveValue(PdfSyntax.GetValue(dict, "Kids"), objects);
-            if (kids == null)
-                return;
-
-            foreach (var item in PdfSyntax.ParseArrayItems(kids))
-            {
-                if (PdfSyntax.TryParseReference(item, out int num, out int gen))
-                    VisitPageTree(new PageRef(num, gen), objects, visited, pages);
-            }
-        }
-
-        private sealed record TrailerInfo(int Size, int RootObjectNumber, int RootGeneration, long PreviousXrefOffset, string? IdRaw, string? InfoRef, bool IsEncrypted);
-        internal sealed record PdfObjectInfo(int Number, int Generation, string Content);
         private sealed record PageRef(int ObjectNumber, int Generation);
     }
 }

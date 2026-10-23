@@ -202,6 +202,141 @@
                                        Visibility="{Binding IsSelected, Converter={StaticResource BooleanToVisibilityConverter}}"/>
                         </Grid>
                 </DataTemplate>
+
+                <!-- ── 툴바 ── 아이콘(Segoe MDL2 Assets) + 짧은 이름, 기능별 묶음 -->
+                <SolidColorBrush x:Key="ToolbarBackground" Color="#F7F8FA"/>
+                <SolidColorBrush x:Key="ToolHover" Color="#E8EEF7"/>
+                <SolidColorBrush x:Key="ToolPressed" Color="#D6E2F3"/>
+                <SolidColorBrush x:Key="ToolChecked" Color="#DCE8FA"/>
+                <SolidColorBrush x:Key="ToolAccent" Color="#2F6FD6"/>
+                <SolidColorBrush x:Key="ToolText" Color="#2B2F36"/>
+                <SolidColorBrush x:Key="GroupLabel" Color="#8A9099"/>
+
+                <Style x:Key="ToolIcon" TargetType="TextBlock">
+                        <Setter Property="FontFamily" Value="Segoe MDL2 Assets"/>
+                        <Setter Property="FontSize" Value="16"/>
+                        <Setter Property="HorizontalAlignment" Value="Center"/>
+                        <Setter Property="Margin" Value="0,1,0,2"/>
+                </Style>
+                <Style x:Key="ToolLabel" TargetType="TextBlock">
+                        <Setter Property="FontSize" Value="11"/>
+                        <Setter Property="HorizontalAlignment" Value="Center"/>
+                </Style>
+                <Style x:Key="GroupCaption" TargetType="TextBlock">
+                        <Setter Property="FontSize" Value="10"/>
+                        <Setter Property="Foreground" Value="{StaticResource GroupLabel}"/>
+                        <Setter Property="HorizontalAlignment" Value="Center"/>
+                        <Setter Property="Margin" Value="0,1,0,0"/>
+                </Style>
+                <!-- 묶음 사이 세로 구분선 -->
+                <Style x:Key="GroupDivider" TargetType="Rectangle">
+                        <Setter Property="Width" Value="1"/>
+                        <Setter Property="Fill" Value="#DDE1E6"/>
+                        <Setter Property="Margin" Value="6,6"/>
+                </Style>
+
+                <Style x:Key="ToolButton" TargetType="ButtonBase">
+                        <Setter Property="Foreground" Value="{StaticResource ToolText}"/>
+                        <Setter Property="MinWidth" Value="46"/>
+                        <Setter Property="Padding" Value="6,2"/>
+                        <Setter Property="Margin" Value="1,0"/>
+                        <Setter Property="Cursor" Value="Hand"/>
+                        <Setter Property="Focusable" Value="False"/>
+                        <Setter Property="Template">
+                                <Setter.Value>
+                                        <ControlTemplate TargetType="ButtonBase">
+                                                <Border x:Name="Chrome"
+                                                                Background="Transparent"
+                                                                BorderBrush="Transparent"
+                                                                BorderThickness="1"
+                                                                CornerRadius="4"
+                                                                Padding="{TemplateBinding Padding}">
+                                                        <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                                                </Border>
+                                                <ControlTemplate.Triggers>
+                                                        <Trigger Property="IsMouseOver" Value="True">
+                                                                <Setter TargetName="Chrome" Property="Background" Value="{StaticResource ToolHover}"/>
+                                                        </Trigger>
+                                                        <Trigger Property="IsPressed" Value="True">
+                                                                <Setter TargetName="Chrome" Property="Background" Value="{StaticResource ToolPressed}"/>
+                                                        </Trigger>
+                                                        <Trigger Property="IsEnabled" Value="False">
+                                                                <Setter Property="Opacity" Value="0.38"/>
+                                                        </Trigger>
+                                                </ControlTemplate.Triggers>
+                                        </ControlTemplate>
+                                </Setter.Value>
+                        </Setter>
+                </Style>
+                <!-- 고르는 도구(선택·형광펜·텍스트, 굵게): 켜져 있으면 파란 테두리 -->
+                <Style x:Key="ToolChoice" TargetType="ToggleButton">
+                        <Setter Property="Foreground" Value="{StaticResource ToolText}"/>
+                        <Setter Property="MinWidth" Value="46"/>
+                        <Setter Property="Padding" Value="6,2"/>
+                        <Setter Property="Margin" Value="1,0"/>
+                        <Setter Property="Cursor" Value="Hand"/>
+                        <Setter Property="Focusable" Value="False"/>
+                        <Setter Property="Template">
+                                <Setter.Value>
+                                        <ControlTemplate TargetType="ToggleButton">
+                                                <Border x:Name="Chrome"
+                                                                Background="Transparent"
+                                                                BorderBrush="Transparent"
+                                                                BorderThickness="1"
+                                                                CornerRadius="4"
+                                                                Padding="{TemplateBinding Padding}">
+                                                        <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                                                </Border>
+                                                <ControlTemplate.Triggers>
+                                                        <Trigger Property="IsMouseOver" Value="True">
+                                                                <Setter TargetName="Chrome" Property="Background" Value="{StaticResource ToolHover}"/>
+                                                        </Trigger>
+                                                        <Trigger Property="IsChecked" Value="True">
+                                                                <Setter TargetName="Chrome" Property="Background" Value="{StaticResource ToolChecked}"/>
+                                                                <Setter TargetName="Chrome" Property="BorderBrush" Value="{StaticResource ToolAccent}"/>
+                                                                <Setter Property="Foreground" Value="{StaticResource ToolAccent}"/>
+                                                        </Trigger>
+                                                        <Trigger Property="IsEnabled" Value="False">
+                                                                <Setter Property="Opacity" Value="0.38"/>
+                                                        </Trigger>
+                                                </ControlTemplate.Triggers>
+                                        </ControlTemplate>
+                                </Setter.Value>
+                        </Setter>
+                </Style>
+
+                <!-- 읽기 | 편집 전환 (나란히 붙은 단추) -->
+                <Style x:Key="ModeSegment" TargetType="RadioButton">
+                        <Setter Property="Foreground" Value="{StaticResource ToolText}"/>
+                        <Setter Property="Padding" Value="12,4"/>
+                        <Setter Property="FontSize" Value="12"/>
+                        <Setter Property="Cursor" Value="Hand"/>
+                        <Setter Property="Focusable" Value="False"/>
+                        <Setter Property="Template">
+                                <Setter.Value>
+                                        <ControlTemplate TargetType="RadioButton">
+                                                <Border x:Name="Chrome"
+                                                                Background="White"
+                                                                BorderBrush="#C9CFD8"
+                                                                BorderThickness="{TemplateBinding BorderThickness}"
+                                                                CornerRadius="{Binding Tag, RelativeSource={RelativeSource TemplatedParent}}"
+                                                                Padding="{TemplateBinding Padding}">
+                                                        <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                                                </Border>
+                                                <ControlTemplate.Triggers>
+                                                        <Trigger Property="IsMouseOver" Value="True">
+                                                                <Setter TargetName="Chrome" Property="Background" Value="{StaticResource ToolHover}"/>
+                                                        </Trigger>
+                                                        <Trigger Property="IsChecked" Value="True">
+                                                                <Setter TargetName="Chrome" Property="Background" Value="{StaticResource ToolAccent}"/>
+                                                                <Setter TargetName="Chrome" Property="BorderBrush" Value="{StaticResource ToolAccent}"/>
+                                                                <Setter Property="Foreground" Value="White"/>
+                                                        </Trigger>
+                                                </ControlTemplate.Triggers>
+                                        </ControlTemplate>
+                                </Setter.Value>
+                        </Setter>
+                </Style>
         </Window.Resources>
 
         <Grid>
@@ -211,186 +346,226 @@
                         <RowDefinition Height="Auto"/>
                 </Grid.RowDefinitions>
 
-                <ToolBarTray Grid.Row="0"
-                                Background="White">
-                        <ToolBar>
-                                <Button Name="BtnOpen"
-                                                Content="📂 열기"
-                                                Click="BtnOpen_Click"
-                                                Margin="0,0,5,0"/>
-                                <Button Name="BtnSave"
-                                                Content="💾 저장"
-                                                Click="BtnSave_Click"
-                                                Margin="0,0,5,0"/>
-                                <Button Name="BtnSaveAs"
-                                                Content="💾 다른 이름으로"
-                                                Click="BtnSaveAs_Click"
-                                                Margin="0,0,5,0"/>
-                                <Button Name="BtnPrint"
-                                                Content="🖨 인쇄"
-                                                ToolTip="인쇄 (Ctrl+P)"
-                                                Click="BtnPrint_Click"
-                                                Margin="0,0,10,0"/>
-                                <Separator/>
-                                <Button Content="🔖 책갈피"
-                                                Click="BtnToggleSidebar_Click"
-                                                Margin="0,0,5,0"/>
-                        </ToolBar>
+                <!-- 툴바: 기능별 묶음(파일·모드·도구·페이지·문서·보기·찾기·글자). 창이 좁으면 묶음 단위로 다음 줄로 -->
+                <Border Grid.Row="0"
+                                Background="{StaticResource ToolbarBackground}"
+                                BorderBrush="#DDE1E6"
+                                BorderThickness="0,0,0,1"
+                                Padding="6,3">
+                        <WrapPanel Orientation="Horizontal">
 
-                        <ToolBar>
-                                <TextBlock Text="모드"
-                                                VerticalAlignment="Center"
-                                                Foreground="#666"
-                                                Margin="4,0,6,0"/>
-                                <RadioButton Name="RbReadMode"
-                                                GroupName="ViewMode"
-                                                Content="읽기"
-                                                IsChecked="True"
-                                                Checked="Mode_Checked"
-                                                Margin="5,0"/>
-                                <RadioButton Name="RbEditMode"
-                                                GroupName="ViewMode"
-                                                Content="편집"
-                                                Checked="Mode_Checked"
-                                                Margin="5,0"/>
-                        </ToolBar>
+                                <!-- 파일 -->
+                                <StackPanel>
+                                        <StackPanel Orientation="Horizontal">
+                                                <Button Name="BtnOpen" Style="{StaticResource ToolButton}" Click="BtnOpen_Click" ToolTip="PDF 열기 (Ctrl+O)">
+                                                        <StackPanel><TextBlock Style="{StaticResource ToolIcon}" Text="&#xE8E5;"/><TextBlock Style="{StaticResource ToolLabel}" Text="열기"/></StackPanel>
+                                                </Button>
+                                                <Button Name="BtnSave" Style="{StaticResource ToolButton}" Click="BtnSave_Click" ToolTip="저장 (Ctrl+S)">
+                                                        <StackPanel><TextBlock Style="{StaticResource ToolIcon}" Text="&#xE74E;"/><TextBlock Style="{StaticResource ToolLabel}" Text="저장"/></StackPanel>
+                                                </Button>
+                                                <Button Name="BtnSaveAs" Style="{StaticResource ToolButton}" Click="BtnSaveAs_Click" ToolTip="다른 이름으로 저장">
+                                                        <StackPanel><TextBlock Style="{StaticResource ToolIcon}" Text="&#xE792;"/><TextBlock Style="{StaticResource ToolLabel}" Text="다른 이름"/></StackPanel>
+                                                </Button>
+                                                <Button Name="BtnPrint" Style="{StaticResource ToolButton}" Click="BtnPrint_Click" ToolTip="인쇄 (Ctrl+P) — 인쇄 제한 문서도 인쇄">
+                                                        <StackPanel><TextBlock Style="{StaticResource ToolIcon}" Text="&#xE749;"/><TextBlock Style="{StaticResource ToolLabel}" Text="인쇄"/></StackPanel>
+                                                </Button>
+                                        </StackPanel>
+                                        <TextBlock Style="{StaticResource GroupCaption}" Text="파일"/>
+                                </StackPanel>
+                                <Rectangle Style="{StaticResource GroupDivider}"/>
 
-                        <ToolBar Name="ViewToolsToolbar">
-                                <TextBlock Text="보기"
-                                                VerticalAlignment="Center"
-                                                Foreground="#666"
-                                                Margin="4,0,6,0"/>
-                                <RadioButton Name="RbCursor"
-                                                GroupName="Tools"
-                                                Content="👆 선택"
-                                                IsChecked="True"
-                                                Checked="Tool_Checked"
-                                                Margin="5,0"/>
-                                <RadioButton Name="RbHighlight"
-                                                GroupName="Tools"
-                                                Content="🖍 형광펜"
-                                                Checked="Tool_Checked"
-                                                Margin="5,0"/>
-                        </ToolBar>
+                                <!-- 모드 -->
+                                <StackPanel VerticalAlignment="Stretch">
+                                        <StackPanel Orientation="Horizontal" VerticalAlignment="Center" Margin="2,7,2,6">
+                                                <RadioButton Name="RbReadMode"
+                                                                GroupName="ViewMode"
+                                                                Style="{StaticResource ModeSegment}"
+                                                                Tag="4,0,0,4"
+                                                                BorderThickness="1"
+                                                                IsChecked="True"
+                                                                Checked="Mode_Checked"
+                                                                ToolTip="읽기: 보기·형광펜·검색">
+                                                        <StackPanel Orientation="Horizontal">
+                                                                <TextBlock FontFamily="Segoe MDL2 Assets" Text="&#xE736;" FontSize="13" Margin="0,1,5,0"/>
+                                                                <TextBlock Text="읽기"/>
+                                                        </StackPanel>
+                                                </RadioButton>
+                                                <RadioButton Name="RbEditMode"
+                                                                GroupName="ViewMode"
+                                                                Style="{StaticResource ModeSegment}"
+                                                                Tag="0,4,4,0"
+                                                                BorderThickness="0,1,1,1"
+                                                                Checked="Mode_Checked"
+                                                                ToolTip="편집: 텍스트·페이지·서명·OCR">
+                                                        <StackPanel Orientation="Horizontal">
+                                                                <TextBlock FontFamily="Segoe MDL2 Assets" Text="&#xE70F;" FontSize="13" Margin="0,1,5,0"/>
+                                                                <TextBlock Text="편집"/>
+                                                        </StackPanel>
+                                                </RadioButton>
+                                        </StackPanel>
+                                        <TextBlock Style="{StaticResource GroupCaption}" Text="모드"/>
+                                </StackPanel>
+                                <Rectangle Style="{StaticResource GroupDivider}"/>
 
-                        <ToolBar Name="EditToolsToolbar"
-                                        Visibility="Collapsed">
-                                <TextBlock Text="편집"
-                                                VerticalAlignment="Center"
-                                                Foreground="#666"
-                                                Margin="4,0,6,0"/>
-                                <RadioButton Name="RbText"
-                                                GroupName="Tools"
-                                                Content="📝 텍스트"
-                                                Checked="Tool_Checked"
-                                                Margin="5,0"/>
-                                <Separator/>
-                                <Button Name="BtnSign"
-                                                Content="🔐 전자서명"
-                                                Click="BtnSign_Click"
-                                                FontWeight="Bold"
-                                                Margin="0,0,5,0"/>
-                                <Button Name="BtnOCR"
-                                                Content="👁 OCR"
-                                                Click="BtnOCR_Click"
-                                                FontWeight="Bold"
-                                                Foreground="Blue"/>
-                                <Separator/>
-                                <Button Content="📄+"
-                                                ToolTip="빈 페이지 추가"
-                                                Click="BtnAddBlankPage_Click"/>
-                                <Button Content="🗑 페이지"
-                                                ToolTip="현재 페이지 삭제"
-                                                Click="BtnDeletePage_Click"/>
-                                <Button Content="↺"
-                                                ToolTip="왼쪽 회전"
-                                                Click="BtnRotateLeft_Click"/>
-                                <Button Content="↻"
-                                                ToolTip="오른쪽 회전"
-                                                Click="BtnRotateRight_Click"/>
-                                <Button Name="BtnDeleteAnnotation"
-                                                Content="🗑 주석"
-                                                ToolTip="선택한 주석 삭제"
-                                                Click="BtnDeleteAnnotation_Click"
-                                                IsEnabled="False"/>
-                        </ToolBar>
+                                <!-- 도구 -->
+                                <StackPanel>
+                                        <StackPanel Orientation="Horizontal">
+                                                <RadioButton Name="RbCursor"
+                                                                GroupName="Tools"
+                                                                Style="{StaticResource ToolChoice}"
+                                                                IsChecked="True"
+                                                                Checked="Tool_Checked"
+                                                                ToolTip="선택·이동 (Space를 누른 채 끌면 화면 이동)">
+                                                        <StackPanel><TextBlock Style="{StaticResource ToolIcon}" Text="&#xE7C9;"/><TextBlock Style="{StaticResource ToolLabel}" Text="선택"/></StackPanel>
+                                                </RadioButton>
+                                                <StackPanel Name="ViewToolsToolbar" Orientation="Horizontal">
+                                                        <RadioButton Name="RbHighlight"
+                                                                        GroupName="Tools"
+                                                                        Style="{StaticResource ToolChoice}"
+                                                                        Checked="Tool_Checked"
+                                                                        ToolTip="형광펜: 글자 위를 끌어서 칠하기">
+                                                                <StackPanel><TextBlock Style="{StaticResource ToolIcon}" Text="&#xE7E6;"/><TextBlock Style="{StaticResource ToolLabel}" Text="형광펜"/></StackPanel>
+                                                        </RadioButton>
+                                                </StackPanel>
+                                                <StackPanel Name="EditToolItems" Orientation="Horizontal" Visibility="Collapsed">
+                                                        <RadioButton Name="RbText"
+                                                                        GroupName="Tools"
+                                                                        Style="{StaticResource ToolChoice}"
+                                                                        Checked="Tool_Checked"
+                                                                        ToolTip="텍스트 상자: 페이지를 눌러 넣기">
+                                                                <StackPanel><TextBlock Style="{StaticResource ToolIcon}" Text="&#xE8D2;"/><TextBlock Style="{StaticResource ToolLabel}" Text="텍스트"/></StackPanel>
+                                                        </RadioButton>
+                                                        <Button Name="BtnDeleteAnnotation"
+                                                                        Style="{StaticResource ToolButton}"
+                                                                        Click="BtnDeleteAnnotation_Click"
+                                                                        IsEnabled="False"
+                                                                        ToolTip="선택한 주석 삭제 (Delete)">
+                                                                <StackPanel><TextBlock Style="{StaticResource ToolIcon}" Text="&#xE74D;"/><TextBlock Style="{StaticResource ToolLabel}" Text="주석 삭제"/></StackPanel>
+                                                        </Button>
+                                                </StackPanel>
+                                        </StackPanel>
+                                        <TextBlock Style="{StaticResource GroupCaption}" Text="도구"/>
+                                </StackPanel>
+                                <Rectangle Style="{StaticResource GroupDivider}"/>
 
-                        <ToolBar>
-                                <TextBlock Text="화면"
-                                                VerticalAlignment="Center"
-                                                Foreground="#666"
-                                                Margin="4,0,6,0"/>
-                                <Button Name="BtnZoomOut"
-                                                Content="➖"
-                                                Click="BtnZoomOut_Click"/>
-                                <Button Name="BtnZoomIn"
-                                                Content="➕"
-                                                Click="BtnZoomIn_Click"/>
-                                <Button Name="BtnFitWidth"
-                                                Content="↔ 폭 맞춤"
-                                                Click="BtnFitWidth_Click"/>
-                                <Button Name="BtnFitHeight"
-                                                Content="↕ 높이 맞춤"
-                                                Click="BtnFitHeight_Click"/>
-                        </ToolBar>
+                                <!-- 편집 모드 전용: 페이지 · 문서 -->
+                                <StackPanel Name="EditToolsToolbar" Orientation="Horizontal" Visibility="Collapsed">
+                                        <StackPanel>
+                                                <StackPanel Orientation="Horizontal">
+                                                        <Button Style="{StaticResource ToolButton}" Click="BtnAddBlankPage_Click" ToolTip="현재 페이지 뒤에 빈 페이지 추가">
+                                                                <StackPanel><TextBlock Style="{StaticResource ToolIcon}" Text="&#xE7C3;"/><TextBlock Style="{StaticResource ToolLabel}" Text="빈 페이지"/></StackPanel>
+                                                        </Button>
+                                                        <Button Style="{StaticResource ToolButton}" Click="BtnDeletePage_Click" ToolTip="선택한(또는 현재) 페이지 삭제">
+                                                                <StackPanel><TextBlock Style="{StaticResource ToolIcon}" Text="&#xE74D;"/><TextBlock Style="{StaticResource ToolLabel}" Text="삭제"/></StackPanel>
+                                                        </Button>
+                                                        <Button Style="{StaticResource ToolButton}" Click="BtnRotateLeft_Click" ToolTip="왼쪽으로 90° 회전">
+                                                                <StackPanel>
+                                                                        <TextBlock Style="{StaticResource ToolIcon}" Text="&#xE7AD;" RenderTransformOrigin="0.5,0.5">
+                                                                                <TextBlock.RenderTransform><ScaleTransform ScaleX="-1"/></TextBlock.RenderTransform>
+                                                                        </TextBlock>
+                                                                        <TextBlock Style="{StaticResource ToolLabel}" Text="왼쪽"/>
+                                                                </StackPanel>
+                                                        </Button>
+                                                        <Button Style="{StaticResource ToolButton}" Click="BtnRotateRight_Click" ToolTip="오른쪽으로 90° 회전">
+                                                                <StackPanel><TextBlock Style="{StaticResource ToolIcon}" Text="&#xE7AD;"/><TextBlock Style="{StaticResource ToolLabel}" Text="오른쪽"/></StackPanel>
+                                                        </Button>
+                                                </StackPanel>
+                                                <TextBlock Style="{StaticResource GroupCaption}" Text="페이지"/>
+                                        </StackPanel>
+                                        <Rectangle Style="{StaticResource GroupDivider}"/>
+                                        <StackPanel>
+                                                <StackPanel Orientation="Horizontal">
+                                                        <Button Name="BtnSign" Style="{StaticResource ToolButton}" Click="BtnSign_Click" ToolTip="전자서명 자리 넣기 → 두 번 눌러 서명">
+                                                                <StackPanel><TextBlock Style="{StaticResource ToolIcon}" Text="&#xE72E;"/><TextBlock Style="{StaticResource ToolLabel}" Text="전자서명"/></StackPanel>
+                                                        </Button>
+                                                        <Button Name="BtnOCR" Style="{StaticResource ToolButton}" Click="BtnOCR_Click" ToolTip="글자 인식(OCR) → 검색 가능한 PDF">
+                                                                <StackPanel><TextBlock Style="{StaticResource ToolIcon}" Text="&#xE890;"/><TextBlock Style="{StaticResource ToolLabel}" Text="OCR"/></StackPanel>
+                                                        </Button>
+                                                </StackPanel>
+                                                <TextBlock Style="{StaticResource GroupCaption}" Text="문서"/>
+                                        </StackPanel>
+                                        <Rectangle Style="{StaticResource GroupDivider}"/>
+                                </StackPanel>
 
-                        <ToolBar>
-                                <TextBlock Text="검색"
-                                                VerticalAlignment="Center"
-                                                Foreground="#666"
-                                                Margin="4,0,6,0"/>
-                                <TextBox Name="TxtSearch"
-                                                Width="150"
-                                                PreviewKeyDown="TxtSearch_PreviewKeyDown"
-                                                ToolTip="Enter: 다음, Ctrl+Enter: 이전"/>
-                                <Button Name="BtnSearch"
-                                                Content="🔍"
-                                                Click="BtnSearch_Click"/>
-                                <Button Name="BtnPrevSearch"
-                                                Content="◀"
-                                                Click="BtnPrevSearch_Click"/>
-                                <Button Name="BtnNextSearch"
-                                                Content="▶"
-                                                Click="BtnNextSearch_Click"/>
-                        </ToolBar>
+                                <!-- 보기 -->
+                                <StackPanel>
+                                        <StackPanel Orientation="Horizontal">
+                                                <Button Name="BtnZoomOut" Style="{StaticResource ToolButton}" MinWidth="34" Click="BtnZoomOut_Click" ToolTip="축소 (Ctrl+휠)">
+                                                        <StackPanel><TextBlock Style="{StaticResource ToolIcon}" Text="&#xE71F;"/><TextBlock Style="{StaticResource ToolLabel}" Text="축소"/></StackPanel>
+                                                </Button>
+                                                <Button Name="BtnActualSize" Style="{StaticResource ToolButton}" MinWidth="52" Click="BtnActualSize_Click" ToolTip="실제 크기 100% (Ctrl+0)">
+                                                        <StackPanel>
+                                                                <TextBlock FontSize="13" FontWeight="SemiBold" HorizontalAlignment="Center" Margin="0,1,0,2"
+                                                                                Text="{Binding SelectedDocument.Zoom, StringFormat={}{0:P0}, FallbackValue=100%, TargetNullValue=100%}"/>
+                                                                <TextBlock Style="{StaticResource ToolLabel}" Text="실제 크기"/>
+                                                        </StackPanel>
+                                                </Button>
+                                                <Button Name="BtnZoomIn" Style="{StaticResource ToolButton}" MinWidth="34" Click="BtnZoomIn_Click" ToolTip="확대 (Ctrl+휠)">
+                                                        <StackPanel><TextBlock Style="{StaticResource ToolIcon}" Text="&#xE8A3;"/><TextBlock Style="{StaticResource ToolLabel}" Text="확대"/></StackPanel>
+                                                </Button>
+                                                <Button Name="BtnFitWidth" Style="{StaticResource ToolButton}" Click="BtnFitWidth_Click" ToolTip="페이지 폭을 창에 맞춤">
+                                                        <StackPanel><TextBlock Style="{StaticResource ToolIcon}" Text="&#xE9A6;"/><TextBlock Style="{StaticResource ToolLabel}" Text="폭 맞춤"/></StackPanel>
+                                                </Button>
+                                                <Button Name="BtnFitHeight" Style="{StaticResource ToolButton}" Click="BtnFitHeight_Click" ToolTip="한 페이지 전체를 창에 맞춤">
+                                                        <StackPanel><TextBlock Style="{StaticResource ToolIcon}" Text="&#xE740;"/><TextBlock Style="{StaticResource ToolLabel}" Text="쪽 맞춤"/></StackPanel>
+                                                </Button>
+                                                <Button Style="{StaticResource ToolButton}" Click="BtnToggleSidebar_Click" ToolTip="썸네일·책갈피 패널 열기/닫기">
+                                                        <StackPanel><TextBlock Style="{StaticResource ToolIcon}" Text="&#xE8A0;"/><TextBlock Style="{StaticResource ToolLabel}" Text="패널"/></StackPanel>
+                                                </Button>
+                                        </StackPanel>
+                                        <TextBlock Style="{StaticResource GroupCaption}" Text="보기"/>
+                                </StackPanel>
+                                <Rectangle Style="{StaticResource GroupDivider}"/>
 
-                        <ToolBar Name="TextStyleToolbar"
-                                        Visibility="Collapsed">
-                                <TextBlock Text="텍스트"
-                                                VerticalAlignment="Center"
-                                                Foreground="#666"
-                                                Margin="4,0,6,0"/>
-                                <ComboBox Name="CbFont"
-                                                Width="100"
-                                                SelectionChanged="StyleChanged"/>
-                                <ComboBox Name="CbSize"
-                                                Width="50"
-                                                SelectionChanged="StyleChanged"/>
-                                <ToggleButton Name="BtnBold"
-                                                Content="𝐁"
-                                                FontWeight="Bold"
-                                                Click="StyleChanged"/>
-                                <ComboBox Name="CbColor"
-                                                Width="80"
-                                                SelectionChanged="StyleChanged">
-                                        <ComboBoxItem Content="검정"
-                                                        Tag="Black"
-                                                        IsSelected="True"/>
-                                        <ComboBoxItem Content="빨강"
-                                                        Tag="Red"
-                                                        Foreground="Red"/>
-                                        <ComboBoxItem Content="파랑"
-                                                        Tag="Blue"
-                                                        Foreground="Blue"/>
-                                        <ComboBoxItem Content="초록"
-                                                        Tag="Green"
-                                                        Foreground="Green"/>
-                                        <ComboBoxItem Content="주황"
-                                                        Tag="Orange"
-                                                        Foreground="Orange"/>
-                                </ComboBox>
-                        </ToolBar>
-                </ToolBarTray>
+                                <!-- 찾기 -->
+                                <StackPanel>
+                                        <StackPanel Orientation="Horizontal" Margin="2,6,2,5">
+                                                <Border BorderBrush="#C9CFD8" BorderThickness="1" CornerRadius="4" Background="White" Height="26">
+                                                        <StackPanel Orientation="Horizontal">
+                                                                <Button Name="BtnSearch" Style="{StaticResource ToolButton}" MinWidth="26" Padding="4,0" Margin="0" Click="BtnSearch_Click" ToolTip="찾기 (Enter)">
+                                                                        <TextBlock FontFamily="Segoe MDL2 Assets" Text="&#xE721;" FontSize="13" Foreground="#6B7280"/>
+                                                                </Button>
+                                                                <TextBox Name="TxtSearch"
+                                                                                Width="160"
+                                                                                BorderThickness="0"
+                                                                                VerticalContentAlignment="Center"
+                                                                                PreviewKeyDown="TxtSearch_PreviewKeyDown"
+                                                                                ToolTip="Ctrl+F · Enter 다음 · Ctrl+Enter 이전"/>
+                                                        </StackPanel>
+                                                </Border>
+                                                <Button Name="BtnPrevSearch" Style="{StaticResource ToolButton}" MinWidth="26" Padding="4,0" Click="BtnPrevSearch_Click" ToolTip="이전 (Ctrl+Enter)">
+                                                        <TextBlock FontFamily="Segoe MDL2 Assets" Text="&#xE70E;" FontSize="13"/>
+                                                </Button>
+                                                <Button Name="BtnNextSearch" Style="{StaticResource ToolButton}" MinWidth="26" Padding="4,0" Click="BtnNextSearch_Click" ToolTip="다음 (Enter)">
+                                                        <TextBlock FontFamily="Segoe MDL2 Assets" Text="&#xE70D;" FontSize="13"/>
+                                                </Button>
+                                        </StackPanel>
+                                        <TextBlock Style="{StaticResource GroupCaption}" Text="찾기"/>
+                                </StackPanel>
+
+                                <!-- 글자 (텍스트 상자를 고르거나 텍스트 도구일 때만) -->
+                                <StackPanel Name="TextStyleToolbar" Orientation="Horizontal" Visibility="Collapsed">
+                                        <Rectangle Style="{StaticResource GroupDivider}"/>
+                                        <StackPanel>
+                                                <StackPanel Orientation="Horizontal" Margin="2,6,2,5" Height="26">
+                                                        <ComboBox Name="CbFont" Width="120" Margin="0,0,4,0" VerticalContentAlignment="Center" SelectionChanged="StyleChanged" ToolTip="글꼴"/>
+                                                        <ComboBox Name="CbSize" Width="54" Margin="0,0,4,0" VerticalContentAlignment="Center" SelectionChanged="StyleChanged" ToolTip="크기"/>
+                                                        <ToggleButton Name="BtnBold" Style="{StaticResource ToolChoice}" MinWidth="26" Padding="4,0" Margin="0,0,4,0" Click="StyleChanged" ToolTip="굵게">
+                                                                <TextBlock Text="B" FontWeight="Bold" FontSize="13"/>
+                                                        </ToggleButton>
+                                                        <ComboBox Name="CbColor" Width="72" VerticalContentAlignment="Center" SelectionChanged="StyleChanged" ToolTip="글자 색">
+                                                                <ComboBoxItem Content="검정" Tag="Black" IsSelected="True"/>
+                                                                <ComboBoxItem Content="빨강" Tag="Red" Foreground="Red"/>
+                                                                <ComboBoxItem Content="파랑" Tag="Blue" Foreground="Blue"/>
+                                                                <ComboBoxItem Content="초록" Tag="Green" Foreground="Green"/>
+                                                                <ComboBoxItem Content="주황" Tag="Orange" Foreground="Orange"/>
+                                                        </ComboBox>
+                                                </StackPanel>
+                                                <TextBlock Style="{StaticResource GroupCaption}" Text="글자"/>
+                                        </StackPanel>
+                                </StackPanel>
+                        </WrapPanel>
+                </Border>
 
                 <Grid Grid.Row="1">
                         <Grid.ColumnDefinitions>

@@ -48,7 +48,7 @@
                 <TextBlock Grid.Row="6" Grid.Column="1" Name="TxtReason" Text="동의함" TextWrapping="Wrap"/>
                 
                 <TextBlock Grid.Row="8" Grid.Column="0" Text="무결성 :" FontWeight="Bold" Foreground="Gray"/>
-                <TextBlock Grid.Row="8" Grid.Column="1" Name="TxtIntegrity" Text="문서가 변조되지 않았습니다." Foreground="Green"/>
+                <TextBlock Grid.Row="8" Grid.Column="1" Name="TxtIntegrity" Text="문서가 변조되지 않았습니다." Foreground="Green" TextWrapping="Wrap"/>
             </Grid>
         </Border>
 

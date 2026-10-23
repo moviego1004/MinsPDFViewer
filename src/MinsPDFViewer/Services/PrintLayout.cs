@@ -43,6 +43,20 @@ namespace MinsPDFViewer
         }
 
         /// <summary>
+        /// 드라이버가 페이지별 용지 방향을 무시해서 원하는 방향과 실제 용지 방향이 다른지.
+        /// 그러면 내용을 90° 돌려 찍는다 (가로 페이지가 세로 용지에 작게 나오는 대신 꽉 차게).
+        /// </summary>
+        public static bool NeedsContentRotation(double pageWidthPt, double pageHeightPt, double paperWidth, double paperHeight,
+            PrintOrientationMode mode, bool defaultLandscape = false)
+        {
+            if (Math.Abs(paperWidth - paperHeight) < 1.0)
+                return false;
+            bool wantLandscape = IsLandscape(pageWidthPt, pageHeightPt, mode, defaultLandscape);
+            bool paperLandscape = paperWidth > paperHeight;
+            return wantLandscape != paperLandscape && Math.Abs(pageWidthPt - pageHeightPt) >= 0.01;
+        }
+
+        /// <summary>
         /// 페이지(포인트)를 용지(1/100 인치) 위에 놓을 사각형. 맞춤·축소는 인쇄 가능 영역 가운데,
         /// 실제 크기는 용지 가운데 (원본과 같은 위치·크기, 넘치면 잘림).
         /// </summary>
