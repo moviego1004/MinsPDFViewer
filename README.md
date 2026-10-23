@@ -20,9 +20,10 @@ tests/
   TestFiles/                테스트용 PDF·비교 캡처 (대용량 파일은 git 제외)
 doc/                        개발 문서
 assets/                     디자인 원본 (로고·아이콘 PNG/ICO, 설치 파일 아이콘)
-build/                      빌드·배포 스크립트, NSIS 설치 스크립트
-  Debug/ Release/           빌드 결과 (프로젝트별 하위 폴더, git 제외)
-  publish/ obj/             게시 결과·중간 파일 (git 제외)
+scripts/                    빌드·배포 스크립트, NSIS 설치 스크립트 (git 추적)
+build/                      빌드 산출물 전용 (폴더째 git 제외, 지워도 다시 생김)
+  Debug/ Release/           빌드 결과 (프로젝트별 하위 폴더)
+  publish/ obj/             게시 결과·중간 파일
 lib/                        NuGet에 없는 외부 라이브러리 자리 (현재 비어 있음)
 dist/                       설치 파일 출력 (git 제외)
 ```
@@ -42,7 +43,7 @@ dotnet test tests\MinsPDFViewer.Tests
 ## 배포
 
 ```bat
-build\release.bat        :: publish + 설치 파일 → dist\MinsPDFViewer_Setup_v<버전>.exe
-build\publish.bat        :: publish만 → build\publish
-build\makeSetup.bat      :: 설치 파일만 (NSIS 필요: C:\Program Files (x86)\NSIS)
+scripts\release.bat      :: publish + 설치 파일 → dist\MinsPDFViewer_Setup_v<버전>.exe
+scripts\publish.bat      :: publish만 → build\publish
+scripts\makeSetup.bat    :: 설치 파일만 (NSIS 필요: C:\Program Files (x86)\NSIS)
 ```

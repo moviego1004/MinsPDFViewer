@@ -1,5 +1,5 @@
 @echo off
-rem Build the installer from the publish output (run publish.bat first, or use release.bat).
+rem Build the installer from build\publish (run publish.bat first, or use release.bat).
 rem Output: dist\MinsPDFViewer_Setup_v<version>.exe
 setlocal
 cd /d "%~dp0"

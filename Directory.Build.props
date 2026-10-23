@@ -3,9 +3,9 @@
     모든 프로젝트의 빌드 산출물을 저장소 루트의 build\ 아래로 모은다 (src\·tests\에는 소스만).
       build\Debug\<프로젝트>\      Debug 빌드
       build\Release\<프로젝트>\    Release 빌드
-      build\publish\              배포용 게시 결과 (build\publish.bat)
+      build\publish\              배포용 게시 결과 (scripts\publish.bat)
       build\obj\<프로젝트>\        중간 파일 (NuGet restore 포함)
-    build\Debug·Release·publish·obj는 .gitignore로 제외된다.
+    build\는 산출물 전용이라 통째로 .gitignore로 제외된다. 빌드·설치 스크립트는 scripts\.
   -->
   <PropertyGroup>
     <RepoRoot>$(MSBuildThisFileDirectory)</RepoRoot>
