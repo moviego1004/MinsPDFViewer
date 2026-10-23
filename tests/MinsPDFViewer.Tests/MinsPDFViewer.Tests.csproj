@@ -22,7 +22,7 @@
 
   <ItemGroup>
     <Using Include="Xunit" />
-    <ProjectReference Include="..\MinsPDFViewer.csproj" />
+    <ProjectReference Include="..\..\src\MinsPDFViewer\MinsPDFViewer.csproj" />
   </ItemGroup>
 
 </Project>

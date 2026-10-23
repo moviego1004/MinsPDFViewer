@@ -18,14 +18,8 @@
     <PublishTrimmed>false</PublishTrimmed> 
     <DebugType>embedded</DebugType>
 
-    <ApplicationIcon>MinsPDFViewer.ico</ApplicationIcon>
+    <ApplicationIcon>Assets\MinsPDFViewer.ico</ApplicationIcon>
   </PropertyGroup>
-
-  <ItemGroup>
-    <Compile Remove="MinsPDFViewer.Tests\**" />
-    <EmbeddedResource Remove="MinsPDFViewer.Tests\**" />
-    <None Remove="MinsPDFViewer.Tests\**" />
-  </ItemGroup>
 
   <ItemGroup>
     <PackageReference Include="PdfiumViewer" Version="2.13.0" NoWarn="NU1701" />
@@ -35,7 +29,7 @@
     <PackageReference Include="System.Text.Encoding.CodePages" Version="6.0.0" />
     <PackageReference Include="Portable.BouncyCastle" Version="1.9.0" />
 
-    <Resource Include="MinsPDFViewer.ico" />
+    <Resource Include="Assets\MinsPDFViewer.ico" />
   </ItemGroup>
 
 </Project>

@@ -2,8 +2,8 @@
 ; MinsPDFViewer Installer Script (Final)
 ;--------------------------------
 
-!define MUI_ICON "MinsPDFViewer_ICO_32x32.ico"   ; 설치 파일 아이콘
-!define MUI_UNICON "MinsPDFViewer_ICO_32x32.ico" ; 언인스톨러 아이콘 (선택사항)
+!define MUI_ICON "..\assets\MinsPDFViewer_ICO_32x32.ico"   ; 설치 파일 아이콘
+!define MUI_UNICON "..\assets\MinsPDFViewer_ICO_32x32.ico" ; 언인스톨러 아이콘 (선택사항)
 
 !include "MUI2.nsh"
 
@@ -13,11 +13,12 @@
 !define APP_VERSION "1.0.0"
 !define APP_EXE "MinsPDFViewer.exe"
 
-; 빌드 경로 (본인의 실제 경로로 확인!)
-!define BUILD_DIR "bin\Release\net8.0-windows10.0.19041.0\win-x64\publish"
+; 경로는 이 스크립트(build\) 기준. publish.bat이 만든 결과를 설치 파일로 묶어 dist\에 둔다.
+!define BUILD_DIR "..\src\MinsPDFViewer\bin\Release\net8.0-windows10.0.19041.0\win-x64\publish"
+!define APP_ICON "..\src\MinsPDFViewer\Assets\MinsPDFViewer.ico"
 
 Name "${APP_NAME}"
-OutFile "MinsPDFViewer_Setup_v${APP_VERSION}.exe"
+OutFile "..\dist\MinsPDFViewer_Setup_v${APP_VERSION}.exe"
 InstallDir "$PROGRAMFILES64\${APP_NAME}"
 RequestExecutionLevel admin
 
@@ -61,7 +62,7 @@ Section "Install"
     SetOutPath "$INSTDIR"
 
     ; 3. 바로가기 아이콘 복사
-    File "MinsPDFViewer.ico"
+    File "${APP_ICON}"
 
     ; 4. 언인스톨러 생성
     WriteUninstaller "$INSTDIR\Uninstall.exe"

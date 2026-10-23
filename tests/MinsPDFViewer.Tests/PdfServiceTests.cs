@@ -27,11 +27,27 @@ namespace MinsPDFViewer.Tests
             _samplePdfPath = Path.Combine(_testFileDir, "normal.pdf");
             _signedPdfPath = Path.Combine(_testFileDir, "signed.pdf");
 
-            string repoSamplePath = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "TestFiles", "normal.pdf"));
+            string repoSamplePath = Path.Combine(FindTestFilesDirectory() ?? "", "normal.pdf");
             if (File.Exists(repoSamplePath))
                 File.Copy(repoSamplePath, _samplePdfPath, overwrite: true);
             else
                 File.WriteAllBytes(_samplePdfPath, CreateMinimalPdf());
+        }
+
+        /// <summary>솔루션 루트(MinsPDFViewer.sln이 있는 폴더)를 위로 찾아 tests/TestFiles를 돌려준다.</summary>
+        internal static string? FindTestFilesDirectory()
+        {
+            var dir = new DirectoryInfo(AppContext.BaseDirectory);
+            while (dir != null)
+            {
+                if (File.Exists(Path.Combine(dir.FullName, "MinsPDFViewer.sln")))
+                {
+                    string candidate = Path.Combine(dir.FullName, "tests", "TestFiles");
+                    return Directory.Exists(candidate) ? candidate : null;
+                }
+                dir = dir.Parent;
+            }
+            return null;
         }
 
         public void Dispose()

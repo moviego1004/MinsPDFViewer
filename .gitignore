@@ -490,6 +490,13 @@ $RECYCLE.BIN/
 # Ignore crash dumps and build logs
 crash_dump.txt
 build_output.txt
-TestFiles/테스트_부산_OCR*.pdf
+# 대용량 테스트 PDF (로컬 전용)
+tests/TestFiles/테스트_부산_OCR*.pdf
+
+# 배포 산출물 (build/release.bat 결과)
+dist/
+
+# lib/ 에 직접 넣는 외부 라이브러리는 추적한다 (*.dll 무시 규칙의 예외)
+!lib/**/*.dll
 
 *.7z
