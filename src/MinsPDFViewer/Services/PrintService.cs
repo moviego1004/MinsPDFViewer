@@ -11,8 +11,6 @@ using System.Threading;
 using System.Threading.Tasks;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
-using PdfiumViewer;
-using DrawingBitmap = System.Drawing.Bitmap;
 using DrawingRectangle = System.Drawing.Rectangle;
 
 namespace MinsPDFViewer
@@ -23,22 +21,20 @@ namespace MinsPDFViewer
     /// </summary>
     public sealed class PrintSource : IDisposable
     {
-        internal PrintSource(IPdfDocument document, MemoryStream stream, string documentName, bool fromPendingEdits, bool printRestricted)
+        internal PrintSource(PdfiumDocument document, string documentName, bool fromPendingEdits, bool printRestricted)
         {
             Document = document;
-            Stream = stream;
             DocumentName = documentName;
             FromPendingEdits = fromPendingEdits;
             PrintRestricted = printRestricted;
             lock (PdfService.PdfiumLock)
             {
                 PageCount = document.PageCount;
-                PageSizes = document.PageSizes.Select(s => (Width: (double)s.Width, Height: (double)s.Height)).ToList();
+                PageSizes = Enumerable.Range(0, document.PageCount).Select(document.GetPageSize).ToList();
             }
         }
 
-        internal IPdfDocument Document { get; }
-        private MemoryStream Stream { get; }
+        internal PdfiumDocument Document { get; }
         public string DocumentName { get; }
         public int PageCount { get; }
 
@@ -68,7 +64,6 @@ namespace MinsPDFViewer
                 {
                 }
             }
-            Stream.Dispose();
         }
     }
 
@@ -117,20 +112,20 @@ namespace MinsPDFViewer
         public async Task<PrintSource> PrepareAsync(PdfDocumentModel model)
         {
             var watch = Stopwatch.StartNew();
-            int sourcePageCount;
+            var viewerDocument = model.Document ?? throw new InvalidOperationException("문서가 열려 있지 않습니다");
+            int sourcePageCount = viewerDocument.PageCount;
+            uint permissions;
             lock (PdfService.PdfiumLock)
             {
-                sourcePageCount = model.PdfDocument?.PageCount ?? 0;
+                // 권한은 원본 기준 (인쇄용 임시본은 보안을 벗겨 저장하므로)
+                permissions = viewerDocument.Permissions;
             }
+            // 암호화되지 않은 문서는 0xFFFFFFFF. bit 3(0x4)이 꺼져 있으면 인쇄 금지 문서.
+            bool restricted = (permissions & 0x4) == 0;
 
             bool pendingEdits = HasPendingChanges(model, sourcePageCount, out string reason);
-            byte[] originalBytes = model.SourceBytes ?? await File.ReadAllBytesAsync(model.FilePath);
-            byte[] bytes;
-            if (!pendingEdits)
-            {
-                bytes = originalBytes;
-            }
-            else
+            byte[]? bytes = null;
+            if (pendingEdits)
             {
                 Log($"Pending edits ({reason}) → temp save for printing");
                 string tempPath = Path.Combine(Path.GetTempPath(), "MinsPrint_" + Guid.NewGuid().ToString("N") + ".pdf");
@@ -153,20 +148,14 @@ namespace MinsPDFViewer
             }
 
             string? password = model.Password;
+            string filePath = model.FilePath;
             var result = await Task.Run(() =>
             {
-                // 권한은 원본 기준 (인쇄용 임시본은 보안을 벗겨 저장하므로)
-                uint? permissions = PdfService.GetDocPermissions(originalBytes, password);
-                // 암호화되지 않은 문서는 0xFFFFFFFF. bit 3(0x4)이 꺼져 있으면 인쇄 금지 문서.
-                bool restricted = permissions.HasValue && (permissions.Value & 0x4) == 0;
-
-                var stream = new MemoryStream(bytes, writable: false);
-                IPdfDocument document;
-                lock (PdfService.PdfiumLock)
-                {
-                    document = PdfService.LoadPdfiumDocument(stream, password);
-                }
-                return new PrintSource(document, stream, model.FileName, pendingEdits, restricted);
+                // 화면 문서와 별도의 PDFium 문서 (인쇄 중에도 화면 렌더링은 그대로)
+                var document = bytes != null
+                    ? PdfiumDocument.OpenBytes(bytes, null)
+                    : PdfiumDocument.Open(filePath, password);
+                return new PrintSource(document, model.FileName, pendingEdits, restricted);
             });
 
             Log($"PrepareAsync pages={result.PageCount} pendingEdits={pendingEdits} restricted={result.PrintRestricted} elapsed={watch.ElapsedMilliseconds}ms");
@@ -256,13 +245,16 @@ namespace MinsPDFViewer
 
         // ── 미리보기 ─────────────────────────────────────────────────────
 
-        internal static PdfRenderFlags GetRenderFlags(PrintOptions options)
+        internal static int GetRenderFlags(PrintOptions options) =>
+            GetRenderFlags(options.IncludeAnnotations, options.Grayscale);
+
+        internal static int GetRenderFlags(bool includeAnnotations, bool grayscale)
         {
-            var flags = PdfRenderFlags.ForPrinting;
-            if (options.IncludeAnnotations)
-                flags |= PdfRenderFlags.Annotations;
-            if (options.Grayscale)
-                flags |= PdfRenderFlags.Grayscale;
+            int flags = PdfiumNative.FPDF_PRINTING;
+            if (includeAnnotations)
+                flags |= PdfiumNative.FPDF_ANNOT;
+            if (grayscale)
+                flags |= PdfiumNative.FPDF_GRAYSCALE;
             return flags;
         }
 
@@ -272,19 +264,8 @@ namespace MinsPDFViewer
             if (pageIndex < 0 || pageIndex >= source.PageCount || pixelWidth <= 0 || pixelHeight <= 0)
                 return null;
 
-            var flags = PdfRenderFlags.ForPrinting;
-            if (includeAnnotations)
-                flags |= PdfRenderFlags.Annotations;
-            if (grayscale)
-                flags |= PdfRenderFlags.Grayscale;
-
-            lock (PdfService.PdfiumLock)
-            {
-                using var image = source.Document.Render(pageIndex, pixelWidth, pixelHeight, 96, 96, flags);
-                var bitmap = PdfService.ToBitmapSource((DrawingBitmap)image, applyStemDarkening: false, applySharpen: false);
-                bitmap.Freeze();
-                return bitmap;
-            }
+            return PdfService.RenderBitmap(source.Document, pageIndex, pixelWidth, pixelHeight, 0,
+                GetRenderFlags(includeAnnotations, grayscale), PixelRegion.Full(pixelWidth, pixelHeight), postProcess: false);
         }
 
         // ── 인쇄 ─────────────────────────────────────────────────────────
@@ -406,9 +387,17 @@ namespace MinsPDFViewer
                     Math.Max(1, (int)Math.Round(rect.Width / 100.0 * dpiX)),
                     Math.Max(1, (int)Math.Round(rect.Height / 100.0 * dpiY)));
 
-                lock (PdfService.PdfiumLock)
+                IntPtr hdc = graphics.GetHdc();
+                try
                 {
-                    _source.Document.Render(pageIndex, graphics, dpiX, dpiY, bounds, GetRenderFlags(_options));
+                    lock (PdfService.PdfiumLock)
+                    {
+                        _source.Document.RenderToDC(pageIndex, hdc, bounds.X, bounds.Y, bounds.Width, bounds.Height, 0, GetRenderFlags(_options));
+                    }
+                }
+                finally
+                {
+                    graphics.ReleaseHdc(hdc);
                 }
 
                 _cursor++;

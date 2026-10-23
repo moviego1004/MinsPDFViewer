@@ -6,7 +6,6 @@ using System.Linq;
 using System.Threading;
 using System.Windows;
 using System.Windows.Media;
-using PdfiumViewer;
 
 namespace MinsPDFViewer
 {
@@ -40,17 +39,10 @@ namespace MinsPDFViewer
             get; set;
         }
 
-        // [PdfiumViewer] 문서 객체
         public string? Password { get; set; }
-        public IPdfDocument? PdfDocument
-        {
-            get; set;
-        }
-        public System.IO.MemoryStream? FileStream
-        {
-            get; set;
-        }
-        public byte[]? SourceBytes
+
+        /// <summary>PDFium 문서 핸들 (파일을 스트림으로 열어 둠). 화면·주석·검색·텍스트가 모두 이것을 쓴다.</summary>
+        public PdfiumDocument? Document
         {
             get; set;
         }
@@ -71,22 +63,17 @@ namespace MinsPDFViewer
                 page.Unload();
             }
 
+            PageRenderScheduler.Instance.Forget(this);
+            var document = Document;
             await Task.Run(() =>
             {
-                lock (PdfService.PdfiumLock)
+                try
                 {
-                    try
-                    {
-                        PdfDocument?.Dispose();
-                        PdfDocument = null;
-                        FileStream?.Close();
-                        FileStream?.Dispose();
-                        FileStream = null;
-                        SourceBytes = null;
-                    }
-                    catch { }
+                    document?.Dispose();
                 }
+                catch { }
             });
+            Document = null;
         }
 
         public void Dispose()
@@ -110,21 +97,16 @@ namespace MinsPDFViewer
                 // Offload to background or handle carefully. 
                 // Since PdfDocument.Dispose() might access native resources, we lock.
                 
+                PageRenderScheduler.Instance.Forget(this);
+                var document = Document;
+                Document = null;
                 Action disposeAction = () =>
                 {
-                    lock (PdfService.PdfiumLock)
+                    try
                     {
-                        try
-                        {
-                            PdfDocument?.Dispose();
-                            PdfDocument = null;
-                            FileStream?.Close();
-                            FileStream?.Dispose();
-                            FileStream = null;
-                            SourceBytes = null;
-                        }
-                        catch { }
+                        document?.Dispose();
                     }
+                    catch { }
                 };
 
                 if (Application.Current != null)
@@ -133,7 +115,7 @@ namespace MinsPDFViewer
                     {
                          // Already on UI thread, just run (but be careful of lock)
                          // Ideally, dispose native resources in background?
-                         // PdfiumViewer.PdfDocument.Dispose() is not thread-bound usually.
+                         // PdfiumDocument.Dispose()는 Pdfium.Lock 안에서 닫는다.
                          // Let's run it directly or in Task.Run to avoid UI freeze if lock is held by renderer.
                          Task.Run(disposeAction);
                     }
@@ -198,7 +180,50 @@ namespace MinsPDFViewer
             CancelRender();
             ImageSource = null;
             ThumbnailSource = null;
+            ClearDetail();
             IsHighResRendered = false;
+            RenderedBaseKey = null;
+        }
+
+        // ── 렌더 상태 (PageRenderScheduler가 관리) ──
+
+        /// <summary>지금 ImageSource에 그려진 그림의 사양 (크기·회전). 목표와 다르면 스케줄러가 다시 그린다.</summary>
+        internal volatile string? RenderedBaseKey;
+
+        /// <summary>상세 타일의 사양과 영역 (전체 크기 기준 픽셀).</summary>
+        internal volatile string? RenderedDetailKey;
+        internal PixelRegion RenderedDetailRegion;
+
+        private ImageSource? _detailImageSource;
+        /// <summary>고배율에서 보이는 부분만 원래 해상도로 그린 타일 (ImageSource 위에 겹침).</summary>
+        public ImageSource? DetailImageSource
+        {
+            get => _detailImageSource;
+            set
+            {
+                _detailImageSource = value;
+                OnPropertyChanged(nameof(DetailImageSource));
+            }
+        }
+
+        private Rect _detailRect;
+        /// <summary>상세 타일 위치 (페이지 DIP).</summary>
+        public Rect DetailRect
+        {
+            get => _detailRect;
+            set
+            {
+                _detailRect = value;
+                OnPropertyChanged(nameof(DetailRect));
+            }
+        }
+
+        internal void ClearDetail()
+        {
+            RenderedDetailKey = null;
+            RenderedDetailRegion = default;
+            if (_detailImageSource != null)
+                DetailImageSource = null;
         }
         private int _pageIndex;
         public int PageIndex

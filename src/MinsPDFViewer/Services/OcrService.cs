@@ -5,7 +5,7 @@ using System.Linq;
 using System.Diagnostics;
 using System.Threading.Tasks;
 using System.Windows;
-using PdfiumViewer; // Docnet 대체
+using System.Runtime.InteropServices.WindowsRuntime;
 using Windows.Globalization;
 using Windows.Graphics.Imaging;
 using Windows.Media.Ocr;
@@ -79,23 +79,23 @@ namespace MinsPDFViewer
                         double renderScale = Math.Min(3.0, maxSide / Math.Max(viewW, viewH));
                         w = Math.Max(1, (int)Math.Round(viewW * renderScale));
                         h = Math.Max(1, (int)Math.Round(viewH * renderScale));
-                        float dpi = (float)(72.0 * renderScale);
+                        var pdfium = document.Document;
+                        if (pdfium == null || document.IsDisposed)
+                            break;
 
                         lock (PdfService.PdfiumLock)
                         {
-                            if (document.PdfDocument == null || document.IsDisposed)
+                            if (pdfium.IsDisposed)
                                 break;
-                            if (pageVM.OriginalPageIndex < 0 || pageVM.OriginalPageIndex >= document.PdfDocument.PageCount)
+                            if (pageVM.OriginalPageIndex < 0 || pageVM.OriginalPageIndex >= pdfium.PageCount)
                             {
                                 Debug.WriteLine($"OCR skipped: invalid source page {pageVM.OriginalPageIndex}");
                                 rawBytes = null;
                             }
                             else
                             {
-                                using var bitmap = document.PdfDocument.Render(pageVM.OriginalPageIndex, w, h, dpi, dpi, PdfRenderFlags.Annotations);
-                                using var ms = new MemoryStream();
-                                bitmap.Save(ms, System.Drawing.Imaging.ImageFormat.Bmp);
-                                rawBytes = ms.ToArray();
+                                // 원본 페이지 화면 그대로 (앱 회전 없이 = OCR 좌표 기준), BGRA
+                                rawBytes = pdfium.RenderToBuffer(pageVM.OriginalPageIndex, w, h, 0, PdfiumNative.FPDF_ANNOT, PixelRegion.Full(w, h));
                             }
                         }
 
@@ -109,11 +109,8 @@ namespace MinsPDFViewer
                         double scaleX = w / viewW;
                         double scaleY = h / viewH;
 
-                        using var imageStream = new MemoryStream(rawBytes);
-                        var decoder = await BitmapDecoder.CreateAsync(imageStream.AsRandomAccessStream());
-                        using var softwareBitmap = await decoder.GetSoftwareBitmapAsync(
-                            BitmapPixelFormat.Bgra8,
-                            BitmapAlphaMode.Premultiplied);
+                        using var softwareBitmap = SoftwareBitmap.CreateCopyFromBuffer(
+                            rawBytes.AsBuffer(), BitmapPixelFormat.Bgra8, w, h, BitmapAlphaMode.Premultiplied);
 
                         var ocrResult = await _ocrEngine.RecognizeAsync(softwareBitmap);
                         var wordList = new List<OcrWordInfo>();

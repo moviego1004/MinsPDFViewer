@@ -22,8 +22,8 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="PdfiumViewer" Version="2.13.0" NoWarn="NU1701" />
-    <PackageReference Include="PdfiumViewer.Native.x86_64.v8-xfa" Version="2018.4.8.256" />
+    <!-- PDFium 엔진 (Google PDFium 빌드, Apache-2.0). 버전 고정: 올릴 때는 doc/개발계획.md 4.2의 점검표대로 -->
+    <PackageReference Include="bblanchon.PDFium.Win32" Version="158.0.8111" />
     
     <PackageReference Include="System.Drawing.Common" Version="8.0.0" />
     <PackageReference Include="System.Text.Encoding.CodePages" Version="6.0.0" />

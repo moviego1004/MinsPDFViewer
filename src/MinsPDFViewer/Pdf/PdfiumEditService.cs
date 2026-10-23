@@ -25,7 +25,7 @@ namespace MinsPDFViewer
         private const int FPDF_ANNOT_HIGHLIGHT = 9;
         private const int FPDF_ANNOT_UNDERLINE = 10;
         private const int FPDF_ANNOT_STAMP = 13;
-        private const int FPDF_ANNOT_WIDGET = 12;
+        private const int FPDF_ANNOT_WIDGET = 20;
         private const int FPDF_PAGEOBJ_IMAGE = 3;
         private const int FPDFANNOT_COLORTYPE_Color = 0;
         private const int FPDFANNOT_COLORTYPE_InteriorColor = 1;
@@ -43,6 +43,7 @@ namespace MinsPDFViewer
         /// </param>
         public async Task<bool> TrySaveAnnotationsAsync(PdfDocumentModel model, string outputPath, bool removeSecurity)
         {
+            Pdfium.EnsureInitialized();
             var profileWatch = Stopwatch.StartNew();
             if (!CanUsePdfiumAnnotationSave(model, out _))
                 return false;
@@ -68,17 +69,14 @@ namespace MinsPDFViewer
 
         private static bool CanUsePdfiumAnnotationSave(PdfDocumentModel model, out string reason)
         {
-            if (model.PdfDocument == null || string.IsNullOrWhiteSpace(model.FilePath) || !File.Exists(model.FilePath))
+            if (model.Document == null || string.IsNullOrWhiteSpace(model.FilePath) || !File.Exists(model.FilePath))
             {
                 reason = "document is not loaded or source file is missing";
                 return false;
             }
 
-            int sourcePageCount;
-            lock (PdfService.PdfiumLock)
-            {
-                sourcePageCount = model.PdfDocument?.PageCount ?? model.Pages.Count;
-            }
+            // PageCount는 열 때 읽어 둔 값이라 잠금이 필요 없다 (UI 스레드가 렌더를 기다리지 않게)
+            int sourcePageCount = model.Document?.PageCount ?? model.Pages.Count;
 
             if (model.Pages.Count(p => !p.IsBlankPage) > sourcePageCount)
             {
@@ -123,11 +121,7 @@ namespace MinsPDFViewer
 
         private static DocumentSnapshot CreateSnapshot(PdfDocumentModel model)
         {
-            int sourcePageCount = 0;
-            lock (PdfService.PdfiumLock)
-            {
-                sourcePageCount = model.PdfDocument?.PageCount ?? model.Pages.Count;
-            }
+            int sourcePageCount = model.Document?.PageCount ?? model.Pages.Count;
 
             var pages = new List<PageSnapshot>();
             foreach (var page in model.Pages)
@@ -951,14 +945,14 @@ namespace MinsPDFViewer
         {
             imageBytes = Array.Empty<byte>();
 
-            ulong size = NativeMethods.FPDFImageObj_GetImageDataRaw(imageObject, IntPtr.Zero, 0);
+            uint size = NativeMethods.FPDFImageObj_GetImageDataRaw(imageObject, IntPtr.Zero, 0);
             if (size == 0 || size > int.MaxValue)
                 return false;
 
             IntPtr buffer = Marshal.AllocHGlobal(checked((int)size));
             try
             {
-                ulong written = NativeMethods.FPDFImageObj_GetImageDataRaw(imageObject, buffer, size);
+                uint written = NativeMethods.FPDFImageObj_GetImageDataRaw(imageObject, buffer, size);
                 if (written == 0 || written > size || written > int.MaxValue)
                     return false;
 
@@ -1258,7 +1252,7 @@ namespace MinsPDFViewer
 
         private static string GetAnnotationStringValue(IntPtr annot, string key)
         {
-            ulong len = NativeMethods.FPDFAnnot_GetStringValue(annot, key, IntPtr.Zero, 0);
+            uint len = NativeMethods.FPDFAnnot_GetStringValue(annot, key, IntPtr.Zero, 0);
             if (len == 0) return string.Empty;
             IntPtr buffer = Marshal.AllocHGlobal((int)len);
             try
@@ -1547,9 +1541,10 @@ namespace MinsPDFViewer
             }
 
             [DllImport("pdfium.dll", CallingConvention = CallingConvention.Cdecl)]
+            // 최신 PDFium: 경로는 UTF-8, 암호는 UTF-8 또는 Latin-1 (한글 경로·암호)
             public static extern IntPtr FPDF_LoadDocument(
-                [MarshalAs(UnmanagedType.LPStr)] string path,
-                [MarshalAs(UnmanagedType.LPStr)] string? password);
+                [MarshalAs(UnmanagedType.LPUTF8Str)] string path,
+                [MarshalAs(UnmanagedType.LPUTF8Str)] string? password);
 
             [DllImport("pdfium.dll", CallingConvention = CallingConvention.Cdecl)]
             public static extern void FPDF_CloseDocument(IntPtr document);
@@ -1601,11 +1596,11 @@ namespace MinsPDFViewer
                 [MarshalAs(UnmanagedType.LPWStr)] string value);
 
             [DllImport("pdfium.dll", CallingConvention = CallingConvention.Cdecl)]
-            public static extern ulong FPDFAnnot_GetStringValue(
+            public static extern uint FPDFAnnot_GetStringValue(
                 IntPtr annotation,
                 [MarshalAs(UnmanagedType.LPStr)] string key,
                 IntPtr buffer,
-                ulong buflen);
+                uint buflen);
 
             [DllImport("pdfium.dll", CallingConvention = CallingConvention.Cdecl)]
             public static extern bool FPDFAnnot_SetColor(IntPtr annotation, int colorType, uint r, uint g, uint b, uint a);
@@ -1702,7 +1697,7 @@ namespace MinsPDFViewer
             public static extern int FPDFPageObj_GetType(IntPtr pageObject);
 
             [DllImport("pdfium.dll", CallingConvention = CallingConvention.Cdecl)]
-            public static extern ulong FPDFImageObj_GetImageDataRaw(IntPtr imageObject, IntPtr buffer, ulong buflen);
+            public static extern uint FPDFImageObj_GetImageDataRaw(IntPtr imageObject, IntPtr buffer, uint buflen); // C unsigned long = 32비트
 
             [DllImport("pdfium.dll", CallingConvention = CallingConvention.Cdecl)]
             public static extern IntPtr FPDFImageObj_GetBitmap(IntPtr imageObject);

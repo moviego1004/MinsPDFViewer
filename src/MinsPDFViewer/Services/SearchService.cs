@@ -165,15 +165,10 @@ namespace MinsPDFViewer
             var results = new List<Rect>();
             if (pageVM.IsBlankPage) return results;
 
-            // 1. Search text layer via PDFium
-            if (!string.IsNullOrEmpty(document.FilePath))
-            {
-                var textRects = _pdfService.FindTextRects(document.FilePath, pageVM.OriginalPageIndex, query, document.Password);
-                if (textRects != null && textRects.Count > 0)
-                {
-                    results.AddRange(textRects);
-                }
-            }
+            // 1. 텍스트 층 (열린 문서에서 바로, 결과는 페이지 화면 좌표)
+            var textRects = _pdfService.FindTextRectsInView(document, pageVM, query);
+            if (textRects.Count > 0)
+                results.AddRange(textRects);
 
             // 2. If no text rects found from PDF layer, fallback to in-memory OcrWords (if OCR was run)
             if (results.Count == 0 && pageVM.OcrWords != null && pageVM.OcrWords.Count > 0)
@@ -189,11 +184,8 @@ namespace MinsPDFViewer
             var rects = new List<Rect>();
             if (pageVM.OcrWords == null || pageVM.OcrWords.Count == 0) return rects;
 
-            // OcrWords는 이미 PDF 포인트(원본 페이지 화면 기준, 왼쪽 위 원점)이므로 줌 환산이 필요 없다.
-            // 반환 형식은 FindTextRects와 같게 (left, top-from-bottom, width, height).
-            double pdfH = pageVM.SourceViewHeightPoint > 0 ? pageVM.SourceViewHeightPoint : 842.0;
-            const double scaleX = 1.0;
-            const double scaleY = 1.0;
+            // OcrWords는 원본 페이지 화면(앱 회전 전) 포인트, 왼쪽 위 원점 → 페이지 화면 좌표(DIP)로
+            Rect ToView(double x, double y, double w, double h) => OcrRectToView(pageVM, new Rect(x, y, w, h));
 
             // Single word check
             string trimmedQuery = query.Trim();
@@ -201,11 +193,8 @@ namespace MinsPDFViewer
             {
                 if (word.Text.IndexOf(trimmedQuery, StringComparison.OrdinalIgnoreCase) >= 0)
                 {
-                    double left = word.BoundingBox.X * scaleX;
-                    double width = word.BoundingBox.Width * scaleX;
-                    double top = pdfH - (word.BoundingBox.Y * scaleY);
-                    double height = word.BoundingBox.Height * scaleY;
-                    rects.Add(new Rect(left, top, width, height));
+                    var box = word.BoundingBox;
+                    rects.Add(ToView(box.X, box.Y, box.Width, box.Height));
                 }
             }
 
@@ -233,11 +222,7 @@ namespace MinsPDFViewer
                                 maxY = Math.Max(maxY, words[k].BoundingBox.Bottom);
                             }
 
-                            double left = minX * scaleX;
-                            double width = (maxX - minX) * scaleX;
-                            double top = pdfH - (minY * scaleY);
-                            double height = (maxY - minY) * scaleY;
-                            rects.Add(new Rect(left, top, width, height));
+                            rects.Add(ToView(minX, minY, maxX - minX, maxY - minY));
                             break;
                         }
                         j++;
@@ -248,23 +233,39 @@ namespace MinsPDFViewer
             return rects;
         }
 
+        /// <summary>원본 페이지 화면(포인트, 앱 회전 전) 사각형 → 현재 페이지 화면(DIP, 앱 회전·줌 적용).</summary>
+        internal static Rect OcrRectToView(PdfPageViewModel pageVM, Rect source)
+        {
+            double sw = pageVM.SourceViewWidthPoint > 0 ? pageVM.SourceViewWidthPoint : 595.0;
+            double sh = pageVM.SourceViewHeightPoint > 0 ? pageVM.SourceViewHeightPoint : 842.0;
+            int quarter = PdfService.ToPdfiumRotate(pageVM.Rotation);
+            bool turned = quarter % 2 == 1;
+            double scale = pageVM.Width > 0 ? pageVM.Width / (turned ? sh : sw) : 1.0;
+
+            (double X, double Y) Map(double x, double y) => quarter switch
+            {
+                1 => (sh - y, x),          // 시계 방향 90°
+                2 => (sw - x, sh - y),
+                3 => (y, sw - x),
+                _ => (x, y)
+            };
+
+            var a = Map(source.Left, source.Top);
+            var b = Map(source.Right, source.Bottom);
+            return new Rect(
+                Math.Min(a.X, b.X) * scale, Math.Min(a.Y, b.Y) * scale,
+                Math.Abs(b.X - a.X) * scale, Math.Abs(b.Y - a.Y) * scale);
+        }
+
         private PdfAnnotation? HighlightMatch(PdfDocumentModel document, int pageIndex, int matchIndex)
         {
             if (pageIndex < 0 || pageIndex >= document.Pages.Count) return null;
             if (matchIndex < 0 || matchIndex >= _currentMatches.Count) return null;
 
+            // 결과는 이미 페이지 화면 좌표(DIP)
             var rect = _currentMatches[matchIndex];
             var pageVM = document.Pages[pageIndex];
-
-            double pdfH = pageVM.PdfPageHeightPoint > 0 ? pageVM.PdfPageHeightPoint : 842.0;
-            double pdfW = pageVM.PdfPageWidthPoint > 0 ? pageVM.PdfPageWidthPoint : 595.0;
-
-            double uiScale = pageVM.Width > 0 ? pageVM.Width / pdfW : 1.0;
-
-            double uiX = rect.X * uiScale;
-            double uiY = (pdfH - rect.Y) * uiScale;
-            double uiW = rect.Width * uiScale;
-            double uiH = rect.Height * uiScale;
+            double uiX = rect.X, uiY = rect.Y, uiW = rect.Width, uiH = rect.Height;
 
             PdfAnnotation? activeAnnot = null;
 
@@ -280,10 +281,7 @@ namespace MinsPDFViewer
                 // Add Normal highlights for all matches in the current page
                 foreach (var r in _currentMatches)
                 {
-                    double rX = r.X * uiScale;
-                    double rY = (pdfH - r.Y) * uiScale;
-                    double rW = r.Width * uiScale;
-                    double rH = r.Height * uiScale;
+                    double rX = r.X, rY = r.Y, rW = r.Width, rH = r.Height;
 
                     bool exists = pageVM.Annotations.Any(a => a.Type == AnnotationType.SearchHighlight &&
                                                               Math.Abs(a.X - rX) < 1 &&

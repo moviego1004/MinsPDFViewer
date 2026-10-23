@@ -55,11 +55,11 @@ Section "Install"
     File "${BUILD_DIR}\*.dll"
     File "${BUILD_DIR}\*.json"
     
-    ; 2. 필수 native DLL 복사
-    ; PdfiumViewer는 x64 폴더 안에 있는 pdfium.dll을 로드합니다.
-    SetOutPath "$INSTDIR\x64"
-    File "${BUILD_DIR}\x64\pdfium.dll"
-    SetOutPath "$INSTDIR"
+    ; 2. PDFium 엔진(pdfium.dll)은 실행 파일 옆에 있다 (위 *.dll에 포함).
+    ;    예전 버전(PdfiumViewer)이 x64 폴더에 둔 엔진은 지운다.
+    Delete "$INSTDIR\x64\pdfium.dll"
+    RMDir "$INSTDIR\x64"
+    Delete "$INSTDIR\PdfiumViewer.dll"
 
     ; 3. 바로가기 아이콘 복사
     File "${APP_ICON}"

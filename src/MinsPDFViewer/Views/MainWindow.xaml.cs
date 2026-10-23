@@ -17,7 +17,6 @@ using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using System.Windows.Media.Media3D;
 using Microsoft.Win32;
-using PdfiumViewer;
 
 namespace MinsPDFViewer
 {
@@ -177,6 +176,7 @@ namespace MinsPDFViewer
 
             if (SelectedDocument != null)
                 StartThumbnailRendering(SelectedDocument);
+            RequestViewportUpdate();
         }
 
         private void UpdateScrollViewerState(ListView listView, PdfDocumentModel? oldDoc, PdfDocumentModel? newDoc)
@@ -343,18 +343,8 @@ namespace MinsPDFViewer
 
         private void PageGrid_Loaded(object sender, RoutedEventArgs e)
         {
-            if (sender is FrameworkElement elem && elem.DataContext is PdfPageViewModel pageVM)
-            {
-                if (SelectedDocument != null)
-                {
-                    // Cancel any previous render for this page
-                    pageVM.CancelRender();
-                    var cts = new System.Threading.CancellationTokenSource();
-                    pageVM.RenderCts = cts;
-                    var doc = SelectedDocument;
-                    _pdfService.RenderPageAsync(doc, pageVM, cts.Token);
-                }
-            }
+            // 무엇을 그릴지는 보이는 영역이 정한다 (PageRenderScheduler)
+            RequestViewportUpdate();
         }
 
         private void PageGrid_Unloaded(object sender, RoutedEventArgs e)
@@ -755,7 +745,7 @@ namespace MinsPDFViewer
             BtnPopupCopy.IsEnabled = false;
             TxtStatus.Text = "텍스트 추출 중...";
 
-            if (SelectedDocument?.PdfDocument == null)
+            if (SelectedDocument?.Document == null)
             {
                 _isSelectionTextPending = false;
                 TxtStatus.Text = "영역 선택됨";
@@ -772,14 +762,7 @@ namespace MinsPDFViewer
                         return string.Empty;
 
                     var page = doc.Pages[pageIndex];
-                    return _pdfService.ExtractTextInRect(
-                        doc.FilePath,
-                        page.OriginalPageIndex,
-                        uiRect,
-                        page.Width,
-                        page.Height,
-                        page.PdfPageWidthPoint,
-                        page.PdfPageHeightPoint);
+                    return _pdfService.ExtractTextInRect(doc, page, uiRect);
                 }
                 catch { return ""; }
             });
@@ -807,47 +790,28 @@ namespace MinsPDFViewer
                 SelectionPopup.IsOpen = false;
                 if (SelectedDocument == null || _selectedPageIndex == -1) return;
 
-                var pageVM = SelectedDocument.Pages[_selectedPageIndex];
-                if (pageVM.SelectionWidth <= 0 || pageVM.SelectionHeight <= 0) return;
+                var model = SelectedDocument;
+                var pageVM = model.Pages[_selectedPageIndex];
+                var document = model.Document;
+                if (document == null || pageVM.IsBlankPage || pageVM.SelectionWidth <= 0 || pageVM.SelectionHeight <= 0) return;
 
                 TxtStatus.Text = "이미지 처리 중...";
-                BitmapSource? croppedBitmap = null;
 
-                await Task.Run(() =>
-                {
-                    lock (PdfService.PdfiumLock)
-                    {
-                        if (SelectedDocument.PdfDocument == null) return;
+                // 선택 영역만 3배 해상도로 (페이지 전체를 그리지 않음). 앱 회전·원본 페이지 번호 반영.
+                const double scale = 3.0;
+                int fullW = Math.Max(1, (int)Math.Round(pageVM.Width * scale));
+                int fullH = Math.Max(1, (int)Math.Round(pageVM.Height * scale));
+                int cx = Math.Clamp((int)Math.Floor(pageVM.SelectionX * scale), 0, fullW - 1);
+                int cy = Math.Clamp((int)Math.Floor(pageVM.SelectionY * scale), 0, fullH - 1);
+                int cw = Math.Min(fullW - cx, (int)Math.Ceiling(pageVM.SelectionWidth * scale));
+                int ch = Math.Min(fullH - cy, (int)Math.Ceiling(pageVM.SelectionHeight * scale));
+                if (cw <= 0 || ch <= 0) return;
+                int sourceIndex = pageVM.OriginalPageIndex;
+                int rotate = PdfService.ToPdfiumRotate(pageVM.Rotation);
 
-                        int scale = 3;
-                        int dpi = 96 * scale;
-                        int w = (int)(pageVM.Width * scale);
-                        int h = (int)(pageVM.Height * scale);
-
-                        using (var fullBmp = (System.Drawing.Bitmap)SelectedDocument.PdfDocument.Render(_selectedPageIndex, w, h, dpi, dpi, PdfRenderFlags.Annotations))
-                        {
-                            int cx = (int)(pageVM.SelectionX * scale);
-                            int cy = (int)(pageVM.SelectionY * scale);
-                            int cw = (int)(pageVM.SelectionWidth * scale);
-                            int ch = (int)(pageVM.SelectionHeight * scale);
-
-                            if (cw > 0 && ch > 0)
-                            {
-                                if (cx < 0) cx = 0;
-                                if (cy < 0) cy = 0;
-                                if (cx + cw > fullBmp.Width) cw = fullBmp.Width - cx;
-                                if (cy + ch > fullBmp.Height) ch = fullBmp.Height - cy;
-
-                                using (var cropped = fullBmp.Clone(new System.Drawing.Rectangle(cx, cy, cw, ch), fullBmp.PixelFormat))
-                                {
-                                    var bs = PdfService.ToBitmapSource(cropped);
-                                    bs.Freeze();
-                                    croppedBitmap = bs;
-                                }
-                            }
-                        }
-                    }
-                });
+                BitmapSource? croppedBitmap = await Task.Run(() =>
+                    PdfService.RenderBitmap(document, sourceIndex, fullW, fullH, rotate, PdfiumNative.FPDF_ANNOT,
+                        new PixelRegion(cx, cy, cw, ch), postProcess: false, dpiScale: scale));
 
                 if (croppedBitmap != null)
                 {
@@ -1242,25 +1206,7 @@ namespace MinsPDFViewer
                     newSv.ScrollToVerticalOffset(vOffset);
                     newSv.ScrollToHorizontalOffset(hOffset);
                     
-                    // [Fix] Force re-render visible pages after reload and scroll
-                    await Dispatcher.InvokeAsync(() => 
-                    {
-                        if (SelectedDocument != null)
-                        {
-                            int currentIdx = GetCurrentPageIndex();
-                            int start = Math.Max(0, currentIdx - 2);
-                            int end = Math.Min(SelectedDocument.Pages.Count - 1, currentIdx + 5);
-
-                            for (int i = start; i <= end; i++)
-                            {
-                                var p = SelectedDocument.Pages[i];
-                                var cts = new System.Threading.CancellationTokenSource();
-                                p.RenderCts?.Cancel();
-                                p.RenderCts = cts;
-                                _pdfService.RenderPageAsync(SelectedDocument, p, cts.Token);
-                            }
-                        }
-                    }, System.Windows.Threading.DispatcherPriority.ContextIdle);
+                    RequestViewportUpdate();
                 }
                 LogSaveStep("RestoreScrollAndVisibleRender");
                 
@@ -1932,20 +1878,128 @@ namespace MinsPDFViewer
             }), System.Windows.Threading.DispatcherPriority.ContextIdle);
         }
 
+        /// <summary>
+        /// 곧 보일 페이지(책갈피·썸네일·페이지 이동)를 먼저 그리도록 알린다. 실제 순서는 보이는 영역 계산이 정하고,
+        /// 레이아웃이 아직 안 끝나 보이는 페이지를 모를 때는 이 페이지를 보이는 페이지로 취급한다.
+        /// </summary>
         private void RenderPagesAround(int pageIndex, int pagesBefore = 1, int pagesAfter = 2)
         {
-            if (SelectedDocument == null) return;
+            var model = SelectedDocument;
+            if (model == null || model.Pages.Count == 0) return;
 
+            pageIndex = Math.Clamp(pageIndex, 0, model.Pages.Count - 1);
+            _focusHintPage = model.Pages[pageIndex];
             int start = Math.Max(0, pageIndex - pagesBefore);
-            int end = Math.Min(SelectedDocument.Pages.Count - 1, pageIndex + pagesAfter);
+            int end = Math.Min(model.Pages.Count - 1, pageIndex + pagesAfter);
             for (int i = start; i <= end; i++)
+                PageRenderScheduler.Instance.RequestPage(model, model.Pages[i]);
+            RequestViewportUpdate();
+        }
+
+        // ── 보이는 영역 → 렌더 스케줄러 ────────────────────────────────
+
+        private PdfPageViewModel? _focusHintPage;
+        private bool _viewportUpdateQueued;
+
+        /// <summary>스크롤·줌·크기 변경 등 여러 번 불려도 레이아웃이 끝난 뒤 한 번만 계산한다.</summary>
+        private void RequestViewportUpdate()
+        {
+            if (_viewportUpdateQueued) return;
+            _viewportUpdateQueued = true;
+            Dispatcher.BeginInvoke(new Action(() =>
             {
-                var page = SelectedDocument.Pages[i];
-                page.RenderCts?.Cancel();
-                var cts = new System.Threading.CancellationTokenSource();
-                page.RenderCts = cts;
-                _pdfService.RenderPageAsync(SelectedDocument, page, cts.Token);
+                _viewportUpdateQueued = false;
+                try
+                {
+                    UpdateRenderViewport();
+                }
+                catch (Exception ex)
+                {
+                    Log($"[WARN] UpdateRenderViewport: {ex.Message}");
+                }
+            }), System.Windows.Threading.DispatcherPriority.Loaded);
+        }
+
+        private void UpdateRenderViewport()
+        {
+            var model = SelectedDocument;
+            var scheduler = PageRenderScheduler.Instance;
+            if (model == null || model.IsDisposed || model.Pages.Count == 0)
+            {
+                scheduler.UpdateViewport(null, Array.Empty<PageRenderScheduler.PageTarget>(), 1.0);
+                return;
             }
+
+            double dpiScale = VisualTreeHelper.GetDpi(this).DpiScaleX;
+            var visible = new List<(PdfPageViewModel Page, Rect Local, double Area)>();
+            var listView = GetCurrentListView();
+            var sv = listView != null ? FindChild<ScrollViewer>(listView) : null;
+            var panel = listView != null ? GetVisualChild<VirtualizingStackPanel>(listView) : null;
+            if (sv != null && panel != null && sv.ViewportWidth > 0 && sv.ViewportHeight > 0)
+            {
+                // 화면에 실제로 놓인 페이지만 (가상화로 만들어진 컨테이너)
+                var viewportRect = new Rect(0, 0, sv.ViewportWidth, sv.ViewportHeight);
+                foreach (var child in panel.Children)
+                {
+                    if (child is not FrameworkElement container || container.DataContext is not PdfPageViewModel page)
+                        continue;
+                    if (!ReferenceEquals(container.DataContext, page) || !model.Pages.Contains(page))
+                        continue;
+                    var grid = FindChild<Grid>(container, "PageGrid");
+                    if (grid == null || grid.ActualWidth <= 0 || grid.ActualHeight <= 0 || !grid.IsVisible)
+                        continue;
+                    Rect bounds;
+                    try
+                    {
+                        bounds = grid.TransformToAncestor(sv).TransformBounds(new Rect(0, 0, grid.ActualWidth, grid.ActualHeight));
+                    }
+                    catch (InvalidOperationException)
+                    {
+                        continue;
+                    }
+                    var hit = Rect.Intersect(bounds, viewportRect);
+                    if (hit.IsEmpty || hit.Width <= 0 || hit.Height <= 0)
+                        continue;
+                    // 페이지 안 좌표(DIP). 비율은 실제 배치 크기 → 모델 크기로 (레이아웃 반올림 보정)
+                    double sx = page.Width / grid.ActualWidth;
+                    double sy = page.Height / grid.ActualHeight;
+                    var local = new Rect((hit.X - bounds.X) * sx, (hit.Y - bounds.Y) * sy, hit.Width * sx, hit.Height * sy);
+                    visible.Add((page, local, hit.Width * hit.Height));
+                }
+            }
+
+            var targets = new List<PageRenderScheduler.PageTarget>();
+            if (visible.Count > 0)
+            {
+                // 많이 보이는 페이지부터
+                foreach (var v in visible.OrderByDescending(v => v.Area))
+                    targets.Add(new PageRenderScheduler.PageTarget(v.Page, v.Local));
+                _focusHintPage = null;
+            }
+            else if (_focusHintPage != null && model.Pages.Contains(_focusHintPage))
+            {
+                targets.Add(new PageRenderScheduler.PageTarget(_focusHintPage, new Rect(0, 0, _focusHintPage.Width, _focusHintPage.Height)));
+            }
+
+            if (targets.Count > 0)
+            {
+                // 위아래로 미리 그릴 페이지 (스크롤 방향을 모르니 아래쪽을 하나 더)
+                int first = targets.Min(t => model.Pages.IndexOf(t.Page));
+                int last = targets.Max(t => model.Pages.IndexOf(t.Page));
+                foreach (int i in new[] { last + 1, first - 1, last + 2 })
+                {
+                    if (i >= 0 && i < model.Pages.Count && targets.All(t => !ReferenceEquals(t.Page, model.Pages[i])))
+                        targets.Add(new PageRenderScheduler.PageTarget(model.Pages[i], Rect.Empty));
+                }
+            }
+
+            scheduler.UpdateViewport(model, targets, dpiScale);
+        }
+
+        protected override void OnDpiChanged(DpiScale oldDpi, DpiScale newDpi)
+        {
+            base.OnDpiChanged(oldDpi, newDpi);
+            RequestViewportUpdate();
         }
 
         private void BookmarkTree_SelectedItemChanged(object sender, RoutedPropertyChangedEventArgs<object> e) {
@@ -2129,6 +2183,7 @@ namespace MinsPDFViewer
                 TxtPageInfo.Text = $"{pageIndex + 1} / {SelectedDocument.Pages.Count}";
                 SyncSelectedThumbnail(pageIndex);
             }
+            RequestViewportUpdate();
         }
 
         private void PageThumbnailList_SelectionChanged(object sender, SelectionChangedEventArgs e)
@@ -2610,20 +2665,8 @@ namespace MinsPDFViewer
                             // No, keep old image (blurry) until new one arrives to avoid flashing white.
                         }
 
-                        // 2. Request re-render ONLY for visible pages (optimization)
-                        // Virtualization will handle the rest when scrolling, but we need to update current view immediately.
-                        int currentIdx = GetCurrentPageIndex();
-                        int start = Math.Max(0, currentIdx - 2);
-                        int end = Math.Min(doc.Pages.Count - 1, currentIdx + 5); // Render a bit more downwards
-
-                        for (int i = start; i <= end; i++)
-                        {
-                             var p = doc.Pages[i];
-                             var cts = new System.Threading.CancellationTokenSource();
-                             p.RenderCts?.Cancel();
-                             p.RenderCts = cts;
-                             _pdfService.RenderPageAsync(doc, p, cts.Token);
-                        }
+                        // 2. 보이는 영역 기준으로 다시 그림 (이전 그림은 새 그림이 올 때까지 늘여서 보여 줌)
+                        RequestViewportUpdate();
                     }
                 };
                 
@@ -2876,7 +2919,17 @@ namespace MinsPDFViewer
                     page.PdfPageWidthPoint = page.PdfPageHeightPoint;
                     page.PdfPageHeightPoint = tempPointW;
                 }
+
+                // 그림은 회전까지 반영된 비트맵이라 방향이 바뀌면 새로 그린다
+                page.ImageSource = null;
+                page.RenderedBaseKey = null;
+                page.ClearDetail();
+                page.ThumbnailSource = null;
             }
+
+            if (SelectedDocument != null)
+                StartThumbnailRendering(SelectedDocument);
+            RequestViewportUpdate();
         }
 
         private void BtnRotateRight_Click(object sender, RoutedEventArgs e)

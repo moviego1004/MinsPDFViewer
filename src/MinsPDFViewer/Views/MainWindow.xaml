@@ -665,16 +665,21 @@
                                                                                 </ListView.ItemContainerStyle>
                                                         <ListView.ItemTemplate>
                                                                 <DataTemplate>
+                                                                        <Grid>
+                                                                                <!-- 그림자는 형제 요소로: 페이지에 Effect를 걸면 페이지 전체가 다시 래스터화돼 글자가 흐려진다 -->
+                                                                                <Border Background="#59000000"
+                                                                                                Margin="4,5,-4,-5"
+                                                                                                IsHitTestVisible="False">
+                                                                                        <Border.Effect>
+                                                                                                <BlurEffect Radius="8"/>
+                                                                                        </Border.Effect>
+                                                                                </Border>
                                                                         <Border BorderBrush="Black"
                                                                                         BorderThickness="1"
                                                                                         Background="White">
-                                                                                <Border.Effect>
-                                                                                        <DropShadowEffect BlurRadius="10"
-                                                                                                        ShadowDepth="5"
-                                                                                                        Opacity="0.5"/>
-                                                                                </Border.Effect>
 
-                                                                                <Grid Width="{Binding Width}"
+                                                                                <Grid x:Name="PageGrid"
+                                                                                                Width="{Binding Width}"
                                                                                                 Height="{Binding Height}"
                                                                                                 Tag="{Binding PageIndex}"
                                                                                                 SnapsToDevicePixels="True"
@@ -685,21 +690,30 @@
                                                                                                 PreviewMouseMove="Page_MouseMove"
                                                                                                 PreviewMouseUp="Page_MouseUp"
                                                                                                 Background="Transparent">
+                                                                                        <!-- 고해상도 그림이 오기 전 자리 표시 (썸네일). 그림은 회전까지 반영된 비트맵이라 변환 없이 칸에 맞춘다 -->
+                                                                                        <Image Source="{Binding ThumbnailSource}"
+                                                                                                        Stretch="Fill"
+                                                                                                        RenderOptions.BitmapScalingMode="LowQuality"
+                                                                                                        IsHitTestVisible="False"/>
                                                                                         <Image Source="{Binding ImageSource}"
-                                                                                                        Stretch="Uniform"
-                                                                                                        HorizontalAlignment="Left"
-                                                                                                        VerticalAlignment="Top"
+                                                                                                        Stretch="Fill"
                                                                                                         SnapsToDevicePixels="True"
                                                                                                         UseLayoutRounding="True"
                                                                                                         RenderOptions.BitmapScalingMode="HighQuality"
-                                                                                                        RenderOptions.ClearTypeHint="Enabled"
-                                                                                                        IsHitTestVisible="False">
-                                                                                                <Image.LayoutTransform>
-                                                                                                        <RotateTransform Angle="{Binding Rotation}"/>
-                                                                                                </Image.LayoutTransform>
-                                                                                        </Image>
+                                                                                                        IsHitTestVisible="False"/>
+                                                                                        <!-- 고배율: 보이는 부분만 화면 해상도로 그린 타일 -->
+                                                                                        <Canvas IsHitTestVisible="False">
+                                                                                                <Image Source="{Binding DetailImageSource}"
+                                                                                                                Canvas.Left="{Binding DetailRect.X}"
+                                                                                                                Canvas.Top="{Binding DetailRect.Y}"
+                                                                                                                Width="{Binding DetailRect.Width}"
+                                                                                                                Height="{Binding DetailRect.Height}"
+                                                                                                                Stretch="Fill"
+                                                                                                                SnapsToDevicePixels="True"
+                                                                                                                RenderOptions.BitmapScalingMode="HighQuality"/>
+                                                                                        </Canvas>
 
-                                                                                        <Canvas Background="Transparent"
+                                                                        <Canvas Background="Transparent"
                                                                                                         IsHitTestVisible="False">
                                                                                                 <Border Canvas.Left="{Binding SelectionX}"
                                                                                                                 Canvas.Top="{Binding SelectionY}"
@@ -729,6 +743,7 @@
                                                                                                         Loaded="AnnotationCanvas_Loaded"/>
                                                                                 </Grid>
                                                                         </Border>
+                                                                        </Grid>
                                                                 </DataTemplate>
                                                         </ListView.ItemTemplate>
                                                 </ListView>
