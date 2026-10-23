@@ -400,7 +400,7 @@ namespace MinsPDFViewer
             }
         }
 
-        private const uint FPDF_REMOVE_SECURITY = 3;
+        private const uint FPDF_REMOVE_SECURITY = 1 << 2; // 예전 값 3은 폐지 예정(FPDF_REMOVE_SECURITY_DEPRECATED)
 
         private static bool SaveDocumentToFile(IntPtr document, string outputPath, bool removeSecurity = false)
         {
@@ -791,7 +791,7 @@ namespace MinsPDFViewer
                     return;
 
                 // Alpha 0 keeps the OCR layer invisible while preserving text for search/extraction.
-                NativeMethods.FPDFText_SetFillColor(textObject, 0, 0, 0, 0);
+                NativeMethods.FPDFPageObj_SetFillColor(textObject, 0, 0, 0, 0);
 
                 double horizontalScale = 1.0;
                 if (NativeMethods.FPDFPageObj_GetBounds(textObject, out float left, out _, out float right, out _))
@@ -1119,7 +1119,7 @@ namespace MinsPDFViewer
                 if (!NativeMethods.FPDFText_SetText(textObject, line))
                     return;
 
-                NativeMethods.FPDFText_SetFillColor(
+                NativeMethods.FPDFPageObj_SetFillColor(
                     textObject,
                     color.R,
                     color.G,
@@ -1667,8 +1667,9 @@ namespace MinsPDFViewer
             [DllImport("pdfium.dll", CallingConvention = CallingConvention.Cdecl)]
             public static extern bool FPDFText_SetText(IntPtr textObject, [MarshalAs(UnmanagedType.LPWStr)] string text);
 
+            // 예전 PDFium의 FPDFText_SetFillColor는 없어지고 페이지 객체 공통 함수로 바뀜
             [DllImport("pdfium.dll", CallingConvention = CallingConvention.Cdecl)]
-            public static extern bool FPDFText_SetFillColor(IntPtr textObject, uint r, uint g, uint b, uint a);
+            public static extern bool FPDFPageObj_SetFillColor(IntPtr pageObject, uint r, uint g, uint b, uint a);
 
             [DllImport("pdfium.dll", CallingConvention = CallingConvention.Cdecl)]
             public static extern bool FPDFPageObj_GetBounds(

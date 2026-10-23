@@ -43,6 +43,36 @@ namespace MinsPDFViewer.Tests
             return target;
         }
 
+        /// <summary>
+        /// 앱이 선언한 PDFium 함수가 모두 실제 pdfium.dll에 있는지. 엔진 버전을 올렸을 때 없어진 함수(예: FPDFText_SetFillColor)를
+        /// 실행 중 EntryPointNotFoundException이 아니라 여기서 잡는다.
+        /// </summary>
+        [Fact]
+        public void AllPdfiumImports_ExistInShippedDll()
+        {
+            var assembly = typeof(PdfiumNative).Assembly;
+            IntPtr library = System.Runtime.InteropServices.NativeLibrary.Load("pdfium.dll", assembly, null);
+            var missing = new System.Collections.Generic.List<string>();
+            int checkedCount = 0;
+            var flags = System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static;
+            foreach (var type in assembly.GetTypes())
+            {
+                foreach (var method in type.GetMethods(flags))
+                {
+                    var import = (System.Runtime.InteropServices.DllImportAttribute?)Attribute.GetCustomAttribute(
+                        method, typeof(System.Runtime.InteropServices.DllImportAttribute));
+                    if (import == null || !string.Equals(import.Value, "pdfium.dll", StringComparison.OrdinalIgnoreCase))
+                        continue;
+                    string entry = import.EntryPoint ?? method.Name;
+                    checkedCount++;
+                    if (!System.Runtime.InteropServices.NativeLibrary.TryGetExport(library, entry, out _))
+                        missing.Add($"{type.Name}.{entry}");
+                }
+            }
+            Assert.True(checkedCount > 50, $"checked {checkedCount}");
+            Assert.True(missing.Count == 0, "pdfium.dll에 없는 함수: " + string.Join(", ", missing));
+        }
+
         [Fact]
         public void Open_KoreanPath_TileEqualsCropOfFullRender()
         {
