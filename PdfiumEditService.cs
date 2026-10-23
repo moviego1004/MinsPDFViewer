@@ -1323,12 +1323,11 @@ namespace MinsPDFViewer
 
         private static NativeMethods.FS_RECTF ToPdfRect(PageSnapshot page, OcrWordSnapshot word)
         {
-            double scaleX = page.PdfWidth / page.Width;
-            double scaleY = page.PdfHeight / page.Height;
-            float left = (float)(word.X * scaleX);
-            float right = (float)((word.X + word.Width) * scaleX);
-            float top = (float)(page.PdfHeight - (word.Y * scaleY));
-            float bottom = (float)(page.PdfHeight - ((word.Y + word.Height) * scaleY));
+            // OCR 단어 좌표는 이미 PDF 포인트(왼쪽 위 원점). 줌 환산 없이 y만 뒤집는다.
+            float left = (float)word.X;
+            float right = (float)(word.X + word.Width);
+            float top = (float)(page.PdfHeight - word.Y);
+            float bottom = (float)(page.PdfHeight - (word.Y + word.Height));
 
             return new NativeMethods.FS_RECTF
             {

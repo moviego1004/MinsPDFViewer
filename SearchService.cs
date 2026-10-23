@@ -189,16 +189,11 @@ namespace MinsPDFViewer
             var rects = new List<Rect>();
             if (pageVM.OcrWords == null || pageVM.OcrWords.Count == 0) return rects;
 
-            double pdfW = pageVM.PdfPageWidthPoint > 0 ? pageVM.PdfPageWidthPoint : (pageVM.Width > 0 ? pageVM.Width : 595.0);
-            double pdfH = pageVM.PdfPageHeightPoint > 0 ? pageVM.PdfPageHeightPoint : (pageVM.Height > 0 ? pageVM.Height : 842.0);
-
-            double imgW = pageVM.ImageSource != null ? pageVM.ImageSource.Width : pdfW;
-            double imgH = pageVM.ImageSource != null ? pageVM.ImageSource.Height : pdfH;
-            if (imgW <= 0) imgW = pdfW;
-            if (imgH <= 0) imgH = pdfH;
-
-            double scaleX = pdfW / imgW;
-            double scaleY = pdfH / imgH;
+            // OcrWords는 이미 PDF 포인트(원본 페이지 화면 기준, 왼쪽 위 원점)이므로 줌 환산이 필요 없다.
+            // 반환 형식은 FindTextRects와 같게 (left, top-from-bottom, width, height).
+            double pdfH = pageVM.SourceViewHeightPoint > 0 ? pageVM.SourceViewHeightPoint : 842.0;
+            const double scaleX = 1.0;
+            const double scaleY = 1.0;
 
             // Single word check
             string trimmedQuery = query.Trim();

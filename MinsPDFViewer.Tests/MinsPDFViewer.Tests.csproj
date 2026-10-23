@@ -11,6 +11,7 @@
     <IsTestProject>true</IsTestProject>
     
     <UseWPF>true</UseWPF>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
   </PropertyGroup>
 
   <ItemGroup>

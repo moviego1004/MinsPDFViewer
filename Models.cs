@@ -178,10 +178,20 @@ namespace MinsPDFViewer
             }
         }
 
+        /// <summary>
+        /// OCR 단어. 좌표는 줌과 무관한 PDF 포인트이며, PDFium이 원본 페이지를 그린 화면(앱 내 회전 적용 전) 기준
+        /// 왼쪽 위 원점이다. <see cref="SourceViewWidthPoint"/> × <see cref="SourceViewHeightPoint"/> 영역.
+        /// </summary>
         public List<OcrWordInfo>? OcrWords
         {
             get; set;
         }
+
+        private bool IsQuarterTurned => ((Rotation % 360 + 360) % 360) % 180 == 90;
+
+        /// <summary>PDFium이 원본 페이지를 그리는 크기(포인트, 앱 내 회전 전). 회전 버튼은 PdfPageWidth/HeightPoint를 맞바꾸므로 되돌려 계산한다.</summary>
+        public double SourceViewWidthPoint => IsQuarterTurned ? PdfPageHeightPoint : PdfPageWidthPoint;
+        public double SourceViewHeightPoint => IsQuarterTurned ? PdfPageWidthPoint : PdfPageHeightPoint;
         public string MediaBoxInfo { get; set; } = "";
         public void Unload()
         {
@@ -512,6 +522,7 @@ namespace MinsPDFViewer
     public class OcrWordInfo
     {
         public string Text { get; set; } = "";
+        /// <summary>PDF 포인트, 원본 페이지 화면 기준 왼쪽 위 원점 (<see cref="PdfPageViewModel.OcrWords"/> 참고).</summary>
         public Rect BoundingBox
         {
             get; set;

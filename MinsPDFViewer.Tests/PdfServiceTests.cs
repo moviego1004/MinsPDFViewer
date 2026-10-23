@@ -226,7 +226,7 @@ namespace MinsPDFViewer.Tests
             bmp.SetPixel(0, 1, System.Drawing.Color.FromArgb(255, 180, 180, 180));
             bmp.SetPixel(1, 1, System.Drawing.Color.FromArgb(255, 100, 100, 100));
 
-            var result = PdfService.ToBitmapSource(bmp, applyStemDarkening: true);
+            var result = PdfService.ToBitmapSource(bmp, applyStemDarkening: true, applySharpen: false);
             Assert.NotNull(result);
             Assert.Equal(2, result.PixelWidth);
             Assert.Equal(2, result.PixelHeight);
@@ -247,6 +247,152 @@ namespace MinsPDFViewer.Tests
             // Mid gray 어두워짐 검증 (180 -> <180, 100 -> <100)
             Assert.True(pixels[8] < 180, $"Expected pixel to be darkened, got {pixels[8]}");
             Assert.True(pixels[12] < 100, $"Expected pixel to be darkened, got {pixels[12]}");
+        }
+
+        // 밝기 언샤프: 가장자리 대비는 커지고, 균일한 면·흰색·검정은 그대로, 색 차이(채널 간 차)는 유지
+        [Fact]
+        public unsafe void SharpenLuma_IncreasesEdgeContrast_KeepsFlatAreasAndChroma()
+        {
+            const int w = 8, h = 4;
+            var px = new byte[w * h * 4];
+            for (int y = 0; y < h; y++)
+            {
+                for (int x = 0; x < w; x++)
+                {
+                    int i = (y * w + x) * 4;
+                    byte v = x < 4 ? (byte)40 : (byte)220; // 어두운 획 | 밝은 바탕
+                    px[i] = v; px[i + 1] = v; px[i + 2] = v; px[i + 3] = 255;
+                }
+            }
+            // 색이 있는 픽셀 하나 (채널 차 보존 확인)
+            int c = (1 * w + 6) * 4;
+            px[c] = 200; px[c + 1] = 220; px[c + 2] = 240;
+
+            fixed (byte* p = px)
+                PdfService.SharpenLuma(p, w, h, w * 4, 0.6);
+
+            byte At(int x, int y) => px[(y * w + x) * 4 + 1];
+            Assert.Equal(40, At(0, 2));            // 획 안쪽(균일) 그대로
+            Assert.Equal(220, At(7, 2));           // 바탕(균일) 그대로
+            Assert.True(At(3, 2) < 40, $"edge dark side should get darker, got {At(3, 2)}");
+            Assert.True(At(4, 2) > 220, $"edge light side should get lighter, got {At(4, 2)}");
+            Assert.Equal(40, px[c + 2] - px[c]);   // R-B 차 유지 (밝기만 바뀜)
+        }
+
+        // 1번: OCR 단어 좌표는 줌과 무관한 포인트. 줌 2배에서도 텍스트 층이 같은 위치에 들어가야 한다.
+        [Fact]
+        public async Task GlyphlessOcr_IsZoomIndependent()
+        {
+            string path = Path.Combine(_testFileDir, "zoom.pdf");
+            File.WriteAllBytes(path, CreateTwoPagePdf()); // 1쪽 MediaBox 300×400, 회전 없음
+
+            var service = new PdfService();
+            var docModel = await service.LoadPdfAsync(path);
+            Assert.NotNull(docModel);
+            await service.InitializeDocumentAsync(docModel);
+
+            docModel.Zoom = 2.0;
+            foreach (var p in docModel.Pages)
+            {
+                p.Width = p.PdfPageWidthPoint * docModel.Zoom;
+                p.Height = p.PdfPageHeightPoint * docModel.Zoom;
+            }
+
+            docModel.Pages[0].OcrWords = new List<OcrWordInfo>
+            {
+                new OcrWordInfo { Text = "줌무관", BoundingBox = new Rect(60, 120, 90, 20) }
+            };
+
+            string savedPath = Path.Combine(_testFileDir, "zoom_ocr.pdf");
+            await service.SavePdf(docModel, savedPath);
+            await docModel.CloseAsync();
+
+            var rects = service.FindTextRects(savedPath, 0, "줌무관");
+            Assert.NotEmpty(rects);
+            // FindTextRects는 PDF 좌표(아래 원점): left ≈ 60, top ≈ 400 - 120 = 280
+            Assert.InRange(rects[0].X, 58, 62);
+            Assert.InRange(rects[0].Y, 276, 284);
+        }
+
+        // 2·5번: 앱에서 90° 돌린 페이지 + 부모에서 상속된 Resources. 저장 후에도 원본 내용이 남고 OCR 텍스트가 검색된다.
+        [Fact]
+        public async Task GlyphlessOcr_RotatedPage_WithInheritedResources_IsSearchable()
+        {
+            string path = Path.Combine(_testFileDir, "inherited.pdf");
+            File.WriteAllBytes(path, CreateInheritedResourcesPdf());
+
+            var service = new PdfService();
+            var docModel = await service.LoadPdfAsync(path);
+            Assert.NotNull(docModel);
+            await service.InitializeDocumentAsync(docModel);
+
+            var page = docModel.Pages[0];
+            double srcW = page.SourceViewWidthPoint;
+            // 앱 회전 버튼과 같은 처리 (가로·세로 맞바꿈)
+            page.Rotation = 90;
+            (page.Width, page.Height) = (page.Height, page.Width);
+            (page.PdfPageWidthPoint, page.PdfPageHeightPoint) = (page.PdfPageHeightPoint, page.PdfPageWidthPoint);
+            Assert.Equal(srcW, page.SourceViewWidthPoint, 3);
+
+            page.OcrWords = new List<OcrWordInfo>
+            {
+                new OcrWordInfo { Text = "회전검색", BoundingBox = new Rect(50, 60, 120, 24) }
+            };
+
+            string savedPath = Path.Combine(_testFileDir, "inherited_ocr.pdf");
+            await service.SavePdf(docModel, savedPath);
+            await docModel.CloseAsync();
+
+            Assert.NotEmpty(service.FindTextRects(savedPath, 0, "회전검색"));
+            // 상속 Resources의 원래 글꼴로 쓴 글자도 그대로 남아 있어야 한다
+            Assert.NotEmpty(service.FindTextRects(savedPath, 0, "Inherited"));
+
+            string text = System.Text.Encoding.Latin1.GetString(File.ReadAllBytes(savedPath));
+            Assert.Contains("/" + PdfGlyphlessOcrService.FontResName, text);
+        }
+
+        // 5번: 다시 OCR해 저장하면 이전 텍스트 층을 바꿔 끼운다 (겹치지 않음)
+        [Fact]
+        public async Task GlyphlessOcr_Reinjection_ReplacesPreviousLayer()
+        {
+            string first = Path.Combine(_testFileDir, "first.pdf");
+            File.WriteAllBytes(first, CreateMinimalPdf());
+            var svc = new PdfGlyphlessOcrService();
+            Assert.True(svc.InjectOcrLayer(first, new List<OcrPageData>
+            {
+                new OcrPageData { PageIndex = 0, Words = { new OcrWordInfo { Text = "첫번째층", BoundingBox = new Rect(40, 40, 80, 20) } } }
+            }));
+            Assert.True(svc.InjectOcrLayer(first, new List<OcrPageData>
+            {
+                new OcrPageData { PageIndex = 0, Words = { new OcrWordInfo { Text = "두번째층", BoundingBox = new Rect(40, 80, 80, 20) } } }
+            }));
+
+            var service = new PdfService();
+            Assert.Empty(service.FindTextRects(first, 0, "첫번째층"));
+            Assert.NotEmpty(service.FindTextRects(first, 0, "두번째층"));
+        }
+
+        [Fact]
+        public void ToUnicodeCMap_UsesAtMost100EntriesPerBlock()
+        {
+            string cmap = PdfGlyphlessOcrService.BuildIdentityToUnicodeCMap();
+            var counts = System.Text.RegularExpressions.Regex.Matches(cmap, @"(\d+) beginbfrange")
+                .Select(m => int.Parse(m.Groups[1].Value)).ToList();
+            Assert.Equal(256, counts.Sum());
+            Assert.All(counts, n => Assert.True(n <= 100));
+        }
+
+        [Fact]
+        public void PdfSyntax_HandlesNestedDictionaries()
+        {
+            string dict = "<< /Font << /F1 5 0 R /F2 << /Sub (a>>b) >> >> /XObject << /Im0 7 0 R >> /ProcSet [/PDF /Text] >>";
+            Assert.Equal("<< /Im0 7 0 R >>", PdfSyntax.GetValue(dict, "XObject"));
+            string updated = PdfSyntax.SetValue(dict, "Font", PdfSyntax.SetValue(PdfSyntax.GetValue(dict, "Font")!, "FX", "9 0 R"));
+            Assert.Contains("/FX 9 0 R", PdfSyntax.GetValue(updated, "Font"));
+            Assert.Equal("<< /Im0 7 0 R >>", PdfSyntax.GetValue(updated, "XObject"));
+            Assert.Equal("[/PDF /Text]", PdfSyntax.GetValue(updated, "ProcSet"));
+            Assert.True(PdfSyntax.TryParseReference(PdfSyntax.GetValue("<< /Parent 12 3 R >>", "Parent"), out int n, out int g));
+            Assert.Equal((12, 3), (n, g));
         }
 
         // [Task 6] HasPendingRenders 상태 노출 확인
@@ -280,6 +426,39 @@ namespace MinsPDFViewer.Tests
             foreach (int offset in offsets)
                 sb.Append($"{offset:0000000000} 00000 n \n");
             sb.Append("trailer\n<< /Size 4 /Root 1 0 R >>\n");
+            sb.Append("startxref\n");
+            sb.Append(xrefOffset);
+            sb.Append("\n%%EOF\n");
+            return System.Text.Encoding.ASCII.GetBytes(sb.ToString());
+        }
+
+        private static byte[] CreateInheritedResourcesPdf()
+        {
+            // /Resources는 부모 /Pages에만 있고, 페이지는 상속받는다
+            var objects = new[]
+            {
+                "1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n",
+                "2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 /Resources << /Font << /F1 5 0 R >> >> >>\nendobj\n",
+                "3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R >>\nendobj\n",
+                "4 0 obj\n<< /Length 40 >>\nstream\nBT /F1 18 Tf 72 700 Td (Inherited) Tj ET\nendstream\nendobj\n",
+                "5 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>\nendobj\n"
+            };
+
+            var sb = new System.Text.StringBuilder();
+            sb.Append("%PDF-1.7\n");
+            var offsets = new List<int>();
+            foreach (var obj in objects)
+            {
+                offsets.Add(System.Text.Encoding.ASCII.GetByteCount(sb.ToString()));
+                sb.Append(obj);
+            }
+
+            int xrefOffset = System.Text.Encoding.ASCII.GetByteCount(sb.ToString());
+            sb.Append("xref\n0 6\n");
+            sb.Append("0000000000 65535 f \n");
+            foreach (int offset in offsets)
+                sb.Append($"{offset:0000000000} 00000 n \n");
+            sb.Append("trailer\n<< /Size 6 /Root 1 0 R >>\n");
             sb.Append("startxref\n");
             sb.Append(xrefOffset);
             sb.Append("\n%%EOF\n");

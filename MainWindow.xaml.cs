@@ -1148,9 +1148,10 @@ namespace MinsPDFViewer
                 return;
             }
 
+            int ocrPageTotal = OcrService.CountTargetPages(document);
             BtnOCR.IsEnabled = false;
             PbStatus.Visibility = Visibility.Visible;
-            PbStatus.Maximum = document.Pages.Count;
+            PbStatus.Maximum = Math.Max(1, ocrPageTotal);
             PbStatus.Value = 0;
             TxtStatus.Text = $"OCR 분석 중... ({_ocrService.CurrentLanguage})";
             var previousCursor = Mouse.OverrideCursor;
@@ -1162,7 +1163,7 @@ namespace MinsPDFViewer
                 var progress = new Progress<int>(value =>
                 {
                     PbStatus.Value = value;
-                    TxtStatus.Text = $"OCR 분석 중... {value}/{document.Pages.Count}";
+                    TxtStatus.Text = $"OCR 분석 중... {value}/{ocrPageTotal}";
                 });
                 await _ocrService.RunOcrAsync(document, progress);
 

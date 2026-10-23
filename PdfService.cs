@@ -184,6 +184,9 @@ namespace MinsPDFViewer
             return 1.0;
         }
 
+        /// <summary>미리보기 패스의 해상도 비율 (고해상도 대비). 픽셀 수 1/4 → 렌더 비용도 대략 1/4.</summary>
+        internal const double FastRenderScale = 0.5;
+
         private static void ExecuteFastRender(RenderRequest req)
         {
             var model = req.Model;
@@ -192,20 +195,24 @@ namespace MinsPDFViewer
 
             if (ct.IsCancellationRequested || model.IsDisposed) return;
 
+            // 이미 그림이 있으면(줌 변경·저장 후 재렌더 등) 흐린 미리보기는 필요 없다 → 고해상도 패스만.
+            // 예전에는 두 패스가 같은 해상도라 같은 페이지를 두 번 그렸다.
+            if (pageVM.ImageSource != null) return;
+
             BitmapSource? fastBmp = null;
             lock (PdfiumLock)
             {
                 if (ct.IsCancellationRequested || model.IsDisposed || model.PdfDocument == null) return;
                 try
                 {
-                    double dpiScale = GetDisplayDpiScale();
-                    int fastW = Math.Max(1, (int)Math.Round(pageVM.Width * dpiScale));
-                    int fastH = Math.Max(1, (int)Math.Round(pageVM.Height * dpiScale));
-                    float dpi = (float)(96.0 * dpiScale);
-                    var flags = PdfRenderFlags.Annotations | PdfRenderFlags.LcdText | PdfRenderFlags.CorrectFromDpi;
-                    using (var bitmap = model.PdfDocument.Render(pageVM.OriginalPageIndex, fastW, fastH, dpi, dpi, flags))
+                    double scale = GetDisplayDpiScale() * FastRenderScale;
+                    int fastW = Math.Max(1, (int)Math.Round(pageVM.Width * scale));
+                    int fastH = Math.Max(1, (int)Math.Round(pageVM.Height * scale));
+                    float dpi = (float)(96.0 * scale);
+                    // 미리보기는 LCD 텍스트·후처리 없이 (곧 고해상도로 바뀐다)
+                    using (var bitmap = model.PdfDocument.Render(pageVM.OriginalPageIndex, fastW, fastH, dpi, dpi, PdfRenderFlags.Annotations))
                     {
-                        fastBmp = ToBitmapSource((DrawingBitmap)bitmap);
+                        fastBmp = ToBitmapSource((DrawingBitmap)bitmap, applyStemDarkening: false, applySharpen: false);
                         fastBmp.Freeze();
                     }
                 }
@@ -976,7 +983,14 @@ private static string? PromptPasswordDialog(string? prompt)
             return lut;
         }
 
-        public static BitmapSource ToBitmapSource(DrawingBitmap bitmap, bool applyStemDarkening = true)
+        /// <summary>
+        /// 밝기 언샤프 마스크 강도 (0 = 끔). 스캔 PDF(1비트 600dpi 이미지)를 화면 크기로 줄이면 획 가장자리가 회색으로 퍼져
+        /// Foxit보다 흐려 보인다. 감마 LUT 뒤에 밝기(Y)에만 3×3 가우시안 언샤프를 더해 획을 세운다.
+        /// 색 차이는 건드리지 않아 LCD 서브픽셀 색번짐을 키우지 않는다.
+        /// </summary>
+        public static double SharpenAmount { get; set; } = 0.6;
+
+        public static BitmapSource ToBitmapSource(DrawingBitmap bitmap, bool applyStemDarkening = true, bool applySharpen = true)
         {
             var rect = new DrawingRectangle(0, 0, bitmap.Width, bitmap.Height);
             var bitmapData = bitmap.LockBits(rect, System.Drawing.Imaging.ImageLockMode.ReadWrite, System.Drawing.Imaging.PixelFormat.Format32bppArgb);
@@ -1018,6 +1032,15 @@ private static string? PromptPasswordDialog(string? prompt)
                     }
                 }
 
+                // 감마 다음에 샤픈 (감마로 진해진 획의 가장자리를 세운다)
+                if (applySharpen && SharpenAmount > 0.001)
+                {
+                    unsafe
+                    {
+                        SharpenLuma((byte*)bitmapData.Scan0, bitmap.Width, bitmap.Height, bitmapData.Stride, SharpenAmount);
+                    }
+                }
+
                 return BitmapSource.Create(
                     bitmap.Width,
                     bitmap.Height,
@@ -1034,6 +1057,73 @@ private static string? PromptPasswordDialog(string? prompt)
                 bitmap.UnlockBits(bitmapData);
             }
         }
+
+        /// <summary>
+        /// BGRA 픽셀의 밝기 Y에 언샤프 마스크: Y' = Y + amount·(Y − blur3x3(Y)), 차이 ΔY를 B·G·R에 똑같이 더한다.
+        /// blur = [1 2 1]ᵀ[1 2 1]/16 (σ≈0.85px). 균일한 면(흰 바탕, 검은 획 안쪽)은 그대로이고 가장자리만 대비가 커진다.
+        /// </summary>
+        internal static unsafe void SharpenLuma(byte* scan0, int width, int height, int stride, double amount)
+        {
+            if (width < 3 || height < 3 || amount <= 0)
+                return;
+
+            int n = width * height;
+            int[] luma = System.Buffers.ArrayPool<int>.Shared.Rent(n);
+            int[] hsum = System.Buffers.ArrayPool<int>.Shared.Rent(n);
+            try
+            {
+                for (int y = 0; y < height; y++)
+                {
+                    byte* row = scan0 + (long)y * stride;
+                    int o = y * width;
+                    for (int x = 0; x < width; x++)
+                    {
+                        byte* px = row + x * 4;
+                        luma[o + x] = (px[2] * 77 + px[1] * 150 + px[0] * 29) >> 8; // R G B
+                    }
+                }
+
+                // 가로 [1 2 1] (가장자리는 복제)
+                for (int y = 0; y < height; y++)
+                {
+                    int o = y * width;
+                    hsum[o] = luma[o] * 3 + luma[o + 1];
+                    for (int x = 1; x < width - 1; x++)
+                        hsum[o + x] = luma[o + x - 1] + 2 * luma[o + x] + luma[o + x + 1];
+                    hsum[o + width - 1] = luma[o + width - 2] + luma[o + width - 1] * 3;
+                }
+
+                int a256 = (int)Math.Round(amount * 256);
+                for (int y = 0; y < height; y++)
+                {
+                    int up = Math.Max(0, y - 1) * width;
+                    int mid = y * width;
+                    int down = Math.Min(height - 1, y + 1) * width;
+                    byte* row = scan0 + (long)y * stride;
+                    for (int x = 0; x < width; x++)
+                    {
+                        int blur16 = hsum[up + x] + 2 * hsum[mid + x] + hsum[down + x]; // = 16 × blur
+                        int diff16 = (luma[mid + x] << 4) - blur16;
+                        if (diff16 == 0)
+                            continue;
+                        int delta = (a256 * diff16) / (256 * 16);
+                        if (delta == 0)
+                            continue;
+                        byte* px = row + x * 4;
+                        px[0] = ClampByte(px[0] + delta);
+                        px[1] = ClampByte(px[1] + delta);
+                        px[2] = ClampByte(px[2] + delta);
+                    }
+                }
+            }
+            finally
+            {
+                System.Buffers.ArrayPool<int>.Shared.Return(luma);
+                System.Buffers.ArrayPool<int>.Shared.Return(hsum);
+            }
+        }
+
+        private static byte ClampByte(int v) => (byte)(v < 0 ? 0 : (v > 255 ? 255 : v));
 
         private static void LoadAnnotationsLazy(PdfDocumentModel model, PdfPageViewModel pageVM, CancellationToken ct = default)
         {
@@ -1346,18 +1436,23 @@ private static string? PromptPasswordDialog(string? prompt)
                 if (await pdfiumEditService.TrySaveAnnotationsAsync(model, outputPath))
                 {
                     LogProfile("pdfium edit save");
-                    var ocrPages = model.Pages.Where(p => p.OcrWords != null && p.OcrWords.Count > 0).Select(p => new OcrPageData
-                    {
-                        PageIndex = p.PageIndex,
-                        WidthPoint = p.PdfPageWidthPoint > 0 ? p.PdfPageWidthPoint : (p.Width > 0 ? p.Width : 595.0),
-                        HeightPoint = p.PdfPageHeightPoint > 0 ? p.PdfPageHeightPoint : (p.Height > 0 ? p.Height : 842.0),
-                        Words = p.OcrWords!
-                    }).ToList();
+                    // 저장본의 페이지 순서 = model.Pages 순서. 좌표는 포인트(원본 화면 기준), 앱 내 회전은 따로 넘긴다.
+                    var ocrPages = model.Pages
+                        .Select((p, index) => (Page: p, Index: index))
+                        .Where(x => !x.Page.IsBlankPage && x.Page.OcrWords != null && x.Page.OcrWords.Count > 0)
+                        .Select(x => new OcrPageData
+                        {
+                            PageIndex = x.Index,
+                            UserRotation = x.Page.Rotation,
+                            WidthPoint = x.Page.SourceViewWidthPoint,
+                            HeightPoint = x.Page.SourceViewHeightPoint,
+                            Words = new List<OcrWordInfo>(x.Page.OcrWords!)
+                        }).ToList();
 
                     if (ocrPages.Count > 0)
                     {
-                        await new PdfGlyphlessOcrService(LogToFile).InjectOcrLayerAsync(outputPath, ocrPages);
-                        LogProfile("glyphless ocr layer inject");
+                        bool injected = await new PdfGlyphlessOcrService(LogToFile).InjectOcrLayerAsync(outputPath, ocrPages);
+                        LogProfile($"glyphless ocr layer inject injected={injected}");
                     }
 
                     if (shouldRewriteBookmarks)
