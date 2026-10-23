@@ -276,6 +276,15 @@ namespace MinsPDFViewer
             get; set;
         }
 
+        /// <summary>
+        /// 파일에서 읽어 온 저장형 주석의 서명 (<see cref="PrintService.ComputeAnnotationSignature"/>).
+        /// 지금 주석과 비교해 저장 안 한 편집이 있는지 판단한다. null = 아직 파일에서 읽지 않음(= 주석 없음으로 취급).
+        /// </summary>
+        public string? LoadedAnnotationSignature
+        {
+            get; set;
+        }
+
         public bool IsHighResRendered { get; set; }
 
         private CancellationTokenSource? _renderCts;

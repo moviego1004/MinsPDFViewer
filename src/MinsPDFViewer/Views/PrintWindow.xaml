@@ -1,0 +1,169 @@
+<Window x:Class="MinsPDFViewer.PrintWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="인쇄"
+        Width="980" Height="700"
+        MinWidth="760" MinHeight="560"
+        WindowStartupLocation="CenterOwner"
+        ShowInTaskbar="False"
+        Background="#F9F9FB"
+        FontFamily="Malgun Gothic"
+        FontSize="13"
+        UseLayoutRounding="True"
+        PreviewKeyDown="Window_PreviewKeyDown">
+
+    <Window.Resources>
+        <Style x:Key="SectionLabel" TargetType="TextBlock">
+            <Setter Property="Foreground" Value="#555"/>
+            <Setter Property="FontWeight" Value="SemiBold"/>
+            <Setter Property="Margin" Value="0,14,0,6"/>
+        </Style>
+        <Style TargetType="RadioButton">
+            <Setter Property="Margin" Value="0,3,14,3"/>
+            <Setter Property="VerticalContentAlignment" Value="Center"/>
+        </Style>
+        <Style TargetType="CheckBox">
+            <Setter Property="Margin" Value="0,3,14,3"/>
+            <Setter Property="VerticalContentAlignment" Value="Center"/>
+        </Style>
+        <Style x:Key="Chip" TargetType="Border">
+            <Setter Property="CornerRadius" Value="10"/>
+            <Setter Property="Padding" Value="8,2"/>
+            <Setter Property="Margin" Value="0,0,6,0"/>
+        </Style>
+        <Style x:Key="NavButton" TargetType="Button">
+            <Setter Property="Width" Value="32"/>
+            <Setter Property="Height" Value="28"/>
+            <Setter Property="Background" Value="White"/>
+            <Setter Property="BorderBrush" Value="#CCC"/>
+            <Setter Property="FontSize" Value="14"/>
+        </Style>
+    </Window.Resources>
+
+    <Grid>
+        <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="320"/>
+            <ColumnDefinition Width="*"/>
+        </Grid.ColumnDefinitions>
+
+        <!-- 설정 -->
+        <Grid Grid.Column="0" Margin="22,14,18,18">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="*"/>
+                <RowDefinition Height="Auto"/>
+            </Grid.RowDefinitions>
+
+            <ScrollViewer Grid.Row="0" VerticalScrollBarVisibility="Auto">
+                <StackPanel>
+                    <TextBlock Text="프린터" Style="{StaticResource SectionLabel}" Margin="0,4,0,6"/>
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
+                        <ComboBox x:Name="CbPrinter" Height="30" VerticalContentAlignment="Center"
+                                  SelectionChanged="CbPrinter_SelectionChanged"/>
+                        <Button x:Name="BtnProperties" Grid.Column="1" Content="속성" Width="56" Height="30" Margin="6,0,0,0"
+                                Background="White" BorderBrush="#CCC" Click="BtnProperties_Click"/>
+                    </Grid>
+
+                    <TextBlock Text="용지" Style="{StaticResource SectionLabel}"/>
+                    <ComboBox x:Name="CbPaper" Height="30" VerticalContentAlignment="Center"
+                              DisplayMemberPath="PaperName"
+                              SelectionChanged="CbPaper_SelectionChanged"/>
+
+                    <TextBlock Text="매수" Style="{StaticResource SectionLabel}"/>
+                    <StackPanel Orientation="Horizontal">
+                        <TextBox x:Name="TxtCopies" Text="1" Width="64" Height="28" VerticalContentAlignment="Center"
+                                 HorizontalContentAlignment="Center" TextChanged="TxtCopies_TextChanged"/>
+                        <CheckBox x:Name="ChkCollate" Content="한 부씩" IsChecked="True" Margin="14,0,0,0"/>
+                    </StackPanel>
+
+                    <TextBlock Text="페이지" Style="{StaticResource SectionLabel}"/>
+                    <RadioButton x:Name="RbAll" GroupName="Pages" IsChecked="True" Checked="Option_Changed"/>
+                    <RadioButton x:Name="RbCurrent" GroupName="Pages" Checked="Option_Changed"/>
+                    <StackPanel Orientation="Horizontal">
+                        <RadioButton x:Name="RbRange" GroupName="Pages" Content="지정" Checked="Option_Changed"/>
+                        <TextBox x:Name="TxtRange" Width="170" Height="28" VerticalContentAlignment="Center"
+                                 ToolTip="예: 1-3, 5, 8-" GotFocus="TxtRange_GotFocus" TextChanged="TxtRange_TextChanged"/>
+                    </StackPanel>
+                    <TextBlock x:Name="TxtRangeError" Foreground="#C62828" FontSize="12" Margin="62,2,0,0" Visibility="Collapsed"/>
+
+                    <TextBlock Text="크기" Style="{StaticResource SectionLabel}"/>
+                    <WrapPanel>
+                        <RadioButton x:Name="RbFit" GroupName="Scale" Content="맞춤" IsChecked="True" Checked="Option_Changed"/>
+                        <RadioButton x:Name="RbShrink" GroupName="Scale" Content="큰 페이지만 축소" Checked="Option_Changed"/>
+                        <RadioButton x:Name="RbActual" GroupName="Scale" Content="실제 크기" Checked="Option_Changed"/>
+                    </WrapPanel>
+
+                    <TextBlock Text="방향" Style="{StaticResource SectionLabel}"/>
+                    <WrapPanel>
+                        <RadioButton x:Name="RbAuto" GroupName="Orientation" Content="자동" IsChecked="True" Checked="Option_Changed"/>
+                        <RadioButton x:Name="RbPortrait" GroupName="Orientation" Content="세로" Checked="Option_Changed"/>
+                        <RadioButton x:Name="RbLandscape" GroupName="Orientation" Content="가로" Checked="Option_Changed"/>
+                    </WrapPanel>
+
+                    <TextBlock Text="옵션" Style="{StaticResource SectionLabel}"/>
+                    <WrapPanel>
+                        <CheckBox x:Name="ChkAnnotations" Content="주석 포함" IsChecked="True" Checked="Option_Changed" Unchecked="Option_Changed"/>
+                        <CheckBox x:Name="ChkGrayscale" Content="흑백" Checked="Option_Changed" Unchecked="Option_Changed"/>
+                    </WrapPanel>
+                </StackPanel>
+            </ScrollViewer>
+
+            <StackPanel Grid.Row="1" Margin="0,14,0,0">
+                <WrapPanel Margin="0,0,0,12">
+                    <Border x:Name="ChipUnlocked" Style="{StaticResource Chip}" Background="#E8F5E9" Visibility="Collapsed"
+                            ToolTip="문서 권한의 인쇄 금지를 무시하고 인쇄합니다">
+                        <TextBlock Text="인쇄 제한 해제" Foreground="#2E7D32" FontSize="12"/>
+                    </Border>
+                    <Border x:Name="ChipEdits" Style="{StaticResource Chip}" Background="#E3F2FD" Visibility="Collapsed"
+                            ToolTip="저장하지 않은 주석·페이지 편집을 반영해 인쇄합니다">
+                        <TextBlock Text="편집 반영" Foreground="#1565C0" FontSize="12"/>
+                    </Border>
+                </WrapPanel>
+                <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+                    <Button x:Name="BtnPrint" Content="인쇄" Width="88" Height="32" IsDefault="True"
+                            Background="#2B579A" Foreground="White" BorderThickness="0" Margin="0,0,8,0"
+                            Click="BtnPrint_Click"/>
+                    <Button Content="취소" Width="88" Height="32" IsCancel="True"
+                            Background="#E1E1E1" Foreground="#333333" BorderThickness="0"/>
+                </StackPanel>
+            </StackPanel>
+        </Grid>
+
+        <!-- 미리보기 -->
+        <Grid Grid.Column="1" Background="#E9EBEF">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="*"/>
+                <RowDefinition Height="Auto"/>
+            </Grid.RowDefinitions>
+
+            <Border x:Name="PreviewHost" Grid.Row="0" Margin="28,24,28,8" SizeChanged="PreviewHost_SizeChanged">
+                <Viewbox Stretch="Uniform" StretchDirection="Both">
+                    <Canvas x:Name="PaperCanvas" Width="850" Height="1100" Background="White">
+                        <Canvas.Effect>
+                            <DropShadowEffect BlurRadius="18" ShadowDepth="2" Opacity="0.25"/>
+                        </Canvas.Effect>
+                        <Image x:Name="PreviewImage" Stretch="Fill"
+                               RenderOptions.BitmapScalingMode="HighQuality"/>
+                        <Rectangle x:Name="PageOutline" Stroke="#D0D4DA" StrokeThickness="1"
+                                   SnapsToDevicePixels="True" IsHitTestVisible="False"/>
+                    </Canvas>
+                </Viewbox>
+            </Border>
+            <TextBlock x:Name="TxtNoPreview" Grid.Row="0" Text="미리보기 없음" Foreground="#888"
+                       HorizontalAlignment="Center" VerticalAlignment="Center" Visibility="Collapsed"/>
+
+            <Grid Grid.Row="1" Margin="28,4,28,16">
+                <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
+                    <Button x:Name="BtnPrev" Content="‹" Style="{StaticResource NavButton}" Click="BtnPrev_Click"/>
+                    <TextBlock x:Name="TxtPreviewPos" Text="1 / 1" MinWidth="90" TextAlignment="Center"
+                               VerticalAlignment="Center" Foreground="#333"/>
+                    <Button x:Name="BtnNext" Content="›" Style="{StaticResource NavButton}" Click="BtnNext_Click"/>
+                </StackPanel>
+                <TextBlock x:Name="TxtSummary" HorizontalAlignment="Right" VerticalAlignment="Center" Foreground="#666"/>
+            </Grid>
+        </Grid>
+    </Grid>
+</Window>

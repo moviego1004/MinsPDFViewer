@@ -411,6 +411,10 @@ namespace MinsPDFViewer
             [System.Runtime.InteropServices.DllImport("pdfium.dll", CallingConvention = System.Runtime.InteropServices.CallingConvention.Cdecl)]
             public static extern int FPDF_GetLastError();
 
+            // 반환형은 C unsigned long = Windows에서 32비트
+            [System.Runtime.InteropServices.DllImport("pdfium.dll", CallingConvention = System.Runtime.InteropServices.CallingConvention.Cdecl)]
+            public static extern uint FPDF_GetDocPermissions(IntPtr document);
+
             [System.Runtime.InteropServices.DllImport("pdfium.dll", CallingConvention = System.Runtime.InteropServices.CallingConvention.Cdecl)]
             public static extern IntPtr FPDF_LoadPage(IntPtr document, int page_index);
 
@@ -638,7 +642,7 @@ namespace MinsPDFViewer
             }
         }
 
-                private static IPdfDocument LoadPdfiumDocument(Stream stream, string? password)
+        internal static IPdfDocument LoadPdfiumDocument(Stream stream, string? password)
         {
             if (string.IsNullOrEmpty(password))
                 return PdfiumViewer.PdfDocument.Load(stream);
@@ -1356,6 +1360,9 @@ private static string? PromptPasswordDialog(string? prompt)
                             sourceHandle.Free();
                     }
 
+                    // 파일 상태 기록 (인쇄 시 저장 안 한 편집 판단용). 좌표는 페이지 크기 비율이라 줌과 무관.
+                    pageVM.LoadedAnnotationSignature = PrintService.ComputeAnnotationSignature(extracted, pageVM.Width, pageVM.Height);
+
                     if (extracted.Count > 0)
                     {
                         RunOnUiDispatcherOrDirect(() =>
@@ -1400,7 +1407,46 @@ private static string? PromptPasswordDialog(string? prompt)
             }
         }
 
-        public async Task SavePdf(PdfDocumentModel model, string outputPath)
+        /// <summary>
+        /// PDF 권한 비트(PDF 규격 표 22). 암호화되지 않은 문서는 0xFFFFFFFF. 열 수 없으면 null.
+        /// bit 3(0x4) = 인쇄 허용.
+        /// </summary>
+        internal static uint? GetDocPermissions(byte[] pdfBytes, string? password)
+        {
+            if (pdfBytes == null || pdfBytes.Length == 0)
+                return null;
+
+            lock (PdfiumLock)
+            {
+                var handle = GCHandle.Alloc(pdfBytes, GCHandleType.Pinned);
+                try
+                {
+                    IntPtr doc = NativeMethods.FPDF_LoadMemDocument(handle.AddrOfPinnedObject(), pdfBytes.Length, password);
+                    if (doc == IntPtr.Zero)
+                        return null;
+                    try
+                    {
+                        return NativeMethods.FPDF_GetDocPermissions(doc);
+                    }
+                    finally
+                    {
+                        NativeMethods.FPDF_CloseDocument(doc);
+                    }
+                }
+                finally
+                {
+                    handle.Free();
+                }
+            }
+        }
+
+        public Task SavePdf(PdfDocumentModel model, string outputPath) => SavePdf(model, outputPath, forPrinting: false);
+
+        /// <param name="forPrinting">
+        /// 인쇄용 임시 저장: 화면에 보이는 것(페이지 순서·회전·삭제·빈 페이지·주석)만 반영하고
+        /// 보이지 않는 OCR 텍스트 층·북마크 재작성은 건너뛴다 (북마크 변경 표시도 그대로 둔다).
+        /// </param>
+        public async Task SavePdf(PdfDocumentModel model, string outputPath, bool forPrinting)
         {
             if (model == null) return;
 
@@ -1416,7 +1462,7 @@ private static string? PromptPasswordDialog(string? prompt)
             bool shouldRewriteBookmarks = false;
             await RunOnUiDispatcherOrDirectAsync(() =>
             {
-                shouldRewriteBookmarks = model.HasBookmarkChanges;
+                shouldRewriteBookmarks = model.HasBookmarkChanges && !forPrinting;
             });
             LogProfile("read bookmark state");
 
@@ -1433,7 +1479,7 @@ private static string? PromptPasswordDialog(string? prompt)
                 if (!string.IsNullOrEmpty(pdfiumUnsupportedReason))
                     LogToFile($"[SaveEngine:{PdfSaveEngine.Pdfium}] Not eligible: {pdfiumUnsupportedReason}");
 
-                if (await pdfiumEditService.TrySaveAnnotationsAsync(model, outputPath))
+                if (await pdfiumEditService.TrySaveAnnotationsAsync(model, outputPath, removeSecurity: forPrinting))
                 {
                     LogProfile("pdfium edit save");
                     // 저장본의 페이지 순서 = model.Pages 순서. 좌표는 포인트(원본 화면 기준), 앱 내 회전은 따로 넘긴다.
@@ -1449,7 +1495,7 @@ private static string? PromptPasswordDialog(string? prompt)
                             Words = new List<OcrWordInfo>(x.Page.OcrWords!)
                         }).ToList();
 
-                    if (ocrPages.Count > 0)
+                    if (ocrPages.Count > 0 && !forPrinting)
                     {
                         bool injected = await new PdfGlyphlessOcrService(LogToFile).InjectOcrLayerAsync(outputPath, ocrPages);
                         LogProfile($"glyphless ocr layer inject injected={injected}");

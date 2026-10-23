@@ -34,7 +34,14 @@ namespace MinsPDFViewer
         internal const string ImageStampMetadataPrefix = "MINS_IMAGESTAMP_V1:";
         internal const string ImageStampMetadataV2Prefix = "MINS_IMAGESTAMP_V2:";
 
-        public async Task<bool> TrySaveAnnotationsAsync(PdfDocumentModel model, string outputPath)
+        public Task<bool> TrySaveAnnotationsAsync(PdfDocumentModel model, string outputPath) =>
+            TrySaveAnnotationsAsync(model, outputPath, removeSecurity: false);
+
+        /// <param name="removeSecurity">
+        /// 암호화(권한 제한)를 벗기고 저장 (FPDF_REMOVE_SECURITY). 인쇄용 임시본에만 쓴다 — 읽자마자 지우고,
+        /// PDFium의 재암호화(AES 등) 지원 여부와 무관하게 편집을 반영할 수 있다.
+        /// </param>
+        public async Task<bool> TrySaveAnnotationsAsync(PdfDocumentModel model, string outputPath, bool removeSecurity)
         {
             var profileWatch = Stopwatch.StartNew();
             if (!CanUsePdfiumAnnotationSave(model, out _))
@@ -42,6 +49,8 @@ namespace MinsPDFViewer
             LogProfile("eligibility", profileWatch);
 
             var snapshot = await CreateSnapshotAsync(model);
+            if (snapshot != null && removeSecurity)
+                snapshot = snapshot with { RemoveSecurity = true };
             LogProfile("snapshot", profileWatch);
             if (snapshot == null)
                 return false;
@@ -268,7 +277,7 @@ namespace MinsPDFViewer
                     InsertBlankPages(document, snapshot, ref ocrFont, textFonts);
                     LogProfile("insert blank pages", profileWatch);
 
-                    return SaveDocumentToFile(document, outputPath);
+                    return SaveDocumentToFile(document, outputPath, snapshot.RemoveSecurity);
                 }
                 finally
                 {
@@ -324,11 +333,12 @@ namespace MinsPDFViewer
                 IntPtr importSource = sourceDocument;
                 if (sourceHasPendingMutations)
                 {
-                    if (!SaveDocumentToFile(sourceDocument, tempPath))
+                    if (!SaveDocumentToFile(sourceDocument, tempPath, snapshot.RemoveSecurity))
                         return false;
                     LogProfile("reorder save mutated source temp", profileWatch);
 
-                    modifiedSource = NativeMethods.FPDF_LoadDocument(tempPath, null);
+                    // 암호 문서는 임시본도 같은 암호 (보안을 벗긴 경우엔 무시됨)
+                    modifiedSource = NativeMethods.FPDF_LoadDocument(tempPath, snapshot.Password);
                     if (modifiedSource == IntPtr.Zero)
                         return false;
                     LogProfile("reorder load mutated source temp", profileWatch);
@@ -377,7 +387,7 @@ namespace MinsPDFViewer
                 }
                 LogProfile($"reorder import ranges count={importedRanges}", profileWatch);
 
-                return SaveDocumentToFile(reorderedDocument, outputPath);
+                return SaveDocumentToFile(reorderedDocument, outputPath, snapshot.RemoveSecurity);
             }
             finally
             {
@@ -396,12 +406,14 @@ namespace MinsPDFViewer
             }
         }
 
-        private static bool SaveDocumentToFile(IntPtr document, string outputPath)
+        private const uint FPDF_REMOVE_SECURITY = 3;
+
+        private static bool SaveDocumentToFile(IntPtr document, string outputPath, bool removeSecurity = false)
         {
             var profileWatch = Stopwatch.StartNew();
             using var stream = new FileStream(outputPath, FileMode.Create, FileAccess.Write, FileShare.None);
             var writer = new NativeFileWriter(stream);
-            bool saved = NativeMethods.FPDF_SaveAsCopy(document, ref writer.FileWrite, 0);
+            bool saved = NativeMethods.FPDF_SaveAsCopy(document, ref writer.FileWrite, removeSecurity ? FPDF_REMOVE_SECURITY : 0);
             LogToFile($"[SAVE_PROFILE] SaveAsCopy elapsed={profileWatch.ElapsedMilliseconds}ms output='{outputPath}'");
             stream.Flush(true);
 
@@ -1353,7 +1365,7 @@ namespace MinsPDFViewer
             };
         }
 
-        private sealed record DocumentSnapshot(string SourcePath, int SourcePageCount, List<PageSnapshot> Pages, string? Password = null);
+        private sealed record DocumentSnapshot(string SourcePath, int SourcePageCount, List<PageSnapshot> Pages, string? Password = null, bool RemoveSecurity = false);
 
         private sealed class PageSnapshot
         {

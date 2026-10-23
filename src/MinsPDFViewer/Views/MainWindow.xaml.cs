@@ -29,6 +29,8 @@ namespace MinsPDFViewer
         private readonly SignatureVerificationService _signatureVerificationService;
         private readonly OcrService _ocrService;
         private readonly HistoryService _historyService;
+        private readonly PrintService _printService;
+        private bool _isPrinting;
         private const int ThumbnailRenderPagesBefore = 3;
         private const int ThumbnailRenderPagesAfter = 8;
         private const double MinThumbnailImageWidth = 80;
@@ -137,6 +139,7 @@ namespace MinsPDFViewer
             _signatureVerificationService = new SignatureVerificationService();
             _ocrService = new OcrService();
             _historyService = new HistoryService();
+            _printService = new PrintService(_pdfService);
 
             // Setup global logging and exception handling
             Log("=== Application Starting ===");
@@ -1349,6 +1352,74 @@ namespace MinsPDFViewer
             }
         }
 
+        private async void BtnPrint_Click(object sender, RoutedEventArgs e) => await StartPrintAsync();
+
+        /// <summary>
+        /// 화면의 현재 상태(저장 안 한 주석·페이지 편집 포함)를 인쇄한다. 문서의 인쇄 금지 권한은 무시한다.
+        /// 준비(필요하면 임시 저장) → 인쇄 창(설정·미리보기) → 백그라운드 인쇄.
+        /// </summary>
+        private async Task StartPrintAsync()
+        {
+            if (SelectedDocument == null || _isPrinting)
+                return;
+
+            // 편집 중인 텍스트 상자 내용 확정 (저장과 같은 처리)
+            Keyboard.ClearFocus();
+            FocusManager.SetFocusedElement(this, this);
+
+            var document = SelectedDocument;
+            int currentPageIndex = GetCurrentPageIndex();
+            _isPrinting = true;
+            BtnPrint.IsEnabled = false;
+            PrintSource? source = null;
+            var previousCursor = Mouse.OverrideCursor;
+            try
+            {
+                Mouse.OverrideCursor = Cursors.Wait;
+                TxtStatus.Text = "인쇄 준비 중...";
+                source = await _printService.PrepareAsync(document);
+                Mouse.OverrideCursor = previousCursor;
+
+                var dialog = new PrintWindow(source, currentPageIndex, this);
+                if (dialog.ShowDialog() != true || dialog.Options == null)
+                {
+                    TxtStatus.Text = "준비";
+                    return;
+                }
+
+                var options = dialog.Options;
+                int total = options.PageIndices.Count;
+                PbStatus.Visibility = Visibility.Visible;
+                PbStatus.Maximum = Math.Max(1, total);
+                PbStatus.Value = 0;
+                TxtStatus.Text = $"인쇄 중... 0/{total}";
+                var progress = new Progress<int>(done =>
+                {
+                    PbStatus.Value = done;
+                    TxtStatus.Text = $"인쇄 중... {done}/{total}";
+                });
+
+                await _printService.PrintAsync(source, options, progress);
+                TxtStatus.Text = options.Copies > 1
+                    ? $"인쇄 완료 ({total}쪽 × {options.Copies}부, {options.PrinterName})"
+                    : $"인쇄 완료 ({total}쪽, {options.PrinterName})";
+            }
+            catch (Exception ex)
+            {
+                Log($"[CRITICAL] Print Error: {ex}");
+                TxtStatus.Text = "인쇄 오류";
+                MessageBox.Show($"인쇄하지 못했습니다.\n\n{ex.Message}");
+            }
+            finally
+            {
+                Mouse.OverrideCursor = previousCursor;
+                PbStatus.Visibility = Visibility.Collapsed;
+                source?.Dispose();
+                _isPrinting = false;
+                BtnPrint.IsEnabled = true;
+            }
+        }
+
         private void BtnPopupCopy_Click(object sender, RoutedEventArgs e)
         {
             if (_isSelectionTextPending || string.IsNullOrEmpty(_selectedTextBuffer))
@@ -1545,6 +1616,14 @@ namespace MinsPDFViewer
 
         private void Window_PreviewKeyDown(object sender, KeyEventArgs e)
         {
+            // Ctrl+P는 텍스트 상자 편집 중에도 (인쇄 전에 편집 내용을 확정한다)
+            if (e.Key == Key.P && (Keyboard.Modifiers & ModifierKeys.Control) == ModifierKeys.Control)
+            {
+                e.Handled = true;
+                _ = StartPrintAsync();
+                return;
+            }
+
             bool isTextBoxFocused = Keyboard.FocusedElement is TextBox;
             if (isTextBoxFocused)
             {
